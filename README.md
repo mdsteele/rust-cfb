@@ -1,8 +1,9 @@
 # rust-cfb
 
-A rust library for reading/writing [Compound File Binary](
-https://msdn.microsoft.com/en-us/library/dd942138.aspx) (structured storage)
-files.
+A Rust library for reading/writing [Compound File Binary](
+https://en.wikipedia.org/wiki/Compound_File_Binary_Format) (structured storage)
+files.  See [MS-CFB](https://msdn.microsoft.com/en-us/library/dd942138.aspx)
+for the format specification.
 
 ## License
 
