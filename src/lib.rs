@@ -11,7 +11,29 @@ extern crate byteorder;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp;
 use std::path::{Path, PathBuf};
-use std::io::{self, Error, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+
+// ========================================================================= //
+
+macro_rules! invalid_data {
+    ($e:expr) => {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, $e));
+    };
+    ($fmt:expr, $($arg:tt)+) => {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                  format!($fmt, $($arg)+)));
+    };
+}
+
+macro_rules! invalid_input {
+    ($e:expr) => {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, $e));
+    };
+    ($fmt:expr, $($arg:tt)+) => {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                                  format!($fmt, $($arg)+)));
+    };
+}
 
 // ========================================================================= //
 
@@ -92,26 +114,25 @@ impl<F: Read + Seek> CompoundFile<F> {
         let mut magic = [0u8; 8];
         inner.read_exact(&mut magic)?;
         if magic != MAGIC_NUMBER {
-            let msg = "Invalid CFB file (wrong magic number)";
-            return Err(Error::new(ErrorKind::InvalidData, msg));
+            invalid_data!("Invalid CFB file (wrong magic number)");
         }
         inner.seek(SeekFrom::Start(26))?;
         let version_number = inner.read_u16::<LittleEndian>()?;
         let version = match Version::from_number(version_number) {
             Some(version) => version,
             None => {
-                let msg = format!("CFB version {} is not supported",
-                                  version_number);
-                return Err(Error::new(ErrorKind::InvalidData, msg));
+                invalid_data!("CFB version {} is not supported",
+                              version_number);
             }
         };
-        inner.seek(SeekFrom::Start(30))?;
+        if inner.read_u16::<LittleEndian>()? != BYTE_ORDER_MARK {
+            invalid_data!("Invalid CFB byte order mark");
+        }
         let sector_shift = inner.read_u16::<LittleEndian>()?;
         if sector_shift != version.sector_shift() {
-            let msg = format!("Incorrect sector shift ({}) for CFB version {}",
-                              sector_shift,
-                              version.number());
-            return Err(Error::new(ErrorKind::InvalidData, msg));
+            invalid_data!("Incorrect sector shift ({}) for CFB version {}",
+                          sector_shift,
+                          version.number());
         }
         let sector_len = version.sector_len();
         inner.seek(SeekFrom::Start(48))?;
@@ -130,8 +151,10 @@ impl<F: Read + Seek> CompoundFile<F> {
         let num_difat_sectors = comp.inner.read_u32::<LittleEndian>()?;
         for _ in 0..109 {
             let next = comp.inner.read_u32::<LittleEndian>()?;
-            if next > MAX_REGULAR_SECTOR {
+            if next == FREE_SECTOR {
                 break;
+            } else if next > MAX_REGULAR_SECTOR {
+                invalid_data!("Invalid sector index ({}) in DIFAT", next);
             }
             comp.difat.push(next);
         }
@@ -146,11 +169,10 @@ impl<F: Read + Seek> CompoundFile<F> {
             current_difat_sector = comp.inner.read_u32::<LittleEndian>()?;
         }
         if num_difat_sectors as usize != difat_sectors.len() {
-            let msg = format!("Incorrect DIFAT chain length (file says {}, \
-                               actual is {})",
-                              num_difat_sectors,
-                              difat_sectors.len());
-            return Err(Error::new(ErrorKind::InvalidData, msg));
+            invalid_data!("Incorrect DIFAT chain length \
+                           (file says {}, actual is {})",
+                          num_difat_sectors,
+                          difat_sectors.len());
         }
 
         // Read in FAT.
@@ -270,16 +292,18 @@ impl DirEntry {
             }
             let name_len_bytes = reader.read_u16::<LittleEndian>()?;
             if name_len_bytes > 64 || name_len_bytes % 2 != 0 {
-                let msg = format!("Invalid name length ({}) in directory \
-                                   entry",
-                                  name_len_bytes);
-                return Err(Error::new(ErrorKind::InvalidData, msg));
+                invalid_data!("Invalid name length ({}) in directory entry",
+                              name_len_bytes);
             }
             let name_len_chars = if name_len_bytes > 0 {
                 (name_len_bytes / 2 - 1) as usize
             } else {
                 0
             };
+            debug_assert!(name_len_chars < name_chars.len());
+            if name_chars[name_len_chars] != 0 {
+                invalid_data!("Directory entry name must be null-terminated");
+            }
             String::from_utf16_lossy(&name_chars[0..name_len_chars])
         };
         let obj_type = reader.read_u8()?;
@@ -370,19 +394,17 @@ impl<'a, F: Write + Seek> Storage<'a, F> {
     /// the root entry (which cannot be renamed).
     pub fn set_name(&mut self, name: &str) -> io::Result<()> {
         if self.is_root() {
-            let msg = "Cannot rename the root entry";
-            return Err(Error::new(ErrorKind::InvalidInput, msg));
+            invalid_input!("Cannot rename the root entry");
         }
 
         // Validate new name:
         let name_utf16: Vec<u16> =
             name.encode_utf16().take(DIR_NAME_MAX_LEN + 1).collect();
         if name_utf16.len() > DIR_NAME_MAX_LEN {
-            let msg = format!("New name cannot be more than {} UTF-16 code \
-                               units (was {})",
-                              DIR_NAME_MAX_LEN,
-                              name.encode_utf16().count());
-            return Err(Error::new(ErrorKind::InvalidInput, msg));
+            invalid_input!("New name cannot be more than {} UTF-16 code \
+                            units (was {})",
+                           DIR_NAME_MAX_LEN,
+                           name.encode_utf16().count());
         }
 
         // TODO: check siblings for name conflicts
@@ -432,10 +454,9 @@ impl<'a, F: Seek> Seek for Stream<'a, F> {
             SeekFrom::Current(delta) => delta + self.offset_from_start as i64,
         };
         if new_pos < 0 || new_pos > self.total_len as i64 {
-            let msg = format!("Cannot seek to {}, stream length is {}",
-                              new_pos,
-                              self.total_len);
-            Err(Error::new(ErrorKind::InvalidInput, msg))
+            invalid_input!("Cannot seek to {}, stream length is {}",
+                           new_pos,
+                           self.total_len);
         } else {
             let old_pos = self.offset_from_start as u64;
             let new_pos = new_pos as usize;
@@ -534,6 +555,13 @@ impl Version {
 mod tests {
     use std::io::Cursor;
     use super::{CompoundFile, ROOT_DIR_NAME, Version};
+
+    #[test]
+    #[should_panic(expected = "Invalid CFB file (wrong magic number)")]
+    fn wrong_magic_number() {
+        let cursor = Cursor::new([1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        CompoundFile::open(cursor).unwrap();
+    }
 
     #[test]
     fn write_and_read_empty_compound_file() {
