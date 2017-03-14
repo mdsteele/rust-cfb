@@ -9,8 +9,8 @@
 extern crate byteorder;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::cmp;
-use std::path::{Path, PathBuf};
+use std::cmp::{self, Ordering};
+use std::path::{Component, Path, PathBuf};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 // ========================================================================= //
@@ -57,7 +57,12 @@ const FREE_SECTOR: u32 = 0xffffffff;
 const ROOT_DIR_NAME: &'static str = "Root Entry";
 const DIR_NAME_MAX_LEN: usize = 31;
 const OBJ_TYPE_UNALLOCATED: u8 = 0;
+const OBJ_TYPE_STORAGE: u8 = 1;
+const OBJ_TYPE_STREAM: u8 = 2;
 const OBJ_TYPE_ROOT: u8 = 5;
+const ROOT_STREAM_ID: u32 = 0;
+const MAX_REGULAR_STREAM_ID: u32 = 0xfffffffa;
+const NO_STREAM: u32 = 0xffffffff;
 
 // ========================================================================= //
 
@@ -75,6 +80,118 @@ pub struct CompoundFile<F> {
 impl<F> CompoundFile<F> {
     /// Returns the CFB format version used for this compound file.
     pub fn version(&self) -> Version { self.version }
+
+    fn stream_id_for_path(&self, path: &Path) -> io::Result<u32> {
+        let mut names: Vec<String> = Vec::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) => invalid_input!("Invalid path"),
+                Component::RootDir => names.clear(),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if names.pop().is_none() {
+                        invalid_input!("Invalid path");
+                    }
+                }
+                Component::Normal(osstr) => {
+                    match osstr.to_str() {
+                        Some(name) => names.push(name.to_string()),
+                        None => invalid_input!("Non UTF-8 path"),
+                    }
+                }
+            }
+        }
+        let mut stream_id = ROOT_STREAM_ID;
+        for name in names.into_iter() {
+            stream_id = self.directory[stream_id as usize].child;
+            loop {
+                if stream_id == NO_STREAM {
+                    // TODO: make this a NotFound error
+                    invalid_input!("not found");
+                }
+                let dir_entry = &self.directory[stream_id as usize];
+                match compare_names(&name, &dir_entry.name) {
+                    Ordering::Equal => break,
+                    Ordering::Less => stream_id = dir_entry.left_sibling,
+                    Ordering::Greater => stream_id = dir_entry.right_sibling,
+                }
+            }
+        }
+        Ok(stream_id)
+    }
+
+    /// Given a path within the compound file, get information about that
+    /// stream or storage object.
+    pub fn entry<P: AsRef<Path>>(&self, path: P) -> io::Result<StorageEntry> {
+        self.entry_for_path(path.as_ref())
+    }
+
+    fn entry_for_path(&self, path: &Path) -> io::Result<StorageEntry> {
+        let stream_id = self.stream_id_for_path(path)?;
+        let dir_entry = &self.directory[stream_id as usize];
+        Ok(StorageEntry {
+            name: dir_entry.name.clone(),
+            path: path.to_path_buf(), // TODO: canonicalize path
+            obj_type: dir_entry.obj_type,
+            stream_len: dir_entry.stream_len,
+        })
+    }
+
+    /// Returns an iterator over the entries within a storage object.
+    pub fn read_storage<P: AsRef<Path>>(&self, path: P)
+                                        -> io::Result<ReadStorage> {
+        self.read_storage_for_path(path.as_ref())
+    }
+
+    fn read_storage_for_path(&self, path: &Path) -> io::Result<ReadStorage> {
+        let stream_id = self.stream_id_for_path(path)?;
+        Ok(ReadStorage {
+            directory: &self.directory,
+            path: path.to_path_buf(), // TODO: canonicalize path
+            stack: Vec::new(),
+            current: stream_id,
+        })
+    }
+
+    // TODO: pub fn walk_storage
+
+    // TODO: pub fn create_storage
+
+    // TODO: pub fn remove_storage
+
+    /// Opens an existing stream in the compound file for reading and/or
+    /// writing (depending on what the underlying file supports).
+    pub fn open_stream<P: AsRef<Path>>(&mut self, path: P)
+                                       -> io::Result<Stream<F>> {
+        self.open_stream_for_path(path.as_ref())
+    }
+
+    fn open_stream_for_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
+        let stream_id = self.stream_id_for_path(path)?;
+        let (stream_len, start_sector) = {
+            let dir_entry = &self.directory[stream_id as usize];
+            if dir_entry.obj_type != OBJ_TYPE_STREAM {
+                invalid_input!("not a stream: {:?}", path);
+            }
+            (dir_entry.stream_len, dir_entry.start_sector)
+        };
+        Ok(Stream {
+            comp: self,
+            total_len: stream_len,
+            offset_from_start: 0,
+            offset_within_sector: 0,
+            start_sector: start_sector,
+            current_sector: start_sector,
+        })
+    }
+
+    // TODO: pub fn create_stream
+
+    // TODO: pub fn remove_stream
+
+    // TODO: pub fn copy_stream
+
+    // TODO: pub fn rename
 
     /// Returns the root storage (i.e. directory) within this compound file.
     pub fn root_storage(&mut self) -> Storage<F> {
@@ -193,7 +310,8 @@ impl<F: Read + Seek> CompoundFile<F> {
             comp.seek_to_sector(current_dir_sector)?;
             for _ in 0..(sector_len / DIR_ENTRY_LEN) {
                 comp.directory.push(DirEntry::read(&mut comp.inner,
-                                                   current_dir_sector)?);
+                                                   current_dir_sector,
+                                                   version)?);
             }
             current_dir_sector = comp.fat[current_dir_sector as usize];
         }
@@ -259,6 +377,11 @@ impl<F: Write + Seek> CompoundFile<F> {
             sector: 1,
             name: ROOT_DIR_NAME.to_string(),
             obj_type: OBJ_TYPE_ROOT,
+            left_sibling: NO_STREAM,
+            right_sibling: NO_STREAM,
+            child: NO_STREAM,
+            start_sector: END_OF_CHAIN, // TODO: mini stream
+            stream_len: 0,
         };
         root_dir_entry.write(&mut inner)?;
         for _ in 1..(sector_len / DIR_ENTRY_LEN) {
@@ -281,10 +404,16 @@ struct DirEntry {
     sector: u32,
     name: String,
     obj_type: u8,
+    left_sibling: u32,
+    right_sibling: u32,
+    child: u32,
+    start_sector: u32,
+    stream_len: u64,
 }
 
 impl DirEntry {
-    fn read<R: Read>(reader: &mut R, sector: u32) -> io::Result<DirEntry> {
+    fn read<R: Read>(reader: &mut R, sector: u32, version: Version)
+                     -> io::Result<DirEntry> {
         let name: String = {
             let mut name_chars: Vec<u16> = Vec::with_capacity(32);
             for _ in 0..32 {
@@ -308,21 +437,38 @@ impl DirEntry {
         };
         let obj_type = reader.read_u8()?;
         let _color = reader.read_u8()?;
-        let _left_sibling = reader.read_u32::<LittleEndian>()?;
-        let _right_sibling = reader.read_u32::<LittleEndian>()?;
-        let _child = reader.read_u32::<LittleEndian>()?;
+        let left_sibling = reader.read_u32::<LittleEndian>()?;
+        if left_sibling != NO_STREAM && left_sibling > MAX_REGULAR_STREAM_ID {
+            invalid_data!("Invalid left sibling in directory entry ({})",
+                          left_sibling);
+        }
+        let right_sibling = reader.read_u32::<LittleEndian>()?;
+        if right_sibling != NO_STREAM &&
+           right_sibling > MAX_REGULAR_STREAM_ID {
+            invalid_data!("Invalid right sibling in directory entry ({})",
+                          right_sibling);
+        }
+        let child = reader.read_u32::<LittleEndian>()?;
+        if child != NO_STREAM && child > MAX_REGULAR_STREAM_ID {
+            invalid_data!("Invalid child in directory entry ({})", child);
+        }
         let mut clsid = [0u8; 16];
         reader.read_exact(&mut clsid)?;
         let _state_bits = reader.read_u32::<LittleEndian>()?;
         let _creation_time = reader.read_u64::<LittleEndian>()?;
         let _modified_time = reader.read_u64::<LittleEndian>()?;
-        let _start_sector = reader.read_u32::<LittleEndian>()?;
-        // TODO: Only use lower 32-bits of stream len in Version 3.
-        let _stream_len = reader.read_u64::<LittleEndian>()?;
+        let start_sector = reader.read_u32::<LittleEndian>()?;
+        let stream_len = reader.read_u64::<LittleEndian>()? &
+                         version.stream_len_mask();
         Ok(DirEntry {
             sector: sector,
             name: name,
             obj_type: obj_type,
+            left_sibling: left_sibling,
+            right_sibling: right_sibling,
+            child: child,
+            start_sector: start_sector,
+            stream_len: stream_len,
         })
     }
 
@@ -347,6 +493,78 @@ impl DirEntry {
         writer.write_u8(OBJ_TYPE_UNALLOCATED)?;
         writer.write_all(&[0; 61])?; // other fields don't matter
         Ok(())
+    }
+}
+
+// ========================================================================= //
+
+/// Metadata about a single object (storage or stream) in a compound file.
+#[derive(Clone)]
+pub struct StorageEntry {
+    name: String,
+    path: PathBuf,
+    obj_type: u8,
+    stream_len: u64,
+}
+
+impl StorageEntry {
+    /// Returns the name of the object that this entry represents.
+    pub fn name(&self) -> &str { &self.name }
+
+    /// Returns the full path to the object that this entry represents.
+    pub fn path(&self) -> &Path { &self.path }
+
+    /// Returns whether this entry is for a stream object (i.e. a "file" within
+    /// the compound file).
+    pub fn is_stream(&self) -> bool { self.obj_type == OBJ_TYPE_STREAM }
+
+    /// Returns whether this entry is for a storage object (i.e. a "directory"
+    /// within the compound file), either the root or a nested storage.
+    pub fn is_storage(&self) -> bool {
+        self.obj_type == OBJ_TYPE_STORAGE || self.obj_type == OBJ_TYPE_ROOT
+    }
+
+    /// Returns whether this entry is specifically for the root storage object
+    /// of the compound file).
+    pub fn is_root(&self) -> bool { self.obj_type == OBJ_TYPE_ROOT }
+
+    /// Returns the size, in bytes, of the stream that this metadata is for.
+    pub fn len(&self) -> u64 { self.stream_len }
+
+    // TODO: creation/modified time
+    // TODO: CLSID
+}
+
+// ========================================================================= //
+
+/// Iterator over the entries in a storage object.
+pub struct ReadStorage<'a> {
+    directory: &'a Vec<DirEntry>,
+    path: PathBuf,
+    stack: Vec<u32>,
+    current: u32,
+}
+
+impl<'a> Iterator for ReadStorage<'a> {
+    type Item = StorageEntry;
+
+    fn next(&mut self) -> Option<StorageEntry> {
+        while self.current != NO_STREAM {
+            self.stack.push(self.current);
+            self.current = self.directory[self.current as usize].left_sibling;
+        }
+        if let Some(parent) = self.stack.pop() {
+            let dir_entry = &self.directory[parent as usize];
+            self.current = dir_entry.right_sibling;
+            Some(StorageEntry {
+                name: dir_entry.name.clone(),
+                path: self.path.join(&dir_entry.name),
+                obj_type: dir_entry.obj_type,
+                stream_len: dir_entry.stream_len,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -398,6 +616,7 @@ impl<'a, F: Write + Seek> Storage<'a, F> {
         }
 
         // Validate new name:
+        // TODO: Check that name does not contain '/', '\', ':', or '!'.
         let name_utf16: Vec<u16> =
             name.encode_utf16().take(DIR_NAME_MAX_LEN + 1).collect();
         if name_utf16.len() > DIR_NAME_MAX_LEN {
@@ -432,8 +651,8 @@ impl<'a, F: Write + Seek> Storage<'a, F> {
 /// A stream entry in a compound file, much like a filesystem file.
 pub struct Stream<'a, F: 'a> {
     comp: &'a mut CompoundFile<F>,
-    total_len: usize,
-    offset_from_start: usize,
+    total_len: u64,
+    offset_from_start: u64,
     offset_within_sector: usize,
     start_sector: u32,
     current_sector: u32,
@@ -443,7 +662,7 @@ pub struct Stream<'a, F: 'a> {
 
 impl<'a, F> Stream<'a, F> {
     /// Returns the current length of the stream, in bytes.
-    pub fn len(&self) -> usize { self.total_len }
+    pub fn len(&self) -> u64 { self.total_len }
 }
 
 impl<'a, F: Seek> Seek for Stream<'a, F> {
@@ -453,24 +672,24 @@ impl<'a, F: Seek> Seek for Stream<'a, F> {
             SeekFrom::End(delta) => delta + self.total_len as i64,
             SeekFrom::Current(delta) => delta + self.offset_from_start as i64,
         };
-        if new_pos < 0 || new_pos > self.total_len as i64 {
+        if new_pos < 0 || (new_pos as u64) > self.total_len {
             invalid_input!("Cannot seek to {}, stream length is {}",
                            new_pos,
                            self.total_len);
         } else {
             let old_pos = self.offset_from_start as u64;
-            let new_pos = new_pos as usize;
+            let new_pos = new_pos as u64;
             if new_pos != self.offset_from_start {
-                let sector_len = self.comp.version.sector_len();
+                let sector_len = self.comp.version.sector_len() as u64;
                 let mut offset = new_pos;
                 let mut sector = self.start_sector;
                 while offset >= sector_len {
                     sector = self.comp.fat[sector as usize];
                     offset -= sector_len;
                 }
-                self.comp.seek_within_sector(sector, offset)?;
+                self.comp.seek_within_sector(sector, offset as usize)?;
                 self.current_sector = sector;
-                self.offset_within_sector = offset;
+                self.offset_within_sector = offset as usize;
                 self.offset_from_start = new_pos;
             }
             Ok(old_pos)
@@ -482,18 +701,18 @@ impl<'a, F: Read + Seek> Read for Stream<'a, F> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         debug_assert!(self.offset_from_start <= self.total_len);
         let remaining_in_file = self.total_len - self.offset_from_start;
-        debug_assert!(self.offset_within_sector <= self.offset_from_start);
         let sector_len = self.comp.version.sector_len();
         debug_assert!(self.offset_within_sector < sector_len);
         let remaining_in_sector = sector_len - self.offset_within_sector;
-        let max_len = cmp::min(buf.len(),
+        let max_len = cmp::min(buf.len() as u64,
                                cmp::min(remaining_in_file,
-                                        remaining_in_sector));
+                                        remaining_in_sector as u64)) as
+                      usize;
         if max_len == 0 {
             return Ok(0);
         }
         let bytes_read = self.comp.inner.read(&mut buf[0..max_len])?;
-        self.offset_from_start += bytes_read;
+        self.offset_from_start += bytes_read as u64;
         debug_assert!(self.offset_from_start <= self.total_len);
         self.offset_within_sector += bytes_read;
         debug_assert!(self.offset_within_sector <= sector_len);
@@ -547,6 +766,31 @@ impl Version {
     }
 
     fn sector_len(self) -> usize { 1 << (self.sector_shift() as usize) }
+
+    fn stream_len_mask(self) -> u64 {
+        match self {
+            Version::V3 => 0xffffffff,
+            Version::V4 => 0xffffffffffffffff,
+        }
+    }
+}
+
+// ========================================================================= //
+
+/// Compares two directory entry names according to CFB ordering, which is
+/// case-insensitive, and which always puts shorter names before longer names,
+/// as encoded in UTF-16 (i.e. [shortlex
+/// order](https://en.wikipedia.org/wiki/Shortlex_order), rather than
+/// dictionary order).
+fn compare_names(name1: &str, name2: &str) -> Ordering {
+    match name1.encode_utf16().count().cmp(&name2.encode_utf16().count()) {
+        // This is actually not 100% correct -- the MS-CFB spec specifies a
+        // particular way of doing the uppercasing on individual UTF-16 code
+        // units, along with a list of weird exceptions and corner cases.  But
+        // hopefully this is good enough for 99+% of the time.
+        Ordering::Equal => name1.to_uppercase().cmp(&name2.to_uppercase()),
+        other => other,
+    }
 }
 
 // ========================================================================= //
