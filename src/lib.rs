@@ -145,7 +145,7 @@ impl<F> CompoundFile<F> {
             directory: &self.directory,
             path: path.to_path_buf(), // TODO: canonicalize path
             stack: Vec::new(),
-            current: stream_id,
+            current: self.directory[stream_id as usize].child,
         })
     }
 
@@ -367,7 +367,7 @@ impl<F: Write + Seek> CompoundFile<F> {
         let sector_len = version.sector_len();
         debug_assert!(sector_len >= HEADER_LEN);
         if sector_len > HEADER_LEN {
-            inner.write_all(&vec![0; HEADER_LEN - sector_len])?;
+            inner.write_all(&vec![0; sector_len - HEADER_LEN])?;
         }
 
         // Write FAT sector:
@@ -887,22 +887,25 @@ mod tests {
         let version = Version::V3;
 
         let cursor = Cursor::new(Vec::new());
-        let mut comp = CompoundFile::create_with_version(cursor, Version::V3)
+        let comp = CompoundFile::create_with_version(cursor, version)
             .expect("create");
         assert_eq!(comp.version(), version);
-        {
-            let root_storage = comp.root_storage();
-            assert_eq!(root_storage.name(), ROOT_DIR_NAME);
-        }
+        assert_eq!(comp.entry("/").unwrap().name(), ROOT_DIR_NAME);
 
         let cursor = comp.into_inner();
         assert_eq!(cursor.get_ref().len(), 3 * version.sector_len());
-        let mut comp = CompoundFile::open(cursor).expect("open");
+        let comp = CompoundFile::open(cursor).expect("open");
         assert_eq!(comp.version(), version);
-        {
-            let root_storage = comp.root_storage();
-            assert_eq!(root_storage.name(), ROOT_DIR_NAME);
-        }
+        assert_eq!(comp.entry("/").unwrap().name(), ROOT_DIR_NAME);
+    }
+
+    #[test]
+    fn empty_compound_file_has_no_children() {
+        let cursor = Cursor::new(Vec::new());
+        let comp = CompoundFile::create_with_version(cursor, Version::V4)
+            .expect("create");
+        assert!(comp.entry("/").unwrap().is_root());
+        assert_eq!(comp.read_storage("/").unwrap().count(), 0);
     }
 }
 
