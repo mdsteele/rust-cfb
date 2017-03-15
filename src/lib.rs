@@ -734,18 +734,7 @@ impl<'a, F: Write + Seek> Storage<'a, F> {
         if self.is_root() {
             invalid_input!("Cannot rename the root entry");
         }
-
-        // Validate new name:
-        // TODO: Check that name does not contain '/', '\', ':', or '!'.
-        let name_utf16: Vec<u16> =
-            name.encode_utf16().take(DIR_NAME_MAX_LEN + 1).collect();
-        if name_utf16.len() > DIR_NAME_MAX_LEN {
-            invalid_input!("New name cannot be more than {} UTF-16 code \
-                            units (was {})",
-                           DIR_NAME_MAX_LEN,
-                           name.encode_utf16().count());
-        }
-
+        let name_utf16 = validate_name(name)?;
         // TODO: check siblings for name conflicts
 
         // Write new name to underlying file:
@@ -961,6 +950,27 @@ fn compare_names(name1: &str, name2: &str) -> Ordering {
     }
 }
 
+/// Converts a storage/stream name to UTF-16, or returns an error if the name
+/// is invalid.
+fn validate_name(name: &str) -> io::Result<Vec<u16>> {
+    let name_utf16: Vec<u16> =
+        name.encode_utf16().take(DIR_NAME_MAX_LEN + 1).collect();
+    if name_utf16.len() > DIR_NAME_MAX_LEN {
+        invalid_input!("Object name cannot be more than {} UTF-16 code units \
+                        (was {})",
+                       DIR_NAME_MAX_LEN,
+                       name.encode_utf16().count());
+    }
+    for &chr in &['/', '\\', ':', '!'] {
+        if name.contains(chr) {
+            invalid_input!("Object name cannot contain {} character", chr);
+        }
+    }
+    Ok(name_utf16)
+}
+
+// ========================================================================= //
+
 /// Returns the current time as a CFB file timestamp (the number of
 /// 100-nanosecond intervals since January 1, 1601 UTC).
 fn current_timestamp() -> u64 {
@@ -989,8 +999,21 @@ fn epoch() -> SystemTime {
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
     use std::io::Cursor;
-    use super::{CompoundFile, ROOT_DIR_NAME, Version};
+    use super::{CompoundFile, ROOT_DIR_NAME, Version, compare_names,
+                validate_name};
+
+    #[test]
+    fn name_ordering() {
+        assert_eq!(compare_names("foobar", "FOOBAR"), Ordering::Equal);
+        assert_eq!(compare_names("foo", "barfoo"), Ordering::Less);
+        assert_eq!(compare_names("Foo", "bar"), Ordering::Greater);
+    }
+
+    #[test]
+    #[should_panic(expected = "Object name cannot contain / character")]
+    fn name_with_slash_is_invalid() { validate_name("foo/bar").unwrap(); }
 
     #[test]
     #[should_panic(expected = "Invalid CFB file (wrong magic number)")]
