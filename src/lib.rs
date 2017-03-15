@@ -166,15 +166,6 @@ impl<F> CompoundFile<F> {
 
     // TODO: pub fn rename
 
-    /// Returns the root storage (i.e. directory) within this compound file.
-    pub fn root_storage(&mut self) -> Storage<F> {
-        Storage {
-            comp: self,
-            path: PathBuf::from("/"),
-            stream_id: 0,
-        }
-    }
-
     /// Consumes the `CompoundFile`, returning the underlying reader/writer.
     pub fn into_inner(self) -> F { self.inner }
 
@@ -743,73 +734,6 @@ impl<'a> Iterator for ReadStorage<'a> {
         } else {
             None
         }
-    }
-}
-
-// ========================================================================= //
-
-/// A storage entry in a compound file, much like a filesystem directory.
-pub struct Storage<'a, F: 'a> {
-    comp: &'a mut CompoundFile<F>,
-    path: PathBuf,
-    stream_id: u32,
-}
-
-impl<'a, F> Storage<'a, F> {
-    fn dir_entry(&self) -> &DirEntry {
-        &self.comp.directory[self.stream_id as usize]
-    }
-
-    fn dir_entry_mut(&mut self) -> &mut DirEntry {
-        &mut self.comp.directory[self.stream_id as usize]
-    }
-
-    /// Returns the name of this storage entry.
-    pub fn name(&self) -> &str { &self.dir_entry().name }
-
-    /// Returns true if this is the root storage entry, false otherwise.
-    pub fn is_root(&self) -> bool {
-        self.dir_entry().obj_type == OBJ_TYPE_ROOT
-    }
-
-    /// Returns this storage entry's path within the compound file.  The root
-    /// storage entry has a path of `/`.
-    pub fn path(&self) -> &Path { &self.path }
-
-    /// Consumes this `Storage` object and returns its parent storage entry, or
-    /// `None` if this was the root storage entry.
-    pub fn parent(self) -> Option<Storage<'a, F>> {
-        Some(self.comp.root_storage()) // TODO: implement this
-    }
-}
-
-impl<'a, F: Write + Seek> Storage<'a, F> {
-    /// Sets the name of this storage entry.  The name must encode to no more
-    /// than 31 code units in UTF-16.  Fails if the new name is invalid, or if
-    /// the new name is the same as one of this entry's siblings, or if this is
-    /// the root entry (which cannot be renamed).
-    pub fn set_name(&mut self, name: &str) -> io::Result<()> {
-        if self.is_root() {
-            invalid_input!("Cannot rename the root entry");
-        }
-        let name_utf16 = validate_name(name)?;
-        // TODO: check siblings for name conflicts
-
-        // Write new name to underlying file:
-        let sector = self.dir_entry().sector;
-        let offset = ((self.stream_id as usize) %
-                      (self.comp.version.sector_len() / DIR_ENTRY_LEN)) *
-                     DIR_ENTRY_LEN;
-        self.comp.seek_within_sector(sector, offset as u64)?;
-        for &chr in name_utf16.iter() {
-            self.comp.inner.write_u16::<LittleEndian>(chr)?;
-        }
-        for _ in name_utf16.len()..32 {
-            self.comp.inner.write_u16::<LittleEndian>(0)?;
-        }
-
-        self.dir_entry_mut().name = name.to_string();
-        Ok(())
     }
 }
 
