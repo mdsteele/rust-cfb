@@ -12,6 +12,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::{self, Ordering};
 use std::path::{Component, Path, PathBuf};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ========================================================================= //
 
@@ -129,12 +130,7 @@ impl<F> CompoundFile<F> {
     fn entry_for_path(&self, path: &Path) -> io::Result<StorageEntry> {
         let stream_id = self.stream_id_for_path(path)?;
         let dir_entry = &self.directory[stream_id as usize];
-        Ok(StorageEntry {
-            name: dir_entry.name.clone(),
-            path: path.to_path_buf(), // TODO: canonicalize path
-            obj_type: dir_entry.obj_type,
-            stream_len: dir_entry.stream_len,
-        })
+        Ok(StorageEntry::new(dir_entry, path.to_path_buf()))
     }
 
     /// Returns an iterator over the entries within a storage object.
@@ -220,6 +216,17 @@ impl<F: Seek> CompoundFile<F> {
                                    (1 + sector_index as usize)) as
                                   u64))?;
         Ok(())
+    }
+
+    fn seek_within_dir_entry(&mut self, stream_id: u32,
+                             offset_within_dir_entry: usize)
+                             -> io::Result<()> {
+        let dir_entries_per_sector = self.version.sector_len() / DIR_ENTRY_LEN;
+        let index_within_sector = stream_id as usize % dir_entries_per_sector;
+        let offset_within_sector = index_within_sector * DIR_ENTRY_LEN +
+                                   offset_within_dir_entry;
+        let sector = self.directory[stream_id as usize].sector;
+        self.seek_within_sector(sector, offset_within_sector)
     }
 }
 
@@ -380,6 +387,8 @@ impl<F: Write + Seek> CompoundFile<F> {
             left_sibling: NO_STREAM,
             right_sibling: NO_STREAM,
             child: NO_STREAM,
+            creation_time: 0,
+            modified_time: 0,
             start_sector: END_OF_CHAIN, // TODO: mini stream
             stream_len: 0,
         };
@@ -396,6 +405,25 @@ impl<F: Write + Seek> CompoundFile<F> {
             directory: vec![root_dir_entry],
         })
     }
+
+    /// Sets the modified time for the object at the given path to now.  Has no
+    /// effect when called on the root storage.
+    pub fn touch<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
+        self.touch_with_path(path.as_ref())
+    }
+
+    fn touch_with_path(&mut self, path: &Path) -> io::Result<()> {
+        let stream_id = self.stream_id_for_path(path)?;
+        if stream_id != ROOT_STREAM_ID {
+            debug_assert_ne!(self.directory[stream_id as usize].obj_type,
+                             OBJ_TYPE_ROOT);
+            self.seek_within_dir_entry(stream_id, 108)?;
+            let now = current_timestamp();
+            self.inner.write_u64::<LittleEndian>(now)?;
+            self.directory[stream_id as usize].modified_time = now;
+        }
+        Ok(())
+    }
 }
 
 // ========================================================================= //
@@ -407,6 +435,8 @@ struct DirEntry {
     left_sibling: u32,
     right_sibling: u32,
     child: u32,
+    creation_time: u64,
+    modified_time: u64,
     start_sector: u32,
     stream_len: u64,
 }
@@ -455,8 +485,8 @@ impl DirEntry {
         let mut clsid = [0u8; 16];
         reader.read_exact(&mut clsid)?;
         let _state_bits = reader.read_u32::<LittleEndian>()?;
-        let _creation_time = reader.read_u64::<LittleEndian>()?;
-        let _modified_time = reader.read_u64::<LittleEndian>()?;
+        let creation_time = reader.read_u64::<LittleEndian>()?;
+        let modified_time = reader.read_u64::<LittleEndian>()?;
         let start_sector = reader.read_u32::<LittleEndian>()?;
         let stream_len = reader.read_u64::<LittleEndian>()? &
                          version.stream_len_mask();
@@ -467,6 +497,8 @@ impl DirEntry {
             left_sibling: left_sibling,
             right_sibling: right_sibling,
             child: child,
+            creation_time: creation_time,
+            modified_time: modified_time,
             start_sector: start_sector,
             stream_len: stream_len,
         })
@@ -504,10 +536,23 @@ pub struct StorageEntry {
     name: String,
     path: PathBuf,
     obj_type: u8,
+    creation_time: u64,
+    modified_time: u64,
     stream_len: u64,
 }
 
 impl StorageEntry {
+    fn new(dir_entry: &DirEntry, path: PathBuf) -> StorageEntry {
+        StorageEntry {
+            name: dir_entry.name.clone(),
+            path: path,
+            obj_type: dir_entry.obj_type,
+            creation_time: dir_entry.creation_time,
+            modified_time: dir_entry.modified_time,
+            stream_len: dir_entry.stream_len,
+        }
+    }
+
     /// Returns the name of the object that this entry represents.
     pub fn name(&self) -> &str { &self.name }
 
@@ -525,13 +570,24 @@ impl StorageEntry {
     }
 
     /// Returns whether this entry is specifically for the root storage object
-    /// of the compound file).
+    /// of the compound file.
     pub fn is_root(&self) -> bool { self.obj_type == OBJ_TYPE_ROOT }
 
     /// Returns the size, in bytes, of the stream that this metadata is for.
     pub fn len(&self) -> u64 { self.stream_len }
 
-    // TODO: creation/modified time
+    /// Returns the time when the object that this entry represents was
+    /// created.
+    pub fn created(&self) -> SystemTime {
+        system_time_from_timestamp(self.creation_time)
+    }
+
+    /// Returns the time when the object that this entry represents was last
+    /// modified.
+    pub fn modified(&self) -> SystemTime {
+        system_time_from_timestamp(self.modified_time)
+    }
+
     // TODO: CLSID
 }
 
@@ -556,12 +612,7 @@ impl<'a> Iterator for ReadStorage<'a> {
         if let Some(parent) = self.stack.pop() {
             let dir_entry = &self.directory[parent as usize];
             self.current = dir_entry.right_sibling;
-            Some(StorageEntry {
-                name: dir_entry.name.clone(),
-                path: self.path.join(&dir_entry.name),
-                obj_type: dir_entry.obj_type,
-                stream_len: dir_entry.stream_len,
-            })
+            Some(StorageEntry::new(dir_entry, self.path.join(&dir_entry.name)))
         } else {
             None
         }
@@ -791,6 +842,30 @@ fn compare_names(name1: &str, name2: &str) -> Ordering {
         Ordering::Equal => name1.to_uppercase().cmp(&name2.to_uppercase()),
         other => other,
     }
+}
+
+/// Returns the current time as a CFB file timestamp (the number of
+/// 100-nanosecond intervals since January 1, 1601 UTC).
+fn current_timestamp() -> u64 {
+    match SystemTime::now().duration_since(epoch()) {
+        Ok(delta) => {
+            delta.as_secs() * 10_000_000 + (delta.subsec_nanos() / 100) as u64
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Converts a CFB file timestamp to a local `SystemTime`.
+fn system_time_from_timestamp(timestamp: u64) -> SystemTime {
+    let delta = Duration::new(timestamp / 10_000_000,
+                              (timestamp % 10_000_000) as u32 * 100);
+    epoch() + delta
+}
+
+fn epoch() -> SystemTime {
+    // The epoch used by CFB files is Jan 1, 1601 UTC, which we can calculate
+    // from the Unix epoch constant, which is Jan 1, 1970 UTC.
+    UNIX_EPOCH - Duration::from_secs(11644473600)
 }
 
 // ========================================================================= //
