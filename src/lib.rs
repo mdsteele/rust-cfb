@@ -10,6 +10,7 @@ extern crate byteorder;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::{self, Ordering};
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -176,6 +177,52 @@ impl<F> CompoundFile<F> {
 
     /// Consumes the `CompoundFile`, returning the underlying reader/writer.
     pub fn into_inner(self) -> F { self.inner }
+
+    fn validate_directory(&self) -> io::Result<()> {
+        let mut visited = HashSet::new();
+        let mut stack = vec![ROOT_STREAM_ID];
+        while let Some(stream_id) = stack.pop() {
+            if visited.contains(&stream_id) {
+                invalid_data!("Malformed directory (loop in tree)");
+            }
+            visited.insert(stream_id);
+            let dir_entry = &self.directory[stream_id as usize];
+            let left_sibling = dir_entry.left_sibling;
+            if left_sibling != NO_STREAM {
+                if left_sibling as usize >= self.directory.len() {
+                    invalid_data!("Malformed directory (sibling index)");
+                }
+                let entry = &self.directory[left_sibling as usize];
+                if compare_names(&dir_entry.name, &entry.name) !=
+                   Ordering::Less {
+                    invalid_data!("Malformed directory (name ordering)");
+                }
+                stack.push(left_sibling);
+            }
+            let right_sibling = dir_entry.right_sibling;
+            if right_sibling != NO_STREAM {
+                if right_sibling as usize >= self.directory.len() {
+                    invalid_data!("Malformed directory (sibling index)");
+                }
+                let entry = &self.directory[right_sibling as usize];
+                if compare_names(&dir_entry.name, &entry.name) !=
+                   Ordering::Less {
+                    invalid_data!("Malformed directory (name ordering)");
+                }
+                stack.push(right_sibling);
+            }
+            if dir_entry.obj_type != OBJ_TYPE_ROOT {
+                let child = dir_entry.child;
+                if child != NO_STREAM {
+                    if child as usize >= self.directory.len() {
+                        invalid_data!("Malformed directory (child index)");
+                    }
+                    stack.push(child);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<F: Seek> CompoundFile<F> {
@@ -392,6 +439,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             current_dir_sector = comp.fat[current_dir_sector as usize];
         }
 
+        comp.validate_directory()?;
         Ok(comp)
     }
 }
@@ -533,6 +581,7 @@ impl DirEntry {
             }
             String::from_utf16_lossy(&name_chars[0..name_len_chars])
         };
+        validate_name(&name)?;
         let obj_type = reader.read_u8()?;
         let _color = reader.read_u8()?;
         let left_sibling = reader.read_u32::<LittleEndian>()?;
@@ -583,7 +632,16 @@ impl DirEntry {
         }
         writer.write_u16::<LittleEndian>((name_utf16.len() as u16 + 1) * 2)?;
         writer.write_u8(self.obj_type)?;
-        writer.write_all(&[0; 61])?; // TODO: other fields
+        writer.write_u8(1)?; // TODO: color
+        writer.write_u32::<LittleEndian>(self.left_sibling)?;
+        writer.write_u32::<LittleEndian>(self.right_sibling)?;
+        writer.write_u32::<LittleEndian>(self.child)?;
+        writer.write_all(&[0; 16])?; // TODO: CLSID
+        writer.write_u32::<LittleEndian>(0)?; // TODO: state bits
+        writer.write_u64::<LittleEndian>(self.creation_time)?;
+        writer.write_u64::<LittleEndian>(self.modified_time)?;
+        writer.write_u32::<LittleEndian>(self.start_sector)?;
+        writer.write_u64::<LittleEndian>(self.stream_len)?;
         Ok(())
     }
 
