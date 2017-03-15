@@ -63,6 +63,8 @@ const OBJ_TYPE_UNALLOCATED: u8 = 0;
 const OBJ_TYPE_STORAGE: u8 = 1;
 const OBJ_TYPE_STREAM: u8 = 2;
 const OBJ_TYPE_ROOT: u8 = 5;
+const COLOR_RED: u8 = 0;
+const COLOR_BLACK: u8 = 1;
 const ROOT_STREAM_ID: u32 = 0;
 const MAX_REGULAR_STREAM_ID: u32 = 0xfffffffa;
 const NO_STREAM: u32 = 0xffffffff;
@@ -170,6 +172,10 @@ impl<F> CompoundFile<F> {
     pub fn into_inner(self) -> F { self.inner }
 
     fn validate_directory(&self) -> io::Result<()> {
+        let root_entry = &self.directory[ROOT_STREAM_ID as usize];
+        if root_entry.name != ROOT_DIR_NAME {
+            invalid_data!("Malformed directory (root name)");
+        }
         let mut visited = HashSet::new();
         let mut stack = vec![ROOT_STREAM_ID];
         while let Some(stream_id) = stack.pop() {
@@ -490,6 +496,7 @@ impl<F: Write + Seek> CompoundFile<F> {
             sector: 1,
             name: ROOT_DIR_NAME.to_string(),
             obj_type: OBJ_TYPE_ROOT,
+            color: COLOR_BLACK,
             left_sibling: NO_STREAM,
             right_sibling: NO_STREAM,
             child: NO_STREAM,
@@ -539,6 +546,7 @@ struct DirEntry {
     sector: u32,
     name: String,
     obj_type: u8,
+    color: u8,
     left_sibling: u32,
     right_sibling: u32,
     child: u32,
@@ -574,7 +582,10 @@ impl DirEntry {
         };
         validate_name(&name)?;
         let obj_type = reader.read_u8()?;
-        let _color = reader.read_u8()?;
+        let color = reader.read_u8()?;
+        if color != COLOR_RED && color != COLOR_BLACK {
+            invalid_data!("Invalid color in directory entry ({})", color);
+        }
         let left_sibling = reader.read_u32::<LittleEndian>()?;
         if left_sibling != NO_STREAM && left_sibling > MAX_REGULAR_STREAM_ID {
             invalid_data!("Invalid left sibling in directory entry ({})",
@@ -602,6 +613,7 @@ impl DirEntry {
             sector: sector,
             name: name,
             obj_type: obj_type,
+            color: color,
             left_sibling: left_sibling,
             right_sibling: right_sibling,
             child: child,
@@ -623,7 +635,7 @@ impl DirEntry {
         }
         writer.write_u16::<LittleEndian>((name_utf16.len() as u16 + 1) * 2)?;
         writer.write_u8(self.obj_type)?;
-        writer.write_u8(1)?; // TODO: color
+        writer.write_u8(self.color)?;
         writer.write_u32::<LittleEndian>(self.left_sibling)?;
         writer.write_u32::<LittleEndian>(self.right_sibling)?;
         writer.write_u32::<LittleEndian>(self.child)?;
