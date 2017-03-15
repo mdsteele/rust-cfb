@@ -259,7 +259,8 @@ impl<F: Read + Seek> CompoundFile<F> {
                           version.number());
         }
         let sector_len = version.sector_len();
-        inner.seek(SeekFrom::Start(48))?;
+        inner.seek(SeekFrom::Start(44))?;
+        let num_fat_sectors = inner.read_u32::<LittleEndian>()?;
         let first_dir_sector = inner.read_u32::<LittleEndian>()?;
         let mut comp = CompoundFile {
             inner: inner,
@@ -288,15 +289,28 @@ impl<F: Read + Seek> CompoundFile<F> {
             difat_sectors.push(current_difat_sector);
             comp.seek_to_sector(current_difat_sector)?;
             for _ in 0..(sector_len / 4 - 1) {
-                comp.difat.push(comp.inner.read_u32::<LittleEndian>()?);
+                let next = comp.inner.read_u32::<LittleEndian>()?;
+                if next != FREE_SECTOR && next > MAX_REGULAR_SECTOR {
+                    invalid_data!("Invalid sector index ({}) in DIFAT", next);
+                }
+                comp.difat.push(next);
             }
             current_difat_sector = comp.inner.read_u32::<LittleEndian>()?;
         }
         if num_difat_sectors as usize != difat_sectors.len() {
             invalid_data!("Incorrect DIFAT chain length \
-                           (file says {}, actual is {})",
+                           (header says {}, actual is {})",
                           num_difat_sectors,
                           difat_sectors.len());
+        }
+        while comp.difat.last() == Some(&FREE_SECTOR) {
+            comp.difat.pop();
+        }
+        if num_fat_sectors as usize != comp.difat.len() {
+            invalid_data!("Incorrect number of FAT sectors \
+                           (header says {}, DIFAT says {})",
+                          num_fat_sectors,
+                          comp.difat.len());
         }
 
         // Read in FAT.
