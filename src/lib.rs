@@ -78,14 +78,21 @@ impl<F> CompoundFile<F> {
         &mut self.directory[ROOT_STREAM_ID as usize]
     }
 
-    fn stream_id_for_path(&self, path: &Path) -> io::Result<u32> {
-        let names = internal::path::name_chain_from_path(path)?;
+    fn dir_entry(&self, stream_id: u32) -> &DirEntry {
+        &self.directory[stream_id as usize]
+    }
+
+    fn dir_entry_mut(&mut self, stream_id: u32) -> &mut DirEntry {
+        &mut self.directory[stream_id as usize]
+    }
+
+    fn stream_id_for_name_chain(&self, names: &Vec<&str>) -> Option<u32> {
         let mut stream_id = ROOT_STREAM_ID;
-        for name in names.into_iter() {
+        for name in names.iter() {
             stream_id = self.directory[stream_id as usize].child;
             loop {
                 if stream_id == NO_STREAM {
-                    not_found!("No such object: {:?}", path);
+                    return None;
                 }
                 let dir_entry = &self.directory[stream_id as usize];
                 match internal::path::compare_names(&name, &dir_entry.name) {
@@ -95,7 +102,18 @@ impl<F> CompoundFile<F> {
                 }
             }
         }
-        Ok(stream_id)
+        Some(stream_id)
+    }
+
+    fn stream_id_for_path(&self, path: &Path) -> io::Result<u32> {
+        let names = internal::path::name_chain_from_path(path)?;
+        match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => Ok(stream_id),
+            None => {
+                not_found!("No such object: {:?}",
+                           internal::path::path_from_name_chain(&names));
+            }
+        }
     }
 
     /// Given a path within the compound file, get information about that
@@ -107,7 +125,8 @@ impl<F> CompoundFile<F> {
     fn entry_for_path(&self, path: &Path) -> io::Result<StorageEntry> {
         let stream_id = self.stream_id_for_path(path)?;
         let dir_entry = &self.directory[stream_id as usize];
-        Ok(StorageEntry::new(dir_entry, path.to_path_buf()))
+        Ok(StorageEntry::new(dir_entry,
+                             internal::path::canonicalize_path(path)?))
     }
 
     /// Returns an iterator over the entries within a storage object.
@@ -127,8 +146,6 @@ impl<F> CompoundFile<F> {
     }
 
     // TODO: pub fn walk_storage
-
-    // TODO: pub fn create_storage
 
     // TODO: pub fn remove_storage
 
@@ -306,10 +323,14 @@ impl<F: Seek> CompoundFile<F> {
         self.seek_within_sector(mini_stream_sector, offset_within_sector)
     }
 
+    fn seek_to_dir_entry(&mut self, stream_id: u32) -> io::Result<()> {
+        self.seek_within_dir_entry(stream_id, 0)
+    }
+
     fn seek_within_dir_entry(&mut self, stream_id: u32,
                              offset_within_dir_entry: usize)
                              -> io::Result<()> {
-        let dir_entries_per_sector = self.version.sector_len() / DIR_ENTRY_LEN;
+        let dir_entries_per_sector = self.version.dir_entries_per_sector();
         let index_within_sector = stream_id as usize % dir_entries_per_sector;
         let offset_within_sector = index_within_sector * DIR_ENTRY_LEN +
                                    offset_within_dir_entry;
@@ -480,7 +501,7 @@ impl<F: Read + Seek> CompoundFile<F> {
         let mut current_dir_sector = first_dir_sector;
         while current_dir_sector != END_OF_CHAIN {
             comp.seek_to_sector(current_dir_sector)?;
-            for _ in 0..(sector_len / DIR_ENTRY_LEN) {
+            for _ in 0..version.dir_entries_per_sector() {
                 comp.directory.push(DirEntry::read(&mut comp.inner, version)?);
             }
             current_dir_sector = comp.fat[current_dir_sector as usize];
@@ -554,7 +575,7 @@ impl<F: Write + Seek> CompoundFile<F> {
             stream_len: 0,
         };
         root_dir_entry.write(&mut inner)?;
-        for _ in 1..(sector_len / DIR_ENTRY_LEN) {
+        for _ in 1..version.dir_entries_per_sector() {
             DirEntry::unallocated().write(&mut inner)?;
         }
 
@@ -568,6 +589,33 @@ impl<F: Write + Seek> CompoundFile<F> {
             directory: vec![root_dir_entry],
             directory_start_sector: 1,
         })
+    }
+
+    /// Creates a new, empty storage object (i.e. "directory") at the provided
+    /// path.  The parent storage object must already exist.
+    pub fn create_storage<P: AsRef<Path>>(&mut self, path: P)
+                                          -> io::Result<()> {
+        self.create_storage_with_path(path.as_ref())
+    }
+
+    fn create_storage_with_path(&mut self, path: &Path) -> io::Result<()> {
+        let mut names = internal::path::name_chain_from_path(path)?;
+        if self.stream_id_for_name_chain(&names).is_some() {
+            // TODO: make this an AlreadyExists error
+            invalid_input!("already exists");
+        }
+        // If names is empty, that means we're trying to create the root.  But
+        // the root always already exists and will have been rejected above.
+        debug_assert!(!names.is_empty());
+        let name = names.pop().unwrap();
+        let parent_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => {
+                // TODO: make this a NotFound error
+                invalid_input!("parent storage doesn't exist");
+            }
+        };
+        self.insert_dir_entry(parent_id, name, OBJ_TYPE_STORAGE)
     }
 
     /// Sets the modified time for the object at the given path to now.  Has no
@@ -691,6 +739,33 @@ impl<F: Write + Seek> CompoundFile<F> {
         Ok(new_mini_sector)
     }
 
+    /// Adds a new (uninitialized) entry to the directory and returns the new
+    /// sector ID.
+    fn allocate_dir_entry(&mut self) -> io::Result<u32> {
+        // If there's an existing unalloated directory entry, use that.
+        for (stream_id, entry) in self.directory.iter().enumerate() {
+            if entry.obj_type == OBJ_TYPE_UNALLOCATED {
+                return Ok(stream_id as u32);
+            }
+        }
+        // Otherwise, we need a new entry; if there's not room in the directory
+        // chain to add it, then first we need to add a new directory sector.
+        let dir_entries_per_sector = self.version.dir_entries_per_sector();
+        let unallocated_dir_entry = DirEntry::unallocated();
+        if self.directory.len() % dir_entries_per_sector == 0 {
+            let start_sector = self.directory_start_sector;
+            let new_sector = self.extend_chain(start_sector)?;
+            self.seek_to_sector(new_sector)?;
+            for _ in 0..dir_entries_per_sector {
+                unallocated_dir_entry.write(&mut self.inner)?;
+            }
+        }
+        // Add a new entry to the end of the directory and return it.
+        let stream_id = self.directory.len() as u32;
+        self.directory.push(unallocated_dir_entry);
+        Ok(stream_id)
+    }
+
     /// Adds a new sector to the FAT chain at the end of the file, and updates
     /// the FAT and DIFAT accordingly.
     fn append_fat_sector(&mut self) -> io::Result<()> {
@@ -745,6 +820,63 @@ impl<F: Write + Seek> CompoundFile<F> {
         self.seek_within_sector(directory_start_sector, 120)?;
         self.inner.write_u64::<LittleEndian>(mini_stream_len)?;
         Ok(())
+    }
+
+    /// Inserts a new directory entry into the tree under the specified parent
+    /// entry.
+    fn insert_dir_entry(&mut self, parent_id: u32, name: &str, obj_type: u8)
+                        -> io::Result<()> {
+        // Create a new directory entry.
+        let stream_id = self.allocate_dir_entry()?;
+        let now = internal::time::current_timestamp();
+        *self.dir_entry_mut(stream_id) = DirEntry {
+            name: name.to_string(),
+            obj_type: obj_type,
+            color: COLOR_BLACK,
+            left_sibling: NO_STREAM,
+            right_sibling: NO_STREAM,
+            child: NO_STREAM,
+            creation_time: now,
+            modified_time: now,
+            start_sector: END_OF_CHAIN,
+            stream_len: 0,
+        };
+
+        // Insert the new entry into the tree.
+        let mut sibling_id = self.dir_entry(parent_id).child;
+        let mut prev_sibling_id = parent_id;
+        let mut ordering = Ordering::Equal;
+        while sibling_id != NO_STREAM {
+            let sibling = self.dir_entry(sibling_id);
+            prev_sibling_id = sibling_id;
+            ordering = internal::path::compare_names(name, &sibling.name);
+            sibling_id = match ordering {
+                Ordering::Less => sibling.left_sibling,
+                Ordering::Greater => sibling.right_sibling,
+                Ordering::Equal => panic!("internal error: insert duplicate"),
+            };
+        }
+        match ordering {
+            Ordering::Less => {
+                self.dir_entry_mut(prev_sibling_id).left_sibling = stream_id;
+                self.seek_within_dir_entry(prev_sibling_id, 68)?;
+            }
+            Ordering::Greater => {
+                self.dir_entry_mut(prev_sibling_id).right_sibling = stream_id;
+                self.seek_within_dir_entry(prev_sibling_id, 72)?;
+            }
+            Ordering::Equal => {
+                debug_assert_eq!(prev_sibling_id, parent_id);
+                self.dir_entry_mut(parent_id).child = stream_id;
+                self.seek_within_dir_entry(parent_id, 76)?;
+            }
+        }
+        self.inner.write_u32::<LittleEndian>(stream_id)?;
+        // TODO: rebalance tree
+
+        // Write new entry to underyling file.
+        self.seek_to_dir_entry(stream_id)?;
+        self.directory[stream_id as usize].write(&mut self.inner)
     }
 
     /// Sets `self.fat[index] = value`, and also writes that change to the
@@ -1297,6 +1429,10 @@ impl Version {
             Version::V4 => 0xffffffffffffffff,
         }
     }
+
+    fn dir_entries_per_sector(self) -> usize {
+        self.sector_len() / DIR_ENTRY_LEN
+    }
 }
 
 // ========================================================================= //
@@ -1314,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn write_and_read_empty_compound_file() {
+    fn create_empty_compound_file() {
         let version = Version::V3;
 
         let cursor = Cursor::new(Vec::new());
@@ -1337,6 +1473,22 @@ mod tests {
             .expect("create");
         assert!(comp.entry("/").unwrap().is_root());
         assert_eq!(comp.read_storage("/").unwrap().count(), 0);
+    }
+
+    #[test]
+    fn create_directory_tree() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foo").unwrap();
+        comp.create_storage("/baz").unwrap();
+        comp.create_storage("/foo/bar").unwrap();
+
+        let cursor = comp.into_inner();
+        let comp = CompoundFile::open(cursor).expect("open");
+        assert_eq!(comp.read_storage("/").unwrap().count(), 2);
+        assert_eq!(comp.read_storage("/foo").unwrap().count(), 1);
+        assert_eq!(comp.read_storage("/baz").unwrap().count(), 0);
+        assert_eq!(comp.read_storage("/foo/bar").unwrap().count(), 0);
     }
 }
 
