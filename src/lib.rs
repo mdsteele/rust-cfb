@@ -46,7 +46,8 @@ const MAGIC_NUMBER: [u8; 8] = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 const MINOR_VERSION: u16 = 0x3e;
 const BYTE_ORDER_MARK: u16 = 0xfffe;
 const MINI_SECTOR_SHIFT: u16 = 6; // 64-byte mini sectors
-const MINI_STREAM_MAX_LEN: u32 = 4096;
+const MINI_SECTOR_LEN: usize = 1 << (MINI_SECTOR_SHIFT as usize);
+const MINI_STREAM_CUTOFF: u32 = 4096;
 
 // Constants for FAT entries:
 const MAX_REGULAR_SECTOR: u32 = 0xfffffffa;
@@ -75,6 +76,7 @@ pub struct CompoundFile<F> {
     version: Version,
     difat: Vec<u32>,
     fat: Vec<u32>,
+    minifat: Vec<u32>,
     directory: Vec<DirEntry>,
 }
 
@@ -155,32 +157,6 @@ impl<F> CompoundFile<F> {
 
     // TODO: pub fn remove_storage
 
-    /// Opens an existing stream in the compound file for reading and/or
-    /// writing (depending on what the underlying file supports).
-    pub fn open_stream<P: AsRef<Path>>(&mut self, path: P)
-                                       -> io::Result<Stream<F>> {
-        self.open_stream_for_path(path.as_ref())
-    }
-
-    fn open_stream_for_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
-        let stream_id = self.stream_id_for_path(path)?;
-        let (stream_len, start_sector) = {
-            let dir_entry = &self.directory[stream_id as usize];
-            if dir_entry.obj_type != OBJ_TYPE_STREAM {
-                invalid_input!("not a stream: {:?}", path);
-            }
-            (dir_entry.stream_len, dir_entry.start_sector)
-        };
-        Ok(Stream {
-            comp: self,
-            total_len: stream_len,
-            offset_from_start: 0,
-            offset_within_sector: 0,
-            start_sector: start_sector,
-            current_sector: start_sector,
-        })
-    }
-
     // TODO: pub fn create_stream
 
     // TODO: pub fn remove_stream
@@ -203,19 +179,39 @@ impl<F> CompoundFile<F> {
 }
 
 impl<F: Seek> CompoundFile<F> {
-    fn seek_to_sector(&mut self, sector_index: u32) -> io::Result<()> {
-        self.seek_within_sector(sector_index, 0)
+    fn seek_to_sector(&mut self, sector: u32) -> io::Result<()> {
+        self.seek_within_sector(sector, 0)
     }
 
-    fn seek_within_sector(&mut self, sector_index: u32,
-                          offset_within_sector: usize)
+    fn seek_within_sector(&mut self, sector: u32, offset_within_sector: u64)
                           -> io::Result<()> {
         self.inner
-            .seek(SeekFrom::Start((offset_within_sector +
-                                   self.version.sector_len() *
-                                   (1 + sector_index as usize)) as
-                                  u64))?;
+            .seek(SeekFrom::Start(offset_within_sector +
+                                  self.version.sector_len() as u64 *
+                                  (1 + sector as u64)))?;
         Ok(())
+    }
+
+    fn seek_to_mini_sector(&mut self, mini_sector: u32) -> io::Result<()> {
+        self.seek_within_mini_sector(mini_sector, 0)
+    }
+
+    fn seek_within_mini_sector(&mut self, mini_sector: u32,
+                               offset_within_mini_sector: u64)
+                               -> io::Result<()> {
+        let sector_len = self.version.sector_len() as u64;
+        let offset_within_mini_stream = offset_within_mini_sector +
+                                        MINI_SECTOR_LEN as u64 *
+                                        mini_sector as u64;
+        let mini_stream_start_sector = self.directory[ROOT_STREAM_ID as usize]
+            .start_sector;
+        let mut mini_stream_sector = mini_stream_start_sector;
+        for _ in 0..(offset_within_mini_stream / sector_len) {
+            debug_assert_ne!(mini_stream_sector, END_OF_CHAIN);
+            mini_stream_sector = self.fat[mini_stream_sector as usize];
+        }
+        let offset_within_sector = offset_within_mini_stream % sector_len;
+        self.seek_within_sector(mini_stream_sector, offset_within_sector)
     }
 
     fn seek_within_dir_entry(&mut self, stream_id: u32,
@@ -226,7 +222,26 @@ impl<F: Seek> CompoundFile<F> {
         let offset_within_sector = index_within_sector * DIR_ENTRY_LEN +
                                    offset_within_dir_entry;
         let sector = self.directory[stream_id as usize].sector;
-        self.seek_within_sector(sector, offset_within_sector)
+        self.seek_within_sector(sector, offset_within_sector as u64)
+    }
+
+    /// Opens an existing stream in the compound file for reading and/or
+    /// writing (depending on what the underlying file supports).
+    pub fn open_stream<P: AsRef<Path>>(&mut self, path: P)
+                                       -> io::Result<Stream<F>> {
+        self.open_stream_for_path(path.as_ref())
+    }
+
+    fn open_stream_for_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
+        let stream_id = self.stream_id_for_path(path)?;
+        let (stream_len, start_sector) = {
+            let dir_entry = &self.directory[stream_id as usize];
+            if dir_entry.obj_type != OBJ_TYPE_STREAM {
+                invalid_input!("not a stream: {:?}", path);
+            }
+            (dir_entry.stream_len, dir_entry.start_sector)
+        };
+        Stream::new(self, stream_len, start_sector)
     }
 }
 
@@ -254,26 +269,45 @@ impl<F: Read + Seek> CompoundFile<F> {
         }
         let sector_shift = inner.read_u16::<LittleEndian>()?;
         if sector_shift != version.sector_shift() {
-            invalid_data!("Incorrect sector shift ({}) for CFB version {}",
+            invalid_data!("Incorrect sector shift for CFB version {} \
+                           (is {}, but must be {})",
+                          version.number(),
                           sector_shift,
-                          version.number());
+                          version.sector_shift());
         }
         let sector_len = version.sector_len();
+        let mini_sector_shift = inner.read_u16::<LittleEndian>()?;
+        if mini_sector_shift != MINI_SECTOR_SHIFT {
+            invalid_data!("Incorrect mini sector shift \
+                           (is {}, but must be {})",
+                          mini_sector_shift,
+                          MINI_SECTOR_SHIFT);
+        }
         inner.seek(SeekFrom::Start(44))?;
         let num_fat_sectors = inner.read_u32::<LittleEndian>()?;
         let first_dir_sector = inner.read_u32::<LittleEndian>()?;
+        let _transaction_signature = inner.read_u32::<LittleEndian>()?;
+        let mini_stream_cutoff = inner.read_u32::<LittleEndian>()?;
+        if mini_stream_cutoff != MINI_STREAM_CUTOFF {
+            invalid_data!("Invalid mini stream cutoff value \
+                           (is {}, but must be {})",
+                          mini_stream_cutoff,
+                          MINI_STREAM_CUTOFF);
+        }
+        let first_minifat_sector = inner.read_u32::<LittleEndian>()?;
+        let num_minifat_sectors = inner.read_u32::<LittleEndian>()?;
+        let first_difat_sector = inner.read_u32::<LittleEndian>()?;
+        let num_difat_sectors = inner.read_u32::<LittleEndian>()?;
         let mut comp = CompoundFile {
             inner: inner,
             version: version,
             difat: Vec::new(),
             fat: Vec::new(),
+            minifat: Vec::new(),
             directory: Vec::new(),
         };
 
         // Read in DIFAT.
-        comp.inner.seek(SeekFrom::Start(68))?;
-        let first_difat_sector = comp.inner.read_u32::<LittleEndian>()?;
-        let num_difat_sectors = comp.inner.read_u32::<LittleEndian>()?;
         for _ in 0..109 {
             let next = comp.inner.read_u32::<LittleEndian>()?;
             if next == FREE_SECTOR {
@@ -325,6 +359,27 @@ impl<F: Read + Seek> CompoundFile<F> {
             comp.fat.pop();
         }
 
+        // Read in MiniFAT.
+        let mut minifat_sectors = Vec::new();
+        let mut current_minifat_sector = first_minifat_sector;
+        while current_minifat_sector != END_OF_CHAIN {
+            minifat_sectors.push(current_minifat_sector);
+            comp.seek_to_sector(current_minifat_sector)?;
+            for _ in 0..(sector_len / 4) {
+                comp.minifat.push(comp.inner.read_u32::<LittleEndian>()?);
+            }
+            current_minifat_sector = comp.fat[current_minifat_sector as usize];
+        }
+        if num_minifat_sectors as usize != minifat_sectors.len() {
+            invalid_data!("Incorrect MiniFAT chain length \
+                           (header says {}, actual is {})",
+                          num_minifat_sectors,
+                          minifat_sectors.len());
+        }
+        while comp.minifat.last() == Some(&FREE_SECTOR) {
+            comp.minifat.pop();
+        }
+
         // Read in directory.
         let mut current_dir_sector = first_dir_sector;
         while current_dir_sector != END_OF_CHAIN {
@@ -336,8 +391,6 @@ impl<F: Read + Seek> CompoundFile<F> {
             }
             current_dir_sector = comp.fat[current_dir_sector as usize];
         }
-
-        // TODO: Read in MiniFAT.
 
         Ok(comp)
     }
@@ -367,7 +420,7 @@ impl<F: Write + Seek> CompoundFile<F> {
         inner.write_u32::<LittleEndian>(1)?; // num FAT sectors
         inner.write_u32::<LittleEndian>(1)?; // first dir sector
         inner.write_u32::<LittleEndian>(0)?; // transaction signature (unused)
-        inner.write_u32::<LittleEndian>(MINI_STREAM_MAX_LEN)?;
+        inner.write_u32::<LittleEndian>(MINI_STREAM_CUTOFF)?;
         inner.write_u32::<LittleEndian>(END_OF_CHAIN)?; // first MiniFAT sector
         inner.write_u32::<LittleEndian>(0)?; // num MiniFAT sectors
         inner.write_u32::<LittleEndian>(END_OF_CHAIN)?; // first DIFAT sector
@@ -403,7 +456,7 @@ impl<F: Write + Seek> CompoundFile<F> {
             child: NO_STREAM,
             creation_time: 0,
             modified_time: 0,
-            start_sector: END_OF_CHAIN, // TODO: mini stream
+            start_sector: END_OF_CHAIN,
             stream_len: 0,
         };
         root_dir_entry.write(&mut inner)?;
@@ -414,8 +467,9 @@ impl<F: Write + Seek> CompoundFile<F> {
         Ok(CompoundFile {
             inner: inner,
             version: version,
-            difat: Vec::new(),
+            difat: vec![0],
             fat: fat,
+            minifat: vec![],
             directory: vec![root_dir_entry],
         })
     }
@@ -603,6 +657,7 @@ impl StorageEntry {
     }
 
     // TODO: CLSID
+    // TODO: state bits
 }
 
 // ========================================================================= //
@@ -698,7 +753,7 @@ impl<'a, F: Write + Seek> Storage<'a, F> {
         let offset = ((self.stream_id as usize) %
                       (self.comp.version.sector_len() / DIR_ENTRY_LEN)) *
                      DIR_ENTRY_LEN;
-        self.comp.seek_within_sector(sector, offset)?;
+        self.comp.seek_within_sector(sector, offset as u64)?;
         for &chr in name_utf16.iter() {
             self.comp.inner.write_u16::<LittleEndian>(chr)?;
         }
@@ -728,6 +783,38 @@ pub struct Stream<'a, F: 'a> {
 impl<'a, F> Stream<'a, F> {
     /// Returns the current length of the stream, in bytes.
     pub fn len(&self) -> u64 { self.total_len }
+
+    fn is_in_mini_stream(&self) -> bool {
+        self.total_len < MINI_STREAM_CUTOFF as u64
+    }
+
+    fn sector_len(&self) -> usize {
+        if self.is_in_mini_stream() {
+            MINI_SECTOR_LEN
+        } else {
+            self.comp.version.sector_len()
+        }
+    }
+}
+
+impl<'a, F: Seek> Stream<'a, F> {
+    fn new(comp: &'a mut CompoundFile<F>, stream_len: u64, start_sector: u32)
+           -> io::Result<Stream<'a, F>> {
+        let stream = Stream {
+            comp: comp,
+            total_len: stream_len,
+            offset_from_start: 0,
+            offset_within_sector: 0,
+            start_sector: start_sector,
+            current_sector: start_sector,
+        };
+        if stream.is_in_mini_stream() {
+            stream.comp.seek_to_mini_sector(start_sector)?;
+        } else {
+            stream.comp.seek_to_sector(start_sector)?;
+        }
+        Ok(stream)
+    }
 }
 
 impl<'a, F: Seek> Seek for Stream<'a, F> {
@@ -745,14 +832,23 @@ impl<'a, F: Seek> Seek for Stream<'a, F> {
             let old_pos = self.offset_from_start as u64;
             let new_pos = new_pos as u64;
             if new_pos != self.offset_from_start {
-                let sector_len = self.comp.version.sector_len() as u64;
+                let is_mini = self.is_in_mini_stream();
+                let sector_len = self.sector_len() as u64;
                 let mut offset = new_pos;
                 let mut sector = self.start_sector;
                 while offset >= sector_len {
-                    sector = self.comp.fat[sector as usize];
+                    sector = if is_mini {
+                        self.comp.minifat[sector as usize]
+                    } else {
+                        self.comp.fat[sector as usize]
+                    };
                     offset -= sector_len;
                 }
-                self.comp.seek_within_sector(sector, offset as usize)?;
+                if is_mini {
+                    self.comp.seek_within_mini_sector(sector, offset)?;
+                } else {
+                    self.comp.seek_within_sector(sector, offset)?;
+                }
                 self.current_sector = sector;
                 self.offset_within_sector = offset as usize;
                 self.offset_from_start = new_pos;
@@ -766,7 +862,7 @@ impl<'a, F: Read + Seek> Read for Stream<'a, F> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         debug_assert!(self.offset_from_start <= self.total_len);
         let remaining_in_file = self.total_len - self.offset_from_start;
-        let sector_len = self.comp.version.sector_len();
+        let sector_len = self.sector_len();
         debug_assert!(self.offset_within_sector < sector_len);
         let remaining_in_sector = sector_len - self.offset_within_sector;
         let max_len = cmp::min(buf.len() as u64,
@@ -783,9 +879,16 @@ impl<'a, F: Read + Seek> Read for Stream<'a, F> {
         debug_assert!(self.offset_within_sector <= sector_len);
         if self.offset_within_sector == sector_len {
             self.offset_within_sector = 0;
-            self.current_sector = self.comp.fat[self.current_sector as usize];
+            let is_mini = self.is_in_mini_stream();
+            self.current_sector = if is_mini {
+                self.comp.minifat[self.current_sector as usize]
+            } else {
+                self.comp.fat[self.current_sector as usize]
+            };
             if self.current_sector == END_OF_CHAIN {
                 debug_assert!(self.offset_from_start == self.total_len);
+            } else if is_mini {
+                self.comp.seek_to_mini_sector(self.current_sector)?;
             } else {
                 self.comp.seek_to_sector(self.current_sector)?;
             }
