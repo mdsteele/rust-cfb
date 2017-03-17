@@ -12,7 +12,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::{self, Ordering};
 use std::collections::HashSet;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[macro_use]
@@ -40,7 +40,6 @@ const FREE_SECTOR: u32 = 0xffffffff;
 
 // Constants for directory entries:
 const ROOT_DIR_NAME: &'static str = "Root Entry";
-const DIR_NAME_MAX_LEN: usize = 31;
 const OBJ_TYPE_UNALLOCATED: u8 = 0;
 const OBJ_TYPE_STORAGE: u8 = 1;
 const OBJ_TYPE_STREAM: u8 = 2;
@@ -80,25 +79,7 @@ impl<F> CompoundFile<F> {
     }
 
     fn stream_id_for_path(&self, path: &Path) -> io::Result<u32> {
-        let mut names: Vec<String> = Vec::new();
-        for component in path.components() {
-            match component {
-                Component::Prefix(_) => invalid_input!("Invalid path"),
-                Component::RootDir => names.clear(),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    if names.pop().is_none() {
-                        invalid_input!("Invalid path");
-                    }
-                }
-                Component::Normal(osstr) => {
-                    match osstr.to_str() {
-                        Some(name) => names.push(name.to_string()),
-                        None => invalid_input!("Non UTF-8 path"),
-                    }
-                }
-            }
-        }
+        let names = internal::path::name_chain_from_path(path)?;
         let mut stream_id = ROOT_STREAM_ID;
         for name in names.into_iter() {
             stream_id = self.directory[stream_id as usize].child;
@@ -107,7 +88,7 @@ impl<F> CompoundFile<F> {
                     not_found!("No such object: {:?}", path);
                 }
                 let dir_entry = &self.directory[stream_id as usize];
-                match compare_names(&name, &dir_entry.name) {
+                match internal::path::compare_names(&name, &dir_entry.name) {
                     Ordering::Equal => break,
                     Ordering::Less => stream_id = dir_entry.left_sibling,
                     Ordering::Greater => stream_id = dir_entry.right_sibling,
@@ -139,7 +120,7 @@ impl<F> CompoundFile<F> {
         let stream_id = self.stream_id_for_path(path)?;
         Ok(ReadStorage {
             directory: &self.directory,
-            path: path.to_path_buf(), // TODO: canonicalize path
+            path: internal::path::canonicalize_path(path)?,
             stack: Vec::new(),
             current: self.directory[stream_id as usize].child,
         })
@@ -247,7 +228,8 @@ impl<F> CompoundFile<F> {
                     invalid_data!("Malformed directory (sibling index)");
                 }
                 let entry = &self.directory[left_sibling as usize];
-                if compare_names(&dir_entry.name, &entry.name) !=
+                if internal::path::compare_names(&dir_entry.name,
+                                                 &entry.name) !=
                    Ordering::Less {
                     invalid_data!("Malformed directory (name ordering)");
                 }
@@ -259,7 +241,8 @@ impl<F> CompoundFile<F> {
                     invalid_data!("Malformed directory (sibling index)");
                 }
                 let entry = &self.directory[right_sibling as usize];
-                if compare_names(&dir_entry.name, &entry.name) !=
+                if internal::path::compare_names(&dir_entry.name,
+                                                 &entry.name) !=
                    Ordering::Less {
                     invalid_data!("Malformed directory (name ordering)");
                 }
@@ -831,7 +814,7 @@ impl DirEntry {
             }
             String::from_utf16_lossy(&name_chars[0..name_len_chars])
         };
-        validate_name(&name)?;
+        internal::path::validate_name(&name)?;
         let obj_type = reader.read_u8()?;
         let color = reader.read_u8()?;
         if color != COLOR_RED && color != COLOR_BLACK {
@@ -876,8 +859,9 @@ impl DirEntry {
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        debug_assert!(internal::path::validate_name(&self.name).is_ok());
         let name_utf16: Vec<u16> = self.name.encode_utf16().collect();
-        debug_assert!(name_utf16.len() <= DIR_NAME_MAX_LEN);
+        debug_assert!(name_utf16.len() < 32);
         for &chr in name_utf16.iter() {
             writer.write_u16::<LittleEndian>(chr)?;
         }
@@ -1297,60 +1281,10 @@ impl Version {
 
 // ========================================================================= //
 
-/// Compares two directory entry names according to CFB ordering, which is
-/// case-insensitive, and which always puts shorter names before longer names,
-/// as encoded in UTF-16 (i.e. [shortlex
-/// order](https://en.wikipedia.org/wiki/Shortlex_order), rather than
-/// dictionary order).
-fn compare_names(name1: &str, name2: &str) -> Ordering {
-    match name1.encode_utf16().count().cmp(&name2.encode_utf16().count()) {
-        // This is actually not 100% correct -- the MS-CFB spec specifies a
-        // particular way of doing the uppercasing on individual UTF-16 code
-        // units, along with a list of weird exceptions and corner cases.  But
-        // hopefully this is good enough for 99+% of the time.
-        Ordering::Equal => name1.to_uppercase().cmp(&name2.to_uppercase()),
-        other => other,
-    }
-}
-
-/// Converts a storage/stream name to UTF-16, or returns an error if the name
-/// is invalid.
-fn validate_name(name: &str) -> io::Result<Vec<u16>> {
-    let name_utf16: Vec<u16> =
-        name.encode_utf16().take(DIR_NAME_MAX_LEN + 1).collect();
-    if name_utf16.len() > DIR_NAME_MAX_LEN {
-        invalid_input!("Object name cannot be more than {} UTF-16 code units \
-                        (was {})",
-                       DIR_NAME_MAX_LEN,
-                       name.encode_utf16().count());
-    }
-    for &chr in &['/', '\\', ':', '!'] {
-        if name.contains(chr) {
-            invalid_input!("Object name cannot contain {} character", chr);
-        }
-    }
-    Ok(name_utf16)
-}
-
-// ========================================================================= //
-
 #[cfg(test)]
 mod tests {
-    use super::{CompoundFile, ROOT_DIR_NAME, Version, compare_names,
-                validate_name};
-    use std::cmp::Ordering;
+    use super::{CompoundFile, ROOT_DIR_NAME, Version};
     use std::io::Cursor;
-
-    #[test]
-    fn name_ordering() {
-        assert_eq!(compare_names("foobar", "FOOBAR"), Ordering::Equal);
-        assert_eq!(compare_names("foo", "barfoo"), Ordering::Less);
-        assert_eq!(compare_names("Foo", "bar"), Ordering::Greater);
-    }
-
-    #[test]
-    #[should_panic(expected = "Object name cannot contain / character")]
-    fn name_with_slash_is_invalid() { validate_name("foo/bar").unwrap(); }
 
     #[test]
     #[should_panic(expected = "Invalid CFB file (wrong magic number)")]
