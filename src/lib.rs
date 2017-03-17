@@ -11,31 +11,12 @@ extern crate byteorder;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::{self, Ordering};
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::{Component, Path, PathBuf};
+use std::time::SystemTime;
 
-// ========================================================================= //
-
-macro_rules! invalid_data {
-    ($e:expr) => {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, $e));
-    };
-    ($fmt:expr, $($arg:tt)+) => {
-        return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                  format!($fmt, $($arg)+)));
-    };
-}
-
-macro_rules! invalid_input {
-    ($e:expr) => {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, $e));
-    };
-    ($fmt:expr, $($arg:tt)+) => {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                                  format!($fmt, $($arg)+)));
-    };
-}
+#[macro_use]
+mod internal;
 
 // ========================================================================= //
 
@@ -123,8 +104,7 @@ impl<F> CompoundFile<F> {
             stream_id = self.directory[stream_id as usize].child;
             loop {
                 if stream_id == NO_STREAM {
-                    // TODO: make this a NotFound error
-                    invalid_input!("not found");
+                    not_found!("No such object: {:?}", path);
                 }
                 let dir_entry = &self.directory[stream_id as usize];
                 match compare_names(&name, &dir_entry.name) {
@@ -605,7 +585,7 @@ impl<F: Write + Seek> CompoundFile<F> {
             debug_assert_ne!(self.directory[stream_id as usize].obj_type,
                              OBJ_TYPE_ROOT);
             self.seek_within_dir_entry(stream_id, 108)?;
-            let now = current_timestamp();
+            let now = internal::time::current_timestamp();
             self.inner.write_u64::<LittleEndian>(now)?;
             self.directory[stream_id as usize].modified_time = now;
         }
@@ -979,13 +959,13 @@ impl StorageEntry {
     /// Returns the time when the object that this entry represents was
     /// created.
     pub fn created(&self) -> SystemTime {
-        system_time_from_timestamp(self.creation_time)
+        internal::time::system_time_from_timestamp(self.creation_time)
     }
 
     /// Returns the time when the object that this entry represents was last
     /// modified.
     pub fn modified(&self) -> SystemTime {
-        system_time_from_timestamp(self.modified_time)
+        internal::time::system_time_from_timestamp(self.modified_time)
     }
 
     // TODO: CLSID
@@ -1265,7 +1245,7 @@ impl<F: Write + Seek> Finish<F> for UpdateDirEntry {
     fn finish(&self, comp: &mut CompoundFile<F>) -> io::Result<()> {
         comp.seek_within_dir_entry(self.stream_id, 0)?;
         let dir_entry = &mut comp.directory[self.stream_id as usize];
-        dir_entry.modified_time = current_timestamp();
+        dir_entry.modified_time = internal::time::current_timestamp();
         dir_entry.write(&mut comp.inner)?;
         Ok(())
     }
@@ -1354,38 +1334,12 @@ fn validate_name(name: &str) -> io::Result<Vec<u16>> {
 
 // ========================================================================= //
 
-/// Returns the current time as a CFB file timestamp (the number of
-/// 100-nanosecond intervals since January 1, 1601 UTC).
-fn current_timestamp() -> u64 {
-    match SystemTime::now().duration_since(epoch()) {
-        Ok(delta) => {
-            delta.as_secs() * 10_000_000 + (delta.subsec_nanos() / 100) as u64
-        }
-        Err(_) => 0,
-    }
-}
-
-/// Converts a CFB file timestamp to a local `SystemTime`.
-fn system_time_from_timestamp(timestamp: u64) -> SystemTime {
-    let delta = Duration::new(timestamp / 10_000_000,
-                              (timestamp % 10_000_000) as u32 * 100);
-    epoch() + delta
-}
-
-fn epoch() -> SystemTime {
-    // The epoch used by CFB files is Jan 1, 1601 UTC, which we can calculate
-    // from the Unix epoch constant, which is Jan 1, 1970 UTC.
-    UNIX_EPOCH - Duration::from_secs(11644473600)
-}
-
-// ========================================================================= //
-
 #[cfg(test)]
 mod tests {
-    use std::cmp::Ordering;
-    use std::io::Cursor;
     use super::{CompoundFile, ROOT_DIR_NAME, Version, compare_names,
                 validate_name};
+    use std::cmp::Ordering;
+    use std::io::Cursor;
 
     #[test]
     fn name_ordering() {

@@ -2,5 +2,6 @@ fn_args_density = "Compressed"
 fn_single_line = true
 format_strings = false
 max_width = 79
+reorder_imports = true
 reorder_imported_names = true
 report_fixme = "Always"
