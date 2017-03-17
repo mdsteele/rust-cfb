@@ -196,6 +196,11 @@ impl<F> CompoundFile<F> {
     }
 
     fn validate_directory(&self) -> io::Result<()> {
+        // Note: The MS-CFB spec says that root entries MUST be colored black,
+        // but apparently some implementations don't actually do this (see
+        // https://social.msdn.microsoft.com/Forums/sqlserver/en-US/
+        // 9290d877-d91f-4509-ace9-cb4575c48514/red-black-tree-in-mscfb).  So
+        // we don't complain if the root is red.
         let root_entry = self.root_dir_entry();
         if root_entry.name != ROOT_DIR_NAME {
             invalid_data!("Malformed directory (root name)");
@@ -215,25 +220,32 @@ impl<F> CompoundFile<F> {
                           MINI_SECTOR_LEN);
         }
         let mut visited = HashSet::new();
-        let mut stack = vec![ROOT_STREAM_ID];
-        while let Some(stream_id) = stack.pop() {
+        let mut stack = vec![(ROOT_STREAM_ID, false)];
+        while let Some((stream_id, parent_is_red)) = stack.pop() {
             if visited.contains(&stream_id) {
                 invalid_data!("Malformed directory (loop in tree)");
             }
             visited.insert(stream_id);
             let dir_entry = &self.directory[stream_id as usize];
+            let node_is_red = dir_entry.color == COLOR_RED;
+            if parent_is_red && node_is_red {
+                invalid_data!("Malformed directory (two red nodes in a row)");
+            }
             let left_sibling = dir_entry.left_sibling;
             if left_sibling != NO_STREAM {
                 if left_sibling as usize >= self.directory.len() {
                     invalid_data!("Malformed directory (sibling index)");
                 }
                 let entry = &self.directory[left_sibling as usize];
-                if internal::path::compare_names(&dir_entry.name,
-                                                 &entry.name) !=
+                if internal::path::compare_names(&entry.name,
+                                                 &dir_entry.name) !=
                    Ordering::Less {
-                    invalid_data!("Malformed directory (name ordering)");
+                    invalid_data!("Malformed directory (name ordering, \
+                                   {:?} vs {:?})",
+                                  &dir_entry.name,
+                                  &entry.name);
                 }
-                stack.push(left_sibling);
+                stack.push((left_sibling, node_is_red));
             }
             let right_sibling = dir_entry.right_sibling;
             if right_sibling != NO_STREAM {
@@ -244,18 +256,19 @@ impl<F> CompoundFile<F> {
                 if internal::path::compare_names(&dir_entry.name,
                                                  &entry.name) !=
                    Ordering::Less {
-                    invalid_data!("Malformed directory (name ordering)");
+                    invalid_data!("Malformed directory (name ordering, \
+                                   {:?} vs {:?})",
+                                  &dir_entry.name,
+                                  &entry.name);
                 }
-                stack.push(right_sibling);
+                stack.push((right_sibling, node_is_red));
             }
-            if dir_entry.obj_type != OBJ_TYPE_ROOT {
-                let child = dir_entry.child;
-                if child != NO_STREAM {
-                    if child as usize >= self.directory.len() {
-                        invalid_data!("Malformed directory (child index)");
-                    }
-                    stack.push(child);
+            let child = dir_entry.child;
+            if child != NO_STREAM {
+                if child as usize >= self.directory.len() {
+                    invalid_data!("Malformed directory (child index)");
                 }
+                stack.push((child, false));
             }
         }
         Ok(())
