@@ -21,9 +21,9 @@ fn main() {
         }
         if entry.is_stream() {
             let mut stream = comp.open_stream(entry.path()).unwrap();
+            debug_assert_eq!(stream.len(), entry.len());
             let mut data = Vec::new();
             stream.read_to_end(&mut data).unwrap();
-            println!("    {:?}", &data);
             debug_assert_eq!(data.len() as u64, entry.len());
         }
     }
