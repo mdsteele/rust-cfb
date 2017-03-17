@@ -300,8 +300,12 @@ impl<F: Seek> CompoundFile<F> {
         let index_within_sector = stream_id as usize % dir_entries_per_sector;
         let offset_within_sector = index_within_sector * DIR_ENTRY_LEN +
                                    offset_within_dir_entry;
-        let sector = self.directory[stream_id as usize].sector;
-        self.seek_within_sector(sector, offset_within_sector as u64)
+        let mut directory_sector = self.directory_start_sector;
+        for _ in 0..(stream_id as usize / dir_entries_per_sector) {
+            debug_assert_ne!(directory_sector, END_OF_CHAIN);
+            directory_sector = self.fat[directory_sector as usize];
+        }
+        self.seek_within_sector(directory_sector, offset_within_sector as u64)
     }
 
     /// Opens an existing stream in the compound file for reading and/or
@@ -464,9 +468,7 @@ impl<F: Read + Seek> CompoundFile<F> {
         while current_dir_sector != END_OF_CHAIN {
             comp.seek_to_sector(current_dir_sector)?;
             for _ in 0..(sector_len / DIR_ENTRY_LEN) {
-                comp.directory.push(DirEntry::read(&mut comp.inner,
-                                                   current_dir_sector,
-                                                   version)?);
+                comp.directory.push(DirEntry::read(&mut comp.inner, version)?);
             }
             current_dir_sector = comp.fat[current_dir_sector as usize];
         }
@@ -527,7 +529,6 @@ impl<F: Write + Seek> CompoundFile<F> {
 
         // Write directory sector:
         let root_dir_entry = DirEntry {
-            sector: 1,
             name: ROOT_DIR_NAME.to_string(),
             obj_type: OBJ_TYPE_ROOT,
             color: COLOR_BLACK,
@@ -541,7 +542,7 @@ impl<F: Write + Seek> CompoundFile<F> {
         };
         root_dir_entry.write(&mut inner)?;
         for _ in 1..(sector_len / DIR_ENTRY_LEN) {
-            DirEntry::write_unallacated(&mut inner)?;
+            DirEntry::unallocated().write(&mut inner)?;
         }
 
         Ok(CompoundFile {
@@ -777,7 +778,6 @@ impl<F: Write + Seek> CompoundFile<F> {
 // ========================================================================= //
 
 struct DirEntry {
-    sector: u32,
     name: String,
     obj_type: u8,
     color: u8,
@@ -791,7 +791,23 @@ struct DirEntry {
 }
 
 impl DirEntry {
-    fn read<R: Read>(reader: &mut R, sector: u32, version: Version)
+    fn unallocated() -> DirEntry {
+        DirEntry {
+            name: String::new(),
+            obj_type: OBJ_TYPE_UNALLOCATED,
+            // Values of fields below don't really matter:
+            color: 0,
+            left_sibling: 0,
+            right_sibling: 0,
+            child: 0,
+            creation_time: 0,
+            modified_time: 0,
+            start_sector: 0,
+            stream_len: 0,
+        }
+    }
+
+    fn read<R: Read>(reader: &mut R, version: Version)
                      -> io::Result<DirEntry> {
         let name: String = {
             let mut name_chars: Vec<u16> = Vec::with_capacity(32);
@@ -844,7 +860,6 @@ impl DirEntry {
         let stream_len = reader.read_u64::<LittleEndian>()? &
                          version.stream_len_mask();
         Ok(DirEntry {
-            sector: sector,
             name: name,
             obj_type: obj_type,
             color: color,
@@ -880,14 +895,6 @@ impl DirEntry {
         writer.write_u64::<LittleEndian>(self.modified_time)?;
         writer.write_u32::<LittleEndian>(self.start_sector)?;
         writer.write_u64::<LittleEndian>(self.stream_len)?;
-        Ok(())
-    }
-
-    fn write_unallacated<W: Write>(writer: &mut W) -> io::Result<()> {
-        writer.write_all(&[0; 64])?; // name
-        writer.write_u16::<LittleEndian>(0)?; // name length
-        writer.write_u8(OBJ_TYPE_UNALLOCATED)?;
-        writer.write_all(&[0; 61])?; // other fields don't matter
         Ok(())
     }
 }
