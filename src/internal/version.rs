@@ -38,6 +38,12 @@ impl Version {
     }
 
     /// Returns the length of sectors used in this version.
+    ///
+    /// ```
+    /// use cfb::Version;
+    /// assert_eq!(Version::V3.sector_len(), 512);
+    /// assert_eq!(Version::V4.sector_len(), 4096);
+    /// ```
     pub fn sector_len(self) -> usize { 1 << (self.sector_shift() as usize) }
 
     /// Returns the bitmask used for reading stream lengths in this version.
@@ -51,6 +57,20 @@ impl Version {
     /// Returns the number of directory entries per sector in this version.
     pub fn dir_entries_per_sector(self) -> usize {
         self.sector_len() / consts::DIR_ENTRY_LEN
+    }
+}
+
+// ========================================================================= //
+
+#[cfg(test)]
+mod tests {
+    use super::Version;
+
+    #[test]
+    fn number_round_trip() {
+        for &version in &[Version::V3, Version::V4] {
+            assert_eq!(Version::from_number(version.number()), Some(version));
+        }
     }
 }
 

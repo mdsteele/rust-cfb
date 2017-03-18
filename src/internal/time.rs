@@ -27,3 +27,19 @@ fn epoch() -> SystemTime {
 }
 
 // ========================================================================= //
+
+#[cfg(test)]
+mod tests {
+    use super::system_time_from_timestamp;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn system_time() {
+        let sat_18_mar_2017_at_18_46_36_gmt = UNIX_EPOCH +
+                                              Duration::from_secs(1489862796);
+        assert_eq!(system_time_from_timestamp(131343363960000000),
+                   sat_18_mar_2017_at_18_46_36_gmt);
+    }
+}
+
+// ========================================================================= //

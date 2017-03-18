@@ -35,11 +35,10 @@ impl DirEntry {
         DirEntry {
             name: String::new(),
             obj_type: consts::OBJ_TYPE_UNALLOCATED,
-            // Values of fields below don't really matter:
             color: 0,
-            left_sibling: 0,
-            right_sibling: 0,
-            child: 0,
+            left_sibling: NO_STREAM,
+            right_sibling: NO_STREAM,
+            child: NO_STREAM,
             clsid: consts::NULL_CLSID,
             state_bits: 0,
             creation_time: 0,
