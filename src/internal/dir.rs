@@ -1,8 +1,17 @@
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use internal;
+use internal::{self, Version};
 use internal::consts::{self, MAX_REGULAR_STREAM_ID, NO_STREAM};
-use internal::version::Version;
 use std::io::{self, Read, Write};
+
+// ========================================================================= //
+
+macro_rules! malformed {
+    ($e:expr) => { invalid_data!("Malformed directory entry ({})", $e) };
+    ($fmt:expr, $($arg:tt)+) => {
+        invalid_data!("Malformed directory entry ({})",
+                      format!($fmt, $($arg)+))
+    };
+}
 
 // ========================================================================= //
 
@@ -48,9 +57,10 @@ impl DirEntry {
                 name_chars.push(reader.read_u16::<LittleEndian>()?);
             }
             let name_len_bytes = reader.read_u16::<LittleEndian>()?;
-            if name_len_bytes > 64 || name_len_bytes % 2 != 0 {
-                invalid_data!("Invalid name length ({}) in directory entry",
-                              name_len_bytes);
+            if name_len_bytes > 64 {
+                malformed!("name length too large: {}", name_len_bytes);
+            } else if name_len_bytes % 2 != 0 {
+                malformed!("odd name length: {}", name_len_bytes);
             }
             let name_len_chars = if name_len_bytes > 0 {
                 (name_len_bytes / 2 - 1) as usize
@@ -59,43 +69,59 @@ impl DirEntry {
             };
             debug_assert!(name_len_chars < name_chars.len());
             if name_chars[name_len_chars] != 0 {
-                invalid_data!("Directory entry name must be null-terminated");
+                malformed!("name not null-terminated");
             }
-            String::from_utf16_lossy(&name_chars[0..name_len_chars])
+            match String::from_utf16(&name_chars[0..name_len_chars]) {
+                Ok(name) => name,
+                Err(_) => malformed!("name not valid UTF-16"),
+            }
         };
         internal::path::validate_name(&name)?;
         let obj_type = reader.read_u8()?;
+        if obj_type != consts::OBJ_TYPE_UNALLOCATED &&
+           obj_type != consts::OBJ_TYPE_STORAGE &&
+           obj_type != consts::OBJ_TYPE_STREAM &&
+           obj_type != consts::OBJ_TYPE_ROOT {
+            malformed!("invalid object type: {}", obj_type);
+        }
         let color = reader.read_u8()?;
         if color != consts::COLOR_RED && color != consts::COLOR_BLACK {
-            invalid_data!("Invalid color in directory entry ({})", color);
+            malformed!("invalid color: {}", color);
         }
         let left_sibling = reader.read_u32::<LittleEndian>()?;
         if left_sibling != NO_STREAM && left_sibling > MAX_REGULAR_STREAM_ID {
-            invalid_data!("Invalid left sibling in directory entry ({})",
-                          left_sibling);
+            malformed!("invalid left sibling: {}", left_sibling);
         }
         let right_sibling = reader.read_u32::<LittleEndian>()?;
         if right_sibling != NO_STREAM &&
            right_sibling > MAX_REGULAR_STREAM_ID {
-            invalid_data!("Invalid right sibling in directory entry ({})",
-                          right_sibling);
+            malformed!("invalid right sibling: {}", right_sibling);
         }
         let child = reader.read_u32::<LittleEndian>()?;
-        if child != NO_STREAM && child > MAX_REGULAR_STREAM_ID {
-            invalid_data!("Invalid child in directory entry ({})", child);
+        if child != NO_STREAM {
+            if obj_type == consts::OBJ_TYPE_STREAM {
+                malformed!("non-empty stream child: {}", child);
+            } else if child > MAX_REGULAR_STREAM_ID {
+                malformed!("invalid child: {}", child);
+            }
         }
         let mut clsid = consts::NULL_CLSID;
         reader.read_exact(&mut clsid)?;
         if obj_type == consts::OBJ_TYPE_STREAM && clsid != consts::NULL_CLSID {
-            invalid_data!("Invalid stream CLSID in directory entry ({:?})",
-                          clsid);
+            malformed!("non-null stream CLSID: {:?}", clsid);
         }
         let state_bits = reader.read_u32::<LittleEndian>()?;
         let creation_time = reader.read_u64::<LittleEndian>()?;
         let modified_time = reader.read_u64::<LittleEndian>()?;
         let start_sector = reader.read_u32::<LittleEndian>()?;
+        if obj_type == consts::OBJ_TYPE_STORAGE && start_sector != 0 {
+            malformed!("non-zero storage start sector: {}", start_sector);
+        }
         let stream_len = reader.read_u64::<LittleEndian>()? &
                          version.stream_len_mask();
+        if obj_type == consts::OBJ_TYPE_STORAGE && stream_len != 0 {
+            malformed!("non-zero storage stream length: {}", stream_len);
+        }
         Ok(DirEntry {
             name: name,
             obj_type: obj_type,
@@ -135,6 +161,103 @@ impl DirEntry {
         writer.write_u32::<LittleEndian>(self.start_sector)?;
         writer.write_u64::<LittleEndian>(self.stream_len)?;
         Ok(())
+    }
+}
+
+// ========================================================================= //
+
+#[cfg(test)]
+mod tests {
+    use super::DirEntry;
+    use internal::Version;
+    use internal::consts;
+
+    #[test]
+    fn parse_valid_storage_entry() {
+        let input: [u8; consts::DIR_ENTRY_LEN] = [
+            // Name:
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            14, 0, // name length
+            1, // obj type
+            1, // color,
+            12, 0, 0, 0, // left sibling
+            34, 0, 0, 0, // right sibling
+            56, 0, 0, 0, // child
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+            239, 190, 173, 222, // state bits
+            0, 0, 0, 0, 0, 0, 0, 0, // created
+            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            0, 0, 0, 0, // start sector
+            0, 0, 0, 0, 0, 0, 0, 0, // stream length
+        ];
+        let dir_entry = DirEntry::read(&mut (&input as &[u8]), Version::V4)
+            .unwrap();
+        assert_eq!(&dir_entry.name, "Foobar");
+        assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STORAGE);
+        assert_eq!(dir_entry.color, consts::COLOR_BLACK);
+        assert_eq!(dir_entry.left_sibling, 12);
+        assert_eq!(dir_entry.right_sibling, 34);
+        assert_eq!(dir_entry.child, 56);
+        assert_eq!(dir_entry.clsid, consts::NULL_CLSID);
+        assert_eq!(dir_entry.state_bits, 0xdeadbeef);
+        assert_eq!(dir_entry.creation_time, 0);
+        assert_eq!(dir_entry.modified_time, 0);
+        assert_eq!(dir_entry.start_sector, 0);
+        assert_eq!(dir_entry.stream_len, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Malformed directory entry \
+                               (invalid object type: 3)")]
+    fn invalid_object_type() {
+        let input: [u8; consts::DIR_ENTRY_LEN] = [
+            // Name:
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            14, 0, // name length
+            3, // obj type
+            1, // color,
+            12, 0, 0, 0, // left sibling
+            34, 0, 0, 0, // right sibling
+            56, 0, 0, 0, // child
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+            239, 190, 173, 222, // state bits
+            0, 0, 0, 0, 0, 0, 0, 0, // created
+            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            0, 0, 0, 0, // start sector
+            0, 0, 0, 0, 0, 0, 0, 0, // stream length
+        ];
+        DirEntry::read(&mut (&input as &[u8]), Version::V4).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Malformed directory entry (invalid color: 2)")]
+    fn invalid_color() {
+        let input: [u8; consts::DIR_ENTRY_LEN] = [
+            // Name:
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            14, 0, // name length
+            1, // obj type
+            2, // color,
+            12, 0, 0, 0, // left sibling
+            34, 0, 0, 0, // right sibling
+            56, 0, 0, 0, // child
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+            239, 190, 173, 222, // state bits
+            0, 0, 0, 0, 0, 0, 0, 0, // created
+            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            0, 0, 0, 0, // start sector
+            0, 0, 0, 0, 0, 0, 0, 0, // stream length
+        ];
+        DirEntry::read(&mut (&input as &[u8]), Version::V4).unwrap();
     }
 }
 

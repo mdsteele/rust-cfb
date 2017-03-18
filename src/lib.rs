@@ -841,6 +841,7 @@ impl<F: Write + Seek> CompoundFile<F> {
     /// entry.
     fn insert_dir_entry(&mut self, parent_id: u32, name: &str, obj_type: u8)
                         -> io::Result<u32> {
+        debug_assert_ne!(obj_type, consts::OBJ_TYPE_UNALLOCATED);
         // Create a new directory entry.
         let stream_id = self.allocate_dir_entry()?;
         let now = internal::time::current_timestamp();
@@ -855,7 +856,11 @@ impl<F: Write + Seek> CompoundFile<F> {
             state_bits: 0,
             creation_time: now,
             modified_time: now,
-            start_sector: END_OF_CHAIN,
+            start_sector: if obj_type == consts::OBJ_TYPE_STREAM {
+                END_OF_CHAIN
+            } else {
+                0
+            },
             stream_len: 0,
         };
 
