@@ -9,10 +9,9 @@
 extern crate byteorder;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+pub use internal::{Entries, Entry, Version};
+use internal::DirEntry;
 use internal::consts::{self, END_OF_CHAIN, FREE_SECTOR, NO_STREAM};
-use internal::dir::DirEntry;
-pub use internal::entry::{Entries, Entry};
-pub use internal::version::Version;
 use std::cmp::{self, Ordering};
 use std::collections::HashSet;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -96,7 +95,7 @@ impl<F> CompoundFile<F> {
     fn entry_for_path(&self, path: &Path) -> io::Result<Entry> {
         let stream_id = self.stream_id_for_path(path)?;
         let path = internal::path::canonicalize_path(path)?;
-        Ok(internal::entry::new_entry(self.dir_entry(stream_id), path))
+        Ok(internal::new_entry(self.dir_entry(stream_id), path))
     }
 
     /// Returns an iterator over the entries within a storage object.
@@ -109,7 +108,7 @@ impl<F> CompoundFile<F> {
         let stream_id = self.stream_id_for_path(path)?;
         let path = internal::path::canonicalize_path(path)?;
         let start = self.dir_entry(stream_id).child;
-        Ok(internal::entry::new_entries(&self.directory, path, start))
+        Ok(internal::new_entries(&self.directory, path, start))
     }
 
     // TODO: pub fn walk_storage
@@ -537,6 +536,7 @@ impl<F: Write + Seek> CompoundFile<F> {
             left_sibling: NO_STREAM,
             right_sibling: NO_STREAM,
             child: NO_STREAM,
+            state_bits: 0,
             creation_time: 0,
             modified_time: 0,
             start_sector: END_OF_CHAIN,
@@ -804,6 +804,7 @@ impl<F: Write + Seek> CompoundFile<F> {
             left_sibling: NO_STREAM,
             right_sibling: NO_STREAM,
             child: NO_STREAM,
+            state_bits: 0,
             creation_time: now,
             modified_time: now,
             start_sector: END_OF_CHAIN,

@@ -13,6 +13,7 @@ pub struct DirEntry {
     pub left_sibling: u32,
     pub right_sibling: u32,
     pub child: u32,
+    pub state_bits: u32,
     pub creation_time: u64,
     pub modified_time: u64,
     pub start_sector: u32,
@@ -29,6 +30,7 @@ impl DirEntry {
             left_sibling: 0,
             right_sibling: 0,
             child: 0,
+            state_bits: 0,
             creation_time: 0,
             modified_time: 0,
             start_sector: 0,
@@ -82,7 +84,7 @@ impl DirEntry {
         }
         let mut clsid = [0u8; 16];
         reader.read_exact(&mut clsid)?;
-        let _state_bits = reader.read_u32::<LittleEndian>()?;
+        let state_bits = reader.read_u32::<LittleEndian>()?;
         let creation_time = reader.read_u64::<LittleEndian>()?;
         let modified_time = reader.read_u64::<LittleEndian>()?;
         let start_sector = reader.read_u32::<LittleEndian>()?;
@@ -95,6 +97,7 @@ impl DirEntry {
             left_sibling: left_sibling,
             right_sibling: right_sibling,
             child: child,
+            state_bits: state_bits,
             creation_time: creation_time,
             modified_time: modified_time,
             start_sector: start_sector,
@@ -119,7 +122,7 @@ impl DirEntry {
         writer.write_u32::<LittleEndian>(self.right_sibling)?;
         writer.write_u32::<LittleEndian>(self.child)?;
         writer.write_all(&[0; 16])?; // TODO: CLSID
-        writer.write_u32::<LittleEndian>(0)?; // TODO: state bits
+        writer.write_u32::<LittleEndian>(self.state_bits)?;
         writer.write_u64::<LittleEndian>(self.creation_time)?;
         writer.write_u64::<LittleEndian>(self.modified_time)?;
         writer.write_u32::<LittleEndian>(self.start_sector)?;

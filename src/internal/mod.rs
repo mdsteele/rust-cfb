@@ -1,9 +1,13 @@
 #[macro_use]
-pub mod macros;
+mod macros;
 
 pub mod consts;
-pub mod dir;
-pub mod entry;
+mod dir;
+mod entry;
 pub mod path;
 pub mod time;
-pub mod version;
+mod version;
+
+pub use self::dir::DirEntry;
+pub use self::entry::{Entries, Entry, new_entries, new_entry};
+pub use self::version::Version;

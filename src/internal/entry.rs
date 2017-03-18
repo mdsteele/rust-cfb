@@ -1,6 +1,4 @@
-use internal;
-use internal::consts;
-use internal::dir::DirEntry;
+use internal::{self, DirEntry, consts};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -12,6 +10,7 @@ pub struct Entry {
     name: String,
     path: PathBuf,
     obj_type: u8,
+    state_bits: u32,
     creation_time: u64,
     modified_time: u64,
     stream_len: u64,
@@ -22,12 +21,12 @@ pub fn new_entry(dir_entry: &DirEntry, path: PathBuf) -> Entry {
         name: dir_entry.name.clone(),
         path: path,
         obj_type: dir_entry.obj_type,
+        state_bits: dir_entry.state_bits,
         creation_time: dir_entry.creation_time,
         modified_time: dir_entry.modified_time,
         stream_len: dir_entry.stream_len,
     }
 }
-
 
 impl Entry {
     /// Returns the name of the object that this entry represents.
@@ -56,6 +55,9 @@ impl Entry {
     /// Returns the size, in bytes, of the stream that this metadata is for.
     pub fn len(&self) -> u64 { self.stream_len }
 
+    /// Returns the user-defined bitflags set for this object.
+    pub fn state_bits(&self) -> u32 { self.state_bits }
+
     /// Returns the time when the object that this entry represents was
     /// created.
     pub fn created(&self) -> SystemTime {
@@ -69,7 +71,6 @@ impl Entry {
     }
 
     // TODO: CLSID
-    // TODO: state bits
 }
 
 // ========================================================================= //
