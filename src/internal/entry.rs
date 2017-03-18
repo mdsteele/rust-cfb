@@ -10,6 +10,7 @@ pub struct Entry {
     name: String,
     path: PathBuf,
     obj_type: u8,
+    clsid: [u8; 16],
     state_bits: u32,
     creation_time: u64,
     modified_time: u64,
@@ -21,6 +22,7 @@ pub fn new_entry(dir_entry: &DirEntry, path: PathBuf) -> Entry {
         name: dir_entry.name.clone(),
         path: path,
         obj_type: dir_entry.obj_type,
+        clsid: dir_entry.clsid,
         state_bits: dir_entry.state_bits,
         creation_time: dir_entry.creation_time,
         modified_time: dir_entry.modified_time,
@@ -55,6 +57,10 @@ impl Entry {
     /// Returns the size, in bytes, of the stream that this metadata is for.
     pub fn len(&self) -> u64 { self.stream_len }
 
+    /// Returns the CLSID (that is, the object class GUID) for this object.
+    /// This will always be all zeros for stream objects.
+    pub fn clsid(&self) -> &[u8; 16] { &self.clsid }
+
     /// Returns the user-defined bitflags set for this object.
     pub fn state_bits(&self) -> u32 { self.state_bits }
 
@@ -69,8 +75,6 @@ impl Entry {
     pub fn modified(&self) -> SystemTime {
         internal::time::system_time_from_timestamp(self.modified_time)
     }
-
-    // TODO: CLSID
 }
 
 // ========================================================================= //

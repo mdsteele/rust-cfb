@@ -13,6 +13,7 @@ pub struct DirEntry {
     pub left_sibling: u32,
     pub right_sibling: u32,
     pub child: u32,
+    pub clsid: [u8; 16],
     pub state_bits: u32,
     pub creation_time: u64,
     pub modified_time: u64,
@@ -30,6 +31,7 @@ impl DirEntry {
             left_sibling: 0,
             right_sibling: 0,
             child: 0,
+            clsid: consts::NULL_CLSID,
             state_bits: 0,
             creation_time: 0,
             modified_time: 0,
@@ -82,8 +84,12 @@ impl DirEntry {
         if child != NO_STREAM && child > MAX_REGULAR_STREAM_ID {
             invalid_data!("Invalid child in directory entry ({})", child);
         }
-        let mut clsid = [0u8; 16];
+        let mut clsid = consts::NULL_CLSID;
         reader.read_exact(&mut clsid)?;
+        if obj_type == consts::OBJ_TYPE_STREAM && clsid != consts::NULL_CLSID {
+            invalid_data!("Invalid stream CLSID in directory entry ({:?})",
+                          clsid);
+        }
         let state_bits = reader.read_u32::<LittleEndian>()?;
         let creation_time = reader.read_u64::<LittleEndian>()?;
         let modified_time = reader.read_u64::<LittleEndian>()?;
@@ -97,6 +103,7 @@ impl DirEntry {
             left_sibling: left_sibling,
             right_sibling: right_sibling,
             child: child,
+            clsid: clsid,
             state_bits: state_bits,
             creation_time: creation_time,
             modified_time: modified_time,
@@ -121,7 +128,7 @@ impl DirEntry {
         writer.write_u32::<LittleEndian>(self.left_sibling)?;
         writer.write_u32::<LittleEndian>(self.right_sibling)?;
         writer.write_u32::<LittleEndian>(self.child)?;
-        writer.write_all(&[0; 16])?; // TODO: CLSID
+        writer.write_all(&self.clsid)?;
         writer.write_u32::<LittleEndian>(self.state_bits)?;
         writer.write_u64::<LittleEndian>(self.creation_time)?;
         writer.write_u64::<LittleEndian>(self.modified_time)?;
