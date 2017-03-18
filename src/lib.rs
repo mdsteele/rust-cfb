@@ -11,12 +11,12 @@ extern crate byteorder;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use internal::consts::{self, END_OF_CHAIN, FREE_SECTOR, NO_STREAM};
 use internal::dir::DirEntry;
+pub use internal::entry::{Entries, Entry};
 pub use internal::version::Version;
 use std::cmp::{self, Ordering};
 use std::collections::HashSet;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::path::Path;
 
 #[macro_use]
 mod internal;
@@ -89,30 +89,27 @@ impl<F> CompoundFile<F> {
 
     /// Given a path within the compound file, get information about that
     /// stream or storage object.
-    pub fn entry<P: AsRef<Path>>(&self, path: P) -> io::Result<StorageEntry> {
+    pub fn entry<P: AsRef<Path>>(&self, path: P) -> io::Result<Entry> {
         self.entry_for_path(path.as_ref())
     }
 
-    fn entry_for_path(&self, path: &Path) -> io::Result<StorageEntry> {
+    fn entry_for_path(&self, path: &Path) -> io::Result<Entry> {
         let stream_id = self.stream_id_for_path(path)?;
-        Ok(StorageEntry::new(self.dir_entry(stream_id),
-                             internal::path::canonicalize_path(path)?))
+        let path = internal::path::canonicalize_path(path)?;
+        Ok(internal::entry::new_entry(self.dir_entry(stream_id), path))
     }
 
     /// Returns an iterator over the entries within a storage object.
     pub fn read_storage<P: AsRef<Path>>(&self, path: P)
-                                        -> io::Result<ReadStorage> {
+                                        -> io::Result<Entries> {
         self.read_storage_for_path(path.as_ref())
     }
 
-    fn read_storage_for_path(&self, path: &Path) -> io::Result<ReadStorage> {
+    fn read_storage_for_path(&self, path: &Path) -> io::Result<Entries> {
         let stream_id = self.stream_id_for_path(path)?;
-        Ok(ReadStorage {
-            directory: &self.directory,
-            path: internal::path::canonicalize_path(path)?,
-            stack: Vec::new(),
-            current: self.dir_entry(stream_id).child,
-        })
+        let path = internal::path::canonicalize_path(path)?;
+        let start = self.dir_entry(stream_id).child;
+        Ok(internal::entry::new_entries(&self.directory, path, start))
     }
 
     // TODO: pub fn walk_storage
@@ -888,101 +885,6 @@ impl<F: Write + Seek> CompoundFile<F> {
             self.minifat[index] = value;
         }
         Ok(())
-    }
-}
-
-// ========================================================================= //
-
-/// Metadata about a single object (storage or stream) in a compound file.
-#[derive(Clone)]
-pub struct StorageEntry {
-    name: String,
-    path: PathBuf,
-    obj_type: u8,
-    creation_time: u64,
-    modified_time: u64,
-    stream_len: u64,
-}
-
-impl StorageEntry {
-    fn new(dir_entry: &DirEntry, path: PathBuf) -> StorageEntry {
-        StorageEntry {
-            name: dir_entry.name.clone(),
-            path: path,
-            obj_type: dir_entry.obj_type,
-            creation_time: dir_entry.creation_time,
-            modified_time: dir_entry.modified_time,
-            stream_len: dir_entry.stream_len,
-        }
-    }
-
-    /// Returns the name of the object that this entry represents.
-    pub fn name(&self) -> &str { &self.name }
-
-    /// Returns the full path to the object that this entry represents.
-    pub fn path(&self) -> &Path { &self.path }
-
-    /// Returns whether this entry is for a stream object (i.e. a "file" within
-    /// the compound file).
-    pub fn is_stream(&self) -> bool {
-        self.obj_type == consts::OBJ_TYPE_STREAM
-    }
-
-    /// Returns whether this entry is for a storage object (i.e. a "directory"
-    /// within the compound file), either the root or a nested storage.
-    pub fn is_storage(&self) -> bool {
-        self.obj_type == consts::OBJ_TYPE_STORAGE ||
-        self.obj_type == consts::OBJ_TYPE_ROOT
-    }
-
-    /// Returns whether this entry is specifically for the root storage object
-    /// of the compound file.
-    pub fn is_root(&self) -> bool { self.obj_type == consts::OBJ_TYPE_ROOT }
-
-    /// Returns the size, in bytes, of the stream that this metadata is for.
-    pub fn len(&self) -> u64 { self.stream_len }
-
-    /// Returns the time when the object that this entry represents was
-    /// created.
-    pub fn created(&self) -> SystemTime {
-        internal::time::system_time_from_timestamp(self.creation_time)
-    }
-
-    /// Returns the time when the object that this entry represents was last
-    /// modified.
-    pub fn modified(&self) -> SystemTime {
-        internal::time::system_time_from_timestamp(self.modified_time)
-    }
-
-    // TODO: CLSID
-    // TODO: state bits
-}
-
-// ========================================================================= //
-
-/// Iterator over the entries in a storage object.
-pub struct ReadStorage<'a> {
-    directory: &'a Vec<DirEntry>,
-    path: PathBuf,
-    stack: Vec<u32>,
-    current: u32,
-}
-
-impl<'a> Iterator for ReadStorage<'a> {
-    type Item = StorageEntry;
-
-    fn next(&mut self) -> Option<StorageEntry> {
-        while self.current != NO_STREAM {
-            self.stack.push(self.current);
-            self.current = self.directory[self.current as usize].left_sibling;
-        }
-        if let Some(parent) = self.stack.pop() {
-            let dir_entry = &self.directory[parent as usize];
-            self.current = dir_entry.right_sibling;
-            Some(StorageEntry::new(dir_entry, self.path.join(&dir_entry.name)))
-        } else {
-            None
-        }
     }
 }
 
