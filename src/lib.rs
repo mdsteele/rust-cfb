@@ -70,12 +70,10 @@ impl<F> CompoundFile<F> {
     /// Returns the CFB format version used for this compound file.
     pub fn version(&self) -> Version { self.version }
 
-    fn root_dir_entry(&self) -> &DirEntry {
-        &self.directory[ROOT_STREAM_ID as usize]
-    }
+    fn root_dir_entry(&self) -> &DirEntry { self.dir_entry(ROOT_STREAM_ID) }
 
     fn root_dir_entry_mut(&mut self) -> &mut DirEntry {
-        &mut self.directory[ROOT_STREAM_ID as usize]
+        self.dir_entry_mut(ROOT_STREAM_ID)
     }
 
     fn dir_entry(&self, stream_id: u32) -> &DirEntry {
@@ -89,12 +87,12 @@ impl<F> CompoundFile<F> {
     fn stream_id_for_name_chain(&self, names: &Vec<&str>) -> Option<u32> {
         let mut stream_id = ROOT_STREAM_ID;
         for name in names.iter() {
-            stream_id = self.directory[stream_id as usize].child;
+            stream_id = self.dir_entry(stream_id).child;
             loop {
                 if stream_id == NO_STREAM {
                     return None;
                 }
-                let dir_entry = &self.directory[stream_id as usize];
+                let dir_entry = self.dir_entry(stream_id);
                 match internal::path::compare_names(&name, &dir_entry.name) {
                     Ordering::Equal => break,
                     Ordering::Less => stream_id = dir_entry.left_sibling,
@@ -124,8 +122,7 @@ impl<F> CompoundFile<F> {
 
     fn entry_for_path(&self, path: &Path) -> io::Result<StorageEntry> {
         let stream_id = self.stream_id_for_path(path)?;
-        let dir_entry = &self.directory[stream_id as usize];
-        Ok(StorageEntry::new(dir_entry,
+        Ok(StorageEntry::new(self.dir_entry(stream_id),
                              internal::path::canonicalize_path(path)?))
     }
 
@@ -141,7 +138,7 @@ impl<F> CompoundFile<F> {
             directory: &self.directory,
             path: internal::path::canonicalize_path(path)?,
             stack: Vec::new(),
-            current: self.directory[stream_id as usize].child,
+            current: self.dir_entry(stream_id).child,
         })
     }
 
@@ -243,7 +240,7 @@ impl<F> CompoundFile<F> {
                 invalid_data!("Malformed directory (loop in tree)");
             }
             visited.insert(stream_id);
-            let dir_entry = &self.directory[stream_id as usize];
+            let dir_entry = self.dir_entry(stream_id);
             let node_is_red = dir_entry.color == COLOR_RED;
             if parent_is_red && node_is_red {
                 invalid_data!("Malformed directory (two red nodes in a row)");
@@ -253,7 +250,7 @@ impl<F> CompoundFile<F> {
                 if left_sibling as usize >= self.directory.len() {
                     invalid_data!("Malformed directory (sibling index)");
                 }
-                let entry = &self.directory[left_sibling as usize];
+                let entry = &self.dir_entry(left_sibling);
                 if internal::path::compare_names(&entry.name,
                                                  &dir_entry.name) !=
                    Ordering::Less {
@@ -269,7 +266,7 @@ impl<F> CompoundFile<F> {
                 if right_sibling as usize >= self.directory.len() {
                     invalid_data!("Malformed directory (sibling index)");
                 }
-                let entry = &self.directory[right_sibling as usize];
+                let entry = &self.dir_entry(right_sibling);
                 if internal::path::compare_names(&dir_entry.name,
                                                  &entry.name) !=
                    Ordering::Less {
@@ -351,8 +348,8 @@ impl<F: Seek> CompoundFile<F> {
 
     fn open_stream_for_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
         let stream_id = self.stream_id_for_path(path)?;
-        if self.directory[stream_id as usize].obj_type != OBJ_TYPE_STREAM {
-            invalid_input!("not a stream: {:?}", path);
+        if self.dir_entry(stream_id).obj_type != OBJ_TYPE_STREAM {
+            invalid_input!("Not a stream: {:?}", path);
         }
         Stream::new(self, stream_id)
     }
@@ -627,12 +624,12 @@ impl<F: Write + Seek> CompoundFile<F> {
     fn touch_with_path(&mut self, path: &Path) -> io::Result<()> {
         let stream_id = self.stream_id_for_path(path)?;
         if stream_id != ROOT_STREAM_ID {
-            debug_assert_ne!(self.directory[stream_id as usize].obj_type,
+            debug_assert_ne!(self.dir_entry(stream_id).obj_type,
                              OBJ_TYPE_ROOT);
             self.seek_within_dir_entry(stream_id, 108)?;
             let now = internal::time::current_timestamp();
             self.inner.write_u64::<LittleEndian>(now)?;
-            self.directory[stream_id as usize].modified_time = now;
+            self.dir_entry_mut(stream_id).modified_time = now;
         }
         Ok(())
     }
@@ -1149,12 +1146,10 @@ pub struct Stream<'a, F: 'a> {
 }
 
 impl<'a, F> Stream<'a, F> {
-    fn dir_entry(&self) -> &DirEntry {
-        &self.comp.directory[self.stream_id as usize]
-    }
+    fn dir_entry(&self) -> &DirEntry { self.comp.dir_entry(self.stream_id) }
 
     fn dir_entry_mut(&mut self) -> &mut DirEntry {
-        &mut self.comp.directory[self.stream_id as usize]
+        self.comp.dir_entry_mut(self.stream_id)
     }
 
     /// Returns the current length of the stream, in bytes.
@@ -1176,7 +1171,7 @@ impl<'a, F> Stream<'a, F> {
 impl<'a, F: Seek> Stream<'a, F> {
     fn new(comp: &'a mut CompoundFile<F>, stream_id: u32)
            -> io::Result<Stream<'a, F>> {
-        let start_sector = comp.directory[stream_id as usize].start_sector;
+        let start_sector = comp.dir_entry(stream_id).start_sector;
         let mut stream = Stream {
             comp: comp,
             stream_id: stream_id,
