@@ -14,11 +14,46 @@ use internal::DirEntry;
 use internal::consts::{self, END_OF_CHAIN, NO_STREAM};
 use std::cmp::{self, Ordering};
 use std::collections::HashSet;
+use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 #[macro_use]
 mod internal;
+
+// ========================================================================= //
+
+/// Opens an existing compound file at the given path in read-only mode.
+pub fn open<P: AsRef<Path>>(path: P) -> io::Result<CompoundFile<fs::File>> {
+    CompoundFile::open(fs::File::open(path)?)
+}
+
+/// Opens an existing compound file at the given path in read-write mode.
+pub fn open_rw<P: AsRef<Path>>(path: P) -> io::Result<CompoundFile<fs::File>> {
+    open_rw_with_path(path.as_ref())
+}
+
+fn open_rw_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
+    let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+    CompoundFile::open(file)
+}
+
+/// Creates a new compound file with no contents at the given path.
+///
+/// The returned `CompoundFile` object will be both readable and writable.  If
+/// a file already exists at the given path, this will overwrite it.
+pub fn create<P: AsRef<Path>>(path: P) -> io::Result<CompoundFile<fs::File>> {
+    create_with_path(path.as_ref())
+}
+
+fn create_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
+    let file = fs::OpenOptions::new().read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    CompoundFile::create(file)
+}
 
 // ========================================================================= //
 
@@ -328,7 +363,9 @@ impl<F: Seek> CompoundFile<F> {
 }
 
 impl<F: Read + Seek> CompoundFile<F> {
-    /// Opens a existing compound file, using the underlying reader.
+    /// Opens an existing compound file, using the underlying reader.  If the
+    /// underlying reader also supports the `Write` trait, then the
+    /// `CompoundFile` object will be writable as well.
     pub fn open(mut inner: F) -> io::Result<CompoundFile<F>> {
         // Read basic header information.
         inner.seek(SeekFrom::Start(0))?;
@@ -485,12 +522,12 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     /// Creates a new compound file with no contents, using the underlying
     /// reader/writer.  The reader/writer should be initially empty.
     pub fn create(inner: F) -> io::Result<CompoundFile<F>> {
-        CompoundFile::create_with_version(inner, Version::V4)
+        CompoundFile::create_with_version(Version::V4, inner)
     }
 
     /// Creates a new compound file of the given version with no contents,
     /// using the underlying writer.  The writer should be initially empty.
-    pub fn create_with_version(mut inner: F, version: Version)
+    pub fn create_with_version(version: Version, mut inner: F)
                                -> io::Result<CompoundFile<F>> {
         // Write file header:
         inner.write_all(&consts::MAGIC_NUMBER)?;
@@ -1286,7 +1323,7 @@ mod tests {
         let version = Version::V3;
 
         let cursor = Cursor::new(Vec::new());
-        let comp = CompoundFile::create_with_version(cursor, version)
+        let comp = CompoundFile::create_with_version(version, cursor)
             .expect("create");
         assert_eq!(comp.version(), version);
         assert_eq!(comp.entry("/").unwrap().name(), consts::ROOT_DIR_NAME);
@@ -1301,7 +1338,7 @@ mod tests {
     #[test]
     fn empty_compound_file_has_no_children() {
         let cursor = Cursor::new(Vec::new());
-        let comp = CompoundFile::create_with_version(cursor, Version::V4)
+        let comp = CompoundFile::create_with_version(Version::V4, cursor)
             .expect("create");
         assert!(comp.entry("/").unwrap().is_root());
         assert_eq!(comp.read_storage("/").unwrap().count(), 0);
@@ -1353,7 +1390,7 @@ mod tests {
         assert!(data.len() < consts::MINI_STREAM_CUTOFF as usize);
 
         let cursor = Cursor::new(Vec::new());
-        let mut comp = CompoundFile::create_with_version(cursor, Version::V3)
+        let mut comp = CompoundFile::create_with_version(Version::V3, cursor)
             .expect("create");
         comp.create_stream("foobar").unwrap().write_all(&data).unwrap();
 
@@ -1371,7 +1408,7 @@ mod tests {
         assert!(data.len() > consts::MINI_STREAM_CUTOFF as usize);
 
         let cursor = Cursor::new(Vec::new());
-        let mut comp = CompoundFile::create_with_version(cursor, Version::V3)
+        let mut comp = CompoundFile::create_with_version(Version::V3, cursor)
             .expect("create");
         comp.create_stream("foobar").unwrap().write_all(&data).unwrap();
 

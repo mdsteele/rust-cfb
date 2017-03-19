@@ -1,8 +1,6 @@
 extern crate cfb;
 
-use cfb::CompoundFile;
 use std::env;
-use std::fs::File;
 use std::io::Read;
 
 fn main() {
@@ -11,8 +9,7 @@ fn main() {
         return;
     }
     let path = env::args().nth(1).unwrap();
-    let file = File::open(path).unwrap();
-    let mut comp = CompoundFile::open(file).unwrap();
+    let mut comp = cfb::open(path).unwrap();
     let mut stack = vec![comp.entry("/").unwrap()];
     while let Some(entry) = stack.pop() {
         println!("{:?} ({} bytes)", entry.path(), entry.len());
