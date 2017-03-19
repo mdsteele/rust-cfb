@@ -270,6 +270,10 @@ impl<F: Seek> CompoundFile<F> {
         Ok(())
     }
 
+    fn seek_to_mini_sector(&mut self, mini_sector: u32) -> io::Result<()> {
+        self.seek_within_mini_sector(mini_sector, 0)
+    }
+
     fn seek_within_mini_sector(&mut self, mini_sector: u32,
                                offset_within_mini_sector: u64)
                                -> io::Result<()> {
@@ -477,9 +481,9 @@ impl<F: Read + Seek> CompoundFile<F> {
     }
 }
 
-impl<F: Write + Seek> CompoundFile<F> {
+impl<F: Read + Write + Seek> CompoundFile<F> {
     /// Creates a new compound file with no contents, using the underlying
-    /// writer.  The writer should be initially empty.
+    /// reader/writer.  The reader/writer should be initially empty.
     pub fn create(inner: F) -> io::Result<CompoundFile<F>> {
         CompoundFile::create_with_version(inner, Version::V4)
     }
@@ -642,6 +646,48 @@ impl<F: Write + Seek> CompoundFile<F> {
     /// Flushes all changes to the underlying file.
     pub fn flush(&mut self) -> io::Result<()> { self.inner.flush() }
 
+    /// Given the starting mini sector of a mini chain, copies the data in that
+    /// chain into a newly-allocated regular sector chain, frees the mini
+    /// chain, and returns the start sector of the new chain.
+    fn migrate_out_of_mini_stream(&mut self, start_mini_sector: u32)
+                                  -> io::Result<u32> {
+        debug_assert_ne!(start_mini_sector, END_OF_CHAIN);
+        let mut mini_sectors = Vec::new();
+        let mut current_mini_sector = start_mini_sector;
+        while current_mini_sector != END_OF_CHAIN {
+            mini_sectors.push(current_mini_sector);
+            current_mini_sector = self.minifat[current_mini_sector as usize];
+        }
+        debug_assert!(!mini_sectors.is_empty());
+        let sector_len = self.version.sector_len();
+        let mut new_start_sector = END_OF_CHAIN;
+        let mut data = vec![0u8; sector_len];
+        let mut data_start = 0;
+        let mut index = 0;
+        while index < mini_sectors.len() {
+            let mini_sector = mini_sectors[index];
+            self.seek_to_mini_sector(mini_sector)?;
+            let data_end = data_start + consts::MINI_SECTOR_LEN;
+            self.inner.read_exact(&mut data[data_start..data_end])?;
+            data_start += consts::MINI_SECTOR_LEN;
+            self.free_mini_sector(mini_sector)?;
+            index += 1;
+            if index == mini_sectors.len() || data_start == sector_len {
+                let new_sector = if new_start_sector == END_OF_CHAIN {
+                    new_start_sector = self.allocate_sector(END_OF_CHAIN)?;
+                    new_start_sector
+                } else {
+                    self.extend_chain(new_start_sector)?
+                };
+                self.seek_to_sector(new_sector)?;
+                self.inner.write_all(&data[0..data_start])?;
+                data_start = 0;
+            }
+        }
+        debug_assert_ne!(new_start_sector, END_OF_CHAIN);
+        Ok(new_start_sector)
+    }
+
     /// Given the starting sector (or any internal sector) of a chain, extends
     /// the end of that chain by one sector and returns the new sector number,
     /// updating the FAT as necessary.
@@ -660,9 +706,9 @@ impl<F: Write + Seek> CompoundFile<F> {
         Ok(new_sector)
     }
 
-    /// Given the starting sector (or any internal sector) of a mini chain,
-    /// extends the end of that chain by one mini sector and returns the new
-    /// mini sector number, updating the MiniFAT as necessary.
+    /// Given the starting mini sector (or any internal mini sector) of a mini
+    /// chain, extends the end of that chain by one mini sector and returns the
+    /// new mini sector number, updating the MiniFAT as necessary.
     fn extend_mini_chain(&mut self, start_mini_sector: u32)
                          -> io::Result<u32> {
         debug_assert_ne!(start_mini_sector, END_OF_CHAIN);
@@ -832,7 +878,7 @@ impl<F: Write + Seek> CompoundFile<F> {
         // Update length of mini stream in root directory entry.
         self.root_dir_entry_mut().stream_len += consts::MINI_SECTOR_LEN as u64;
         let mini_stream_len = self.root_dir_entry().stream_len;
-        self.seek_within_sector(directory_start_sector, 120)?;
+        self.seek_within_dir_entry(consts::ROOT_STREAM_ID, 120)?;
         self.inner.write_u64::<LittleEndian>(mini_stream_len)?;
         Ok(())
     }
@@ -900,6 +946,24 @@ impl<F: Write + Seek> CompoundFile<F> {
         self.seek_to_dir_entry(stream_id)?;
         self.directory[stream_id as usize].write(&mut self.inner)?;
         Ok(stream_id)
+    }
+
+    /// Deallocates the specified mini sector.
+    fn free_mini_sector(&mut self, mini_sector: u32) -> io::Result<()> {
+        self.set_minifat(mini_sector, consts::FREE_SECTOR)?;
+        let mut mini_stream_len = self.root_dir_entry().stream_len;
+        debug_assert_eq!(mini_stream_len % consts::MINI_SECTOR_LEN as u64, 0);
+        while self.minifat.last() == Some(&consts::FREE_SECTOR) {
+            mini_stream_len -= consts::MINI_SECTOR_LEN as u64;
+            self.minifat.pop();
+            // TODO: Truncate MiniFAT if last MiniFAT sector is now all free.
+        }
+        if mini_stream_len != self.root_dir_entry().stream_len {
+            self.root_dir_entry_mut().stream_len = mini_stream_len;
+            self.seek_within_dir_entry(consts::ROOT_STREAM_ID, 120)?;
+            self.inner.write_u64::<LittleEndian>(mini_stream_len)?;
+        }
+        Ok(())
     }
 
     /// Sets `self.fat[index] = value`, and also writes that change to the
@@ -1100,7 +1164,7 @@ impl<'a, F: Read + Seek> Read for Stream<'a, F> {
     }
 }
 
-impl<'a, F: Write + Seek> Write for Stream<'a, F> {
+impl<'a, F: Read + Write + Seek> Write for Stream<'a, F> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
@@ -1141,8 +1205,18 @@ impl<'a, F: Write + Seek> Write for Stream<'a, F> {
             let was_mini = self.is_in_mini_stream();
             self.dir_entry_mut().stream_len = self.offset_from_start;
             if was_mini && !self.is_in_mini_stream() {
-                // TODO: migrate out of mini stream
-                panic!("migrating out of mini stream not supported");
+                debug_assert_eq!(self.dir_entry().stream_len,
+                                 consts::MINI_STREAM_CUTOFF as u64);
+                let old_start_sector = self.dir_entry().start_sector;
+                let new_start_sector = self.comp
+                    .migrate_out_of_mini_stream(old_start_sector)?;
+                self.dir_entry_mut().start_sector = new_start_sector;
+                let sector_len = self.sector_len();
+                debug_assert_eq!(self.offset_from_start % sector_len as u64,
+                                 0);
+                self.offset_within_sector = 0;
+                self.current_sector = END_OF_CHAIN;
+                self.seek_to_current_position()?;
             }
         }
         debug_assert!(self.offset_from_start <= self.len());
@@ -1270,6 +1344,43 @@ mod tests {
             stream.read_to_string(&mut data).unwrap();
             assert_eq!(&data, "baz!");
         }
+    }
+
+    #[test]
+    fn create_small_stream() {
+        let data = vec![b'x'; 500];
+        assert!(data.len() > consts::MINI_SECTOR_LEN);
+        assert!(data.len() < consts::MINI_STREAM_CUTOFF as usize);
+
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create_with_version(cursor, Version::V3)
+            .expect("create");
+        comp.create_stream("foobar").unwrap().write_all(&data).unwrap();
+
+        let cursor = comp.into_inner();
+        let mut comp = CompoundFile::open(cursor).expect("open");
+        let mut stream = comp.open_stream("foobar").unwrap();
+        let mut actual_data = Vec::new();
+        stream.read_to_end(&mut actual_data).unwrap();
+        assert_eq!(actual_data, data);
+    }
+
+    #[test]
+    fn create_large_stream() {
+        let data = vec![b'x'; 5000];
+        assert!(data.len() > consts::MINI_STREAM_CUTOFF as usize);
+
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create_with_version(cursor, Version::V3)
+            .expect("create");
+        comp.create_stream("foobar").unwrap().write_all(&data).unwrap();
+
+        let cursor = comp.into_inner();
+        let mut comp = CompoundFile::open(cursor).expect("open");
+        let mut stream = comp.open_stream("foobar").unwrap();
+        let mut actual_data = Vec::new();
+        stream.read_to_end(&mut actual_data).unwrap();
+        assert_eq!(actual_data, data);
     }
 }
 
