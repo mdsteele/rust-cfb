@@ -3,6 +3,45 @@
 //! storage) files.  See [MS-CFB](
 //! https://msdn.microsoft.com/en-us/library/dd942138.aspx) for the format
 //! specification.
+//!
+//! A Compound File Binary (CFB) file, also called a *structured storage file*
+//! or simply a *compound file*, is a bit like a simple file system within a
+//! file.  A compound file contains a tree of *storage* objects
+//! (i.e. directories), each of which can contain *stream* objects (i.e. files)
+//! or other storage objects.  The format is designed to allow reasonably
+//! efficient in-place mutation and resizing of these stream and storage
+//! objects, without having to completely rewrite the CFB file on disk.
+//!
+//! # Example usage
+//!
+//! ```no_run
+//! use cfb;
+//! use std::io::{Read, Seek, SeekFrom, Write};
+//!
+//! // Open an existing compound file in read-write mode.
+//! let mut comp = cfb::open_rw("path/to/cfb/file").unwrap();
+//!
+//! // Read in all the data from one of the streams in that compound file.
+//! let data = {
+//!     let mut stream = comp.open_stream("/foo/bar").unwrap();
+//!     let mut buffer = Vec::new();
+//!     stream.read_to_end(&mut buffer).unwrap();
+//!     buffer
+//! };
+//!
+//! // Append that data to the end of another stream in the same file.
+//! {
+//!     let mut stream = comp.open_stream("/baz").unwrap();
+//!     stream.seek(SeekFrom::End(0)).unwrap();
+//!     stream.write_all(&data).unwrap();
+//! }
+//!
+//! // Now create a new compound file, and create a new stream with the data.
+//! let mut comp2 = cfb::create("some/other/path").unwrap();
+//! comp2.create_storage("/spam/").unwrap();
+//! let mut stream = comp2.create_stream("/spam/eggs").unwrap();
+//! stream.write_all(&data).unwrap();
+//! ```
 
 #![warn(missing_docs)]
 

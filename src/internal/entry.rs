@@ -79,7 +79,7 @@ impl Entry {
 
 // ========================================================================= //
 
-/// Iterator over the entries in a storage object.
+/// An iterator over the entries in a storage object.
 pub struct Entries<'a> {
     directory: &'a Vec<DirEntry>,
     path: PathBuf,
