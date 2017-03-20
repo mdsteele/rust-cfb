@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="generator" content="rustdoc">
+    <meta name="description" content="API documentation for the Rust `cfb` crate.">
+    <meta name="keywords" content="rust, rustlang, rust-lang, cfb">
+
+    <title>cfb - Rust</title>
+
+    <link rel="stylesheet" type="text/css" href="../normalize.css">
+    <link rel="stylesheet" type="text/css" href="../rustdoc.css">
+    <link rel="stylesheet" type="text/css" href="../main.css">
+    
+
+    
+    
+</head>
+<body class="rustdoc">
+    <!--[if lte IE 8]>
+    <div class="warning">
+        This old browser is unsupported and will most likely display funky
+        things.
+    </div>
+    <![endif]-->
+
+    
+
+    <nav class="sidebar">
+        
+        <p class='location'></p><script>window.sidebarCurrent = {name: 'cfb', ty: 'mod', relpath: '../'};</script>
+    </nav>
+
+    <nav class="sub">
+        <form class="search-form js-only">
+            <div class="search-container">
+                <input class="search-input" name="search"
+                       autocomplete="off"
+                       placeholder="Click or press ‘S’ to search, ‘?’ for more options…"
+                       type="search">
+            </div>
+        </form>
+    </nav>
+
+    <section id='main' class="content mod">
+<h1 class='fqn'><span class='in-band'>Crate <a class='mod' href=''>cfb</a></span><span class='out-of-band'><span id='render-detail'>
+                   <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
+                       [<span class='inner'>&#x2212;</span>]
+                   </a>
+               </span><a class='srclink' href='../src/cfb/lib.rs.html#1-1461' title='goto source code'>[src]</a></span></h1>
+<div class='docblock'><p>A library for reading/writing <a href="https://en.wikipedia.org/wiki/Compound_File_Binary_Format">Compound File Binary</a> (structured
+storage) files.  See <a href="https://msdn.microsoft.com/en-us/library/dd942138.aspx">MS-CFB</a> for the format
+specification.</p>
+
+<p>A Compound File Binary (CFB) file, also called a <em>structured storage file</em>
+or simply a <em>compound file</em>, is a bit like a simple file system within a
+file.  A compound file contains a tree of <em>storage</em> objects
+(i.e. directories), each of which can contain <em>stream</em> objects (i.e. files)
+or other storage objects.  The format is designed to allow reasonably
+efficient in-place mutation and resizing of these stream and storage
+objects, without having to completely rewrite the CFB file on disk.</p>
+
+<h1 id='example-usage' class='section-header'><a href='#example-usage'>Example usage</a></h1>
+<pre class='rust rust-example-rendered'>
+<span class='kw'>use</span> <span class='ident'>cfb</span>;
+<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>io</span>::{<span class='ident'>Read</span>, <span class='ident'>Seek</span>, <span class='ident'>SeekFrom</span>, <span class='ident'>Write</span>};
+
+<span class='comment'>// Open an existing compound file in read-write mode.</span>
+<span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>comp</span> <span class='op'>=</span> <span class='ident'>cfb</span>::<span class='ident'>open_rw</span>(<span class='string'>&quot;path/to/cfb/file&quot;</span>).<span class='ident'>unwrap</span>();
+
+<span class='comment'>// Read in all the data from one of the streams in that compound file.</span>
+<span class='kw'>let</span> <span class='ident'>data</span> <span class='op'>=</span> {
+    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>stream</span> <span class='op'>=</span> <span class='ident'>comp</span>.<span class='ident'>open_stream</span>(<span class='string'>&quot;/foo/bar&quot;</span>).<span class='ident'>unwrap</span>();
+    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>buffer</span> <span class='op'>=</span> <span class='ident'>Vec</span>::<span class='ident'>new</span>();
+    <span class='ident'>stream</span>.<span class='ident'>read_to_end</span>(<span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>buffer</span>).<span class='ident'>unwrap</span>();
+    <span class='ident'>buffer</span>
+};
+
+<span class='comment'>// Append that data to the end of another stream in the same file.</span>
+{
+    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>stream</span> <span class='op'>=</span> <span class='ident'>comp</span>.<span class='ident'>open_stream</span>(<span class='string'>&quot;/baz&quot;</span>).<span class='ident'>unwrap</span>();
+    <span class='ident'>stream</span>.<span class='ident'>seek</span>(<span class='ident'>SeekFrom</span>::<span class='ident'>End</span>(<span class='number'>0</span>)).<span class='ident'>unwrap</span>();
+    <span class='ident'>stream</span>.<span class='ident'>write_all</span>(<span class='kw-2'>&amp;</span><span class='ident'>data</span>).<span class='ident'>unwrap</span>();
+}
+
+<span class='comment'>// Now create a new compound file, and create a new stream with the data.</span>
+<span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>comp2</span> <span class='op'>=</span> <span class='ident'>cfb</span>::<span class='ident'>create</span>(<span class='string'>&quot;some/other/path&quot;</span>).<span class='ident'>unwrap</span>();
+<span class='ident'>comp2</span>.<span class='ident'>create_storage</span>(<span class='string'>&quot;/spam/&quot;</span>).<span class='ident'>unwrap</span>();
+<span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>stream</span> <span class='op'>=</span> <span class='ident'>comp2</span>.<span class='ident'>create_stream</span>(<span class='string'>&quot;/spam/eggs&quot;</span>).<span class='ident'>unwrap</span>();
+<span class='ident'>stream</span>.<span class='ident'>write_all</span>(<span class='kw-2'>&amp;</span><span class='ident'>data</span>).<span class='ident'>unwrap</span>();</pre>
+</div><h2 id='structs' class='section-header'><a href="#structs">Structs</a></h2>
+<table>
+                       <tr class=' module-item'>
+                           <td><a class='struct' href='struct.CompoundFile.html'
+                                  title='cfb::CompoundFile'>CompoundFile</a></td>
+                           <td class='docblock-short'>
+                                <p>A compound file, backed by an underlying reader/writer (such as a
+<a href="https://doc.rust-lang.org/std/fs/struct.File.html"><code>File</code></a> or
+<a href="https://doc.rust-lang.org/std/io/struct.Cursor.html"><code>Cursor</code></a>).</p>
+                           </td>
+                       </tr>
+                       <tr class=' module-item'>
+                           <td><a class='struct' href='struct.Entries.html'
+                                  title='cfb::Entries'>Entries</a></td>
+                           <td class='docblock-short'>
+                                <p>An iterator over the entries in a storage object.</p>
+                           </td>
+                       </tr>
+                       <tr class=' module-item'>
+                           <td><a class='struct' href='struct.Entry.html'
+                                  title='cfb::Entry'>Entry</a></td>
+                           <td class='docblock-short'>
+                                <p>Metadata about a single object (storage or stream) in a compound file.</p>
+                           </td>
+                       </tr>
+                       <tr class=' module-item'>
+                           <td><a class='struct' href='struct.Stream.html'
+                                  title='cfb::Stream'>Stream</a></td>
+                           <td class='docblock-short'>
+                                <p>A stream entry in a compound file, much like a filesystem file.</p>
+                           </td>
+                       </tr></table><h2 id='enums' class='section-header'><a href="#enums">Enums</a></h2>
+<table>
+                       <tr class=' module-item'>
+                           <td><a class='enum' href='enum.Version.html'
+                                  title='cfb::Version'>Version</a></td>
+                           <td class='docblock-short'>
+                                <p>The CFB format version to use.</p>
+                           </td>
+                       </tr></table><h2 id='functions' class='section-header'><a href="#functions">Functions</a></h2>
+<table>
+                       <tr class=' module-item'>
+                           <td><a class='fn' href='fn.create.html'
+                                  title='cfb::create'>create</a></td>
+                           <td class='docblock-short'>
+                                <p>Creates a new compound file with no contents at the given path.</p>
+                           </td>
+                       </tr>
+                       <tr class=' module-item'>
+                           <td><a class='fn' href='fn.open.html'
+                                  title='cfb::open'>open</a></td>
+                           <td class='docblock-short'>
+                                <p>Opens an existing compound file at the given path in read-only mode.</p>
+                           </td>
+                       </tr>
+                       <tr class=' module-item'>
+                           <td><a class='fn' href='fn.open_rw.html'
+                                  title='cfb::open_rw'>open_rw</a></td>
+                           <td class='docblock-short'>
+                                <p>Opens an existing compound file at the given path in read-write mode.</p>
+                           </td>
+                       </tr></table></section>
+    <section id='search' class="content hidden"></section>
+
+    <section class="footer"></section>
+
+    <aside id="help" class="hidden">
+        <div>
+            <h1 class="hidden">Help</h1>
+
+            <div class="shortcuts">
+                <h2>Keyboard Shortcuts</h2>
+
+                <dl>
+                    <dt>?</dt>
+                    <dd>Show this help dialog</dd>
+                    <dt>S</dt>
+                    <dd>Focus the search field</dd>
+                    <dt>&larrb;</dt>
+                    <dd>Move up in search results</dd>
+                    <dt>&rarrb;</dt>
+                    <dd>Move down in search results</dd>
+                    <dt>&#9166;</dt>
+                    <dd>Go to active search result</dd>
+                    <dt>+</dt>
+                    <dd>Collapse/expand all sections</dd>
+                </dl>
+            </div>
+
+            <div class="infos">
+                <h2>Search Tricks</h2>
+
+                <p>
+                    Prefix searches with a type followed by a colon (e.g.
+                    <code>fn:</code>) to restrict the search to a given type.
+                </p>
+
+                <p>
+                    Accepted types are: <code>fn</code>, <code>mod</code>,
+                    <code>struct</code>, <code>enum</code>,
+                    <code>trait</code>, <code>type</code>, <code>macro</code>,
+                    and <code>const</code>.
+                </p>
+
+                <p>
+                    Search functions by type signature (e.g.
+                    <code>vec -> usize</code> or <code>* -> vec</code>)
+                </p>
+            </div>
+        </div>
+    </aside>
+
+    
+
+    <script>
+        window.rootPath = "../";
+        window.currentCrate = "cfb";
+    </script>
+    <script src="../jquery.js"></script>
+    <script src="../main.js"></script>
+    <script defer src="../search-index.js"></script>
+</body>
+</html>
