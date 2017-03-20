@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Matthew D. Steele <mdsteele@alum.mit.edu>"]
 description = "Read/write Compound File Binary (structured storage) files"
 repository = "https://github.com/mdsteele/rust-cfb"
+documentation = "http://mdsteele.github.io/rust-cfb/"
 keywords = ["cfb", "cfbf", "com", "ole", "storage", "structured"]
 license = "MIT"
 
