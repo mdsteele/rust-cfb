@@ -192,8 +192,6 @@ impl<F> CompoundFile<F> {
 
     // TODO: pub fn walk_storage
 
-    // TODO: pub fn remove_storage
-
     // TODO: pub fn remove_stream
 
     // TODO: pub fn copy_stream
@@ -287,6 +285,18 @@ impl<F> CompoundFile<F> {
             }
             visited.insert(stream_id);
             let dir_entry = self.dir_entry(stream_id);
+            if stream_id == consts::ROOT_STREAM_ID {
+                if dir_entry.obj_type != consts::OBJ_TYPE_ROOT {
+                    invalid_data!("Malformed directory (wrong object type for \
+                                   root entry: {})",
+                                  dir_entry.obj_type);
+                }
+            } else if dir_entry.obj_type != consts::OBJ_TYPE_STORAGE &&
+                      dir_entry.obj_type != consts::OBJ_TYPE_STREAM {
+                invalid_data!("Malformed directory (wrong object type for \
+                               non-root entry: {})",
+                              dir_entry.obj_type);
+            }
             let node_is_red = dir_entry.color == consts::COLOR_RED;
             if parent_is_red && node_is_red {
                 invalid_data!("Malformed directory (two red nodes in a row)");
@@ -675,6 +685,39 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         Ok(())
     }
 
+    /// Removes the storage object at the provided path.  The storage object
+    /// must exist and have no children.
+    pub fn remove_storage<P: AsRef<Path>>(&mut self, path: P)
+                                          -> io::Result<()> {
+        self.remove_storage_with_path(path.as_ref())
+    }
+
+    fn remove_storage_with_path(&mut self, path: &Path) -> io::Result<()> {
+        let mut names = internal::path::name_chain_from_path(path)?;
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(parent_id) => parent_id,
+            None => not_found!("No such storage: {:?}", path),
+        };
+        {
+            let dir_entry = self.dir_entry(stream_id);
+            if dir_entry.obj_type == consts::OBJ_TYPE_ROOT {
+                invalid_input!("Cannot remove the root storage object");
+            }
+            if dir_entry.obj_type == consts::OBJ_TYPE_STREAM {
+                invalid_input!("Not a storage: {:?}", path);
+            }
+            debug_assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STORAGE);
+            if dir_entry.child != NO_STREAM {
+                invalid_input!("Storage is not empty: {:?}", path);
+            }
+        }
+        debug_assert!(!names.is_empty());
+        let name = names.pop().unwrap();
+        let parent_id = self.stream_id_for_name_chain(&names).unwrap();
+        self.remove_dir_entry(parent_id, name)?;
+        Ok(())
+    }
+
     /// Creates and returns a new, empty stream object at the provided path.
     /// The parent storage object must already exist.
     pub fn create_stream<P: AsRef<Path>>(&mut self, path: P)
@@ -1039,6 +1082,83 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         Ok(stream_id)
     }
 
+    /// Removes a directory entry from the tree and deallocates it.
+    fn remove_dir_entry(&mut self, parent_id: u32, name: &str)
+                        -> io::Result<()> {
+        // Find the directory entry with the given name below the parent.
+        let mut stream_ids = Vec::new();
+        let mut stream_id = self.dir_entry(parent_id).child;
+        loop {
+            debug_assert_ne!(stream_id, NO_STREAM);
+            debug_assert!(!stream_ids.contains(&stream_id));
+            stream_ids.push(stream_id);
+            let dir_entry = self.dir_entry(stream_id);
+            match internal::path::compare_names(name, &dir_entry.name) {
+                Ordering::Equal => break,
+                Ordering::Less => stream_id = dir_entry.left_sibling,
+                Ordering::Greater => stream_id = dir_entry.right_sibling,
+            }
+        }
+        debug_assert_eq!(self.dir_entry(stream_id).child, NO_STREAM);
+
+        // Restructure the tree.
+        let mut replacement_id = NO_STREAM;
+        loop {
+            let left_sibling = self.dir_entry(stream_id).left_sibling;
+            let right_sibling = self.dir_entry(stream_id).right_sibling;
+            if left_sibling == NO_STREAM && right_sibling == NO_STREAM {
+                break;
+            } else if left_sibling == NO_STREAM {
+                replacement_id = right_sibling;
+                break;
+            } else if right_sibling == NO_STREAM {
+                replacement_id = left_sibling;
+                break;
+            }
+            let mut predecessor_id = left_sibling;
+            loop {
+                stream_ids.push(predecessor_id);
+                let next_id = self.dir_entry(predecessor_id).right_sibling;
+                if next_id == NO_STREAM {
+                    break;
+                }
+                predecessor_id = next_id;
+            }
+            let mut pred_entry = self.dir_entry(predecessor_id).clone();
+            debug_assert_eq!(pred_entry.right_sibling, NO_STREAM);
+            pred_entry.left_sibling = left_sibling;
+            pred_entry.right_sibling = right_sibling;
+            self.seek_to_dir_entry(stream_id)?;
+            pred_entry.write(&mut self.inner)?;
+            *self.dir_entry_mut(stream_id) = pred_entry;
+            stream_id = predecessor_id;
+        }
+        // TODO: recolor nodes
+
+        // Remove the entry.
+        debug_assert_eq!(stream_ids.last(), Some(&stream_id));
+        stream_ids.pop();
+        if let Some(&sibling_id) = stream_ids.last() {
+            if self.dir_entry(sibling_id).left_sibling == stream_id {
+                self.dir_entry_mut(sibling_id).left_sibling = replacement_id;
+                self.seek_within_dir_entry(sibling_id, 68)?;
+                self.inner.write_u32::<LittleEndian>(replacement_id)?;
+            } else {
+                debug_assert_eq!(self.dir_entry(sibling_id).right_sibling,
+                                 stream_id);
+                self.dir_entry_mut(sibling_id).right_sibling = replacement_id;
+                self.seek_within_dir_entry(sibling_id, 72)?;
+                self.inner.write_u32::<LittleEndian>(replacement_id)?;
+            }
+        } else {
+            self.dir_entry_mut(parent_id).child = replacement_id;
+            self.seek_within_dir_entry(parent_id, 76)?;
+            self.inner.write_u32::<LittleEndian>(replacement_id)?;
+        }
+        self.free_dir_entry(stream_id)?;
+        Ok(())
+    }
+
     /// Deallocates the specified mini sector.
     fn free_mini_sector(&mut self, mini_sector: u32) -> io::Result<()> {
         self.set_minifat(mini_sector, consts::FREE_SECTOR)?;
@@ -1054,6 +1174,18 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             self.seek_within_dir_entry(consts::ROOT_STREAM_ID, 120)?;
             self.inner.write_u64::<LittleEndian>(mini_stream_len)?;
         }
+        Ok(())
+    }
+
+    /// Deallocates the specified directory entry.
+    fn free_dir_entry(&mut self, stream_id: u32) -> io::Result<()> {
+        debug_assert_ne!(stream_id, consts::ROOT_STREAM_ID);
+        let dir_entry = DirEntry::unallocated();
+        self.seek_to_dir_entry(stream_id)?;
+        dir_entry.write(&mut self.inner)?;
+        *self.dir_entry_mut(stream_id) = dir_entry;
+        // TODO: Truncate directory chain if last directory sector is now all
+        //       unallocated.
         Ok(())
     }
 
@@ -1365,6 +1497,13 @@ mod tests {
     use internal::consts;
     use std::io::{Cursor, Read, Write};
 
+    fn list_storage<F>(comp: &CompoundFile<F>, path: &str) -> Vec<String> {
+        comp.read_storage(path)
+            .unwrap()
+            .map(|e| e.name().to_string())
+            .collect()
+    }
+
     #[test]
     #[should_panic(expected = "Invalid CFB file (wrong magic number)")]
     fn wrong_magic_number() {
@@ -1408,10 +1547,10 @@ mod tests {
 
         let cursor = comp.into_inner();
         let comp = CompoundFile::open(cursor).expect("open");
-        assert_eq!(comp.read_storage("/").unwrap().count(), 2);
-        assert_eq!(comp.read_storage("/foo").unwrap().count(), 1);
-        assert_eq!(comp.read_storage("/baz").unwrap().count(), 0);
-        assert_eq!(comp.read_storage("/foo/bar").unwrap().count(), 0);
+        assert_eq!(list_storage(&comp, "/"), vec!["baz", "foo"]);
+        assert_eq!(list_storage(&comp, "/foo"), vec!["bar"]);
+        assert!(list_storage(&comp, "/baz").is_empty());
+        assert!(list_storage(&comp, "/foo/bar").is_empty());
     }
 
     #[test]
@@ -1481,6 +1620,43 @@ mod tests {
         let mut comp = CompoundFile::create(cursor).expect("create");
         comp.create_stream("/foo").unwrap().write_all(b"foobar").unwrap();
         comp.read_storage("/foo").unwrap();
+    }
+
+    #[test]
+    fn remove_storages() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foo").unwrap();
+        comp.create_storage("/foo/bar").unwrap();
+        comp.create_storage("/baz").unwrap();
+        comp.create_storage("/quux").unwrap();
+        comp.create_storage("/baz/blarg").unwrap();
+        comp.remove_storage("/foo/bar").unwrap();
+        comp.remove_storage("/foo").unwrap();
+        comp.remove_storage("/baz/blarg").unwrap();
+
+        let cursor = comp.into_inner();
+        let comp = CompoundFile::open(cursor).expect("open");
+        assert_eq!(list_storage(&comp, "/"), vec!["baz", "quux"]);
+        assert!(list_storage(&comp, "/baz").is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot remove the root storage object")]
+    fn remove_root_storage() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.remove_storage("/").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Storage is not empty: \\\"/foo\\\"")]
+    fn remove_non_empty_storage() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foo").unwrap();
+        comp.create_storage("/foo/bar").unwrap();
+        comp.remove_storage("/foo").unwrap();
     }
 }
 

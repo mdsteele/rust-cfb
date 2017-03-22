@@ -15,6 +15,7 @@ macro_rules! malformed {
 
 // ========================================================================= //
 
+#[derive(Clone)]
 pub struct DirEntry {
     pub name: String,
     pub obj_type: u8,
