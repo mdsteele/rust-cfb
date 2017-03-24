@@ -80,16 +80,11 @@ pub fn path_from_name_chain(names: &[&str]) -> PathBuf {
     path
 }
 
-pub fn canonicalize_path(path: &Path) -> io::Result<PathBuf> {
-    let names = name_chain_from_path(path)?;
-    Ok(path_from_name_chain(&names))
-}
-
 // ========================================================================= //
 
 #[cfg(test)]
 mod tests {
-    use super::{canonicalize_path, compare_names, name_chain_from_path,
+    use super::{compare_names, name_chain_from_path, path_from_name_chain,
                 validate_name};
     use std::cmp::Ordering;
     use std::path::{Path, PathBuf};
@@ -145,8 +140,9 @@ mod tests {
 
     #[test]
     fn canonical_path_is_absolute() {
-        assert_eq!(canonicalize_path(&Path::new("foo/bar/../baz")).unwrap(),
-                   PathBuf::from("/foo/baz"));
+        let path = Path::new("foo/bar/../baz");
+        let names = name_chain_from_path(&path).unwrap();
+        assert_eq!(path_from_name_chain(&names), PathBuf::from("/foo/baz"));
     }
 }
 

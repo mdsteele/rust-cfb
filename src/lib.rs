@@ -149,17 +149,6 @@ impl<F> CompoundFile<F> {
         Some(stream_id)
     }
 
-    fn stream_id_for_path(&self, path: &Path) -> io::Result<u32> {
-        let names = internal::path::name_chain_from_path(path)?;
-        match self.stream_id_for_name_chain(&names) {
-            Some(stream_id) => Ok(stream_id),
-            None => {
-                not_found!("No such object: {:?}",
-                           internal::path::path_from_name_chain(&names));
-            }
-        }
-    }
-
     /// Given a path within the compound file, get information about that
     /// stream or storage object.
     pub fn entry<P: AsRef<Path>>(&self, path: P) -> io::Result<Entry> {
@@ -167,8 +156,12 @@ impl<F> CompoundFile<F> {
     }
 
     fn entry_for_path(&self, path: &Path) -> io::Result<Entry> {
-        let stream_id = self.stream_id_for_path(path)?;
-        let path = internal::path::canonicalize_path(path)?;
+        let names = internal::path::name_chain_from_path(path)?;
+        let path = internal::path::path_from_name_chain(&names);
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => not_found!("No such object: {:?}", path),
+        };
         Ok(internal::new_entry(self.dir_entry(stream_id), path))
     }
 
@@ -179,9 +172,21 @@ impl<F> CompoundFile<F> {
     }
 
     fn read_storage_for_path(&self, path: &Path) -> io::Result<Entries> {
-        let stream_id = self.stream_id_for_path(path)?;
-        let path = internal::path::canonicalize_path(path)?;
-        let start = self.dir_entry(stream_id).child;
+        let names = internal::path::name_chain_from_path(path)?;
+        let path = internal::path::path_from_name_chain(&names);
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => not_found!("No such storage: {:?}", path),
+        };
+        let start = {
+            let dir_entry = self.dir_entry(stream_id);
+            if dir_entry.obj_type == consts::OBJ_TYPE_STREAM {
+                invalid_input!("Not a storage: {:?}", path);
+            }
+            debug_assert!(dir_entry.obj_type == consts::OBJ_TYPE_STORAGE ||
+                          dir_entry.obj_type == consts::OBJ_TYPE_ROOT);
+            dir_entry.child
+        };
         Ok(internal::new_entries(&self.directory, path, start))
     }
 
@@ -393,7 +398,12 @@ impl<F: Seek> CompoundFile<F> {
     }
 
     fn open_stream_for_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
-        let stream_id = self.stream_id_for_path(path)?;
+        let names = internal::path::name_chain_from_path(path)?;
+        let path = internal::path::path_from_name_chain(&names);
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => not_found!("No such stream: {:?}", path),
+        };
         if self.dir_entry(stream_id).obj_type != consts::OBJ_TYPE_STREAM {
             invalid_input!("Not a stream: {:?}", path);
         }
@@ -707,7 +717,12 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     }
 
     fn touch_with_path(&mut self, path: &Path) -> io::Result<()> {
-        let stream_id = self.stream_id_for_path(path)?;
+        let names = internal::path::name_chain_from_path(path)?;
+        let path = internal::path::path_from_name_chain(&names);
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => not_found!("No such object: {:?}", path),
+        };
         if stream_id != consts::ROOT_STREAM_ID {
             debug_assert_ne!(self.dir_entry(stream_id).obj_type,
                              consts::OBJ_TYPE_ROOT);
@@ -1457,6 +1472,15 @@ mod tests {
         let mut actual_data = Vec::new();
         stream.read_to_end(&mut actual_data).unwrap();
         assert_eq!(actual_data, data);
+    }
+
+    #[test]
+    #[should_panic(expected = "Not a storage: \\\"/foo\\\"")]
+    fn read_storage_on_stream() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_stream("/foo").unwrap().write_all(b"foobar").unwrap();
+        comp.read_storage("/foo").unwrap();
     }
 }
 
