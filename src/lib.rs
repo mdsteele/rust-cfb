@@ -192,8 +192,6 @@ impl<F> CompoundFile<F> {
 
     // TODO: pub fn walk_storage
 
-    // TODO: pub fn remove_stream
-
     // TODO: pub fn copy_stream
 
     // TODO: pub fn rename
@@ -753,6 +751,38 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         })
     }
 
+    /// Removes the stream object at the provided path.
+    pub fn remove_stream<P: AsRef<Path>>(&mut self, path: P)
+                                         -> io::Result<()> {
+        self.remove_stream_with_path(path.as_ref())
+    }
+
+    fn remove_stream_with_path(&mut self, path: &Path) -> io::Result<()> {
+        let mut names = internal::path::name_chain_from_path(path)?;
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(parent_id) => parent_id,
+            None => not_found!("No such stream: {:?}", path),
+        };
+        let mut sector = {
+            let dir_entry = self.dir_entry(stream_id);
+            if dir_entry.obj_type != consts::OBJ_TYPE_STREAM {
+                invalid_input!("Not a stream: {:?}", path);
+            }
+            debug_assert_eq!(dir_entry.child, NO_STREAM);
+            dir_entry.start_sector
+        };
+        while sector != END_OF_CHAIN {
+            let next = self.fat[sector as usize];
+            self.free_sector(sector)?;
+            sector = next;
+        }
+        debug_assert!(!names.is_empty());
+        let name = names.pop().unwrap();
+        let parent_id = self.stream_id_for_name_chain(&names).unwrap();
+        self.remove_dir_entry(parent_id, name)?;
+        Ok(())
+    }
+
     /// Sets the modified time for the object at the given path to now.  Has no
     /// effect when called on the root storage.
     pub fn touch<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
@@ -1156,6 +1186,13 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             self.inner.write_u32::<LittleEndian>(replacement_id)?;
         }
         self.free_dir_entry(stream_id)?;
+        Ok(())
+    }
+
+    /// Deallocates the specified sector.
+    fn free_sector(&mut self, sector: u32) -> io::Result<()> {
+        self.set_fat(sector, consts::FREE_SECTOR)?;
+        // TODO: Truncate FAT if last FAT sector is now all free.
         Ok(())
     }
 
@@ -1642,11 +1679,28 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "No such storage: \\\"/foo\\\"")]
+    fn remove_nonexistent_storage() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.remove_storage("/foo").unwrap();
+    }
+
+    #[test]
     #[should_panic(expected = "Cannot remove the root storage object")]
     fn remove_root_storage() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
         comp.remove_storage("/").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Not a storage: \\\"/foo\\\"")]
+    fn remove_non_storage() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_stream("/foo").unwrap();
+        comp.remove_storage("/foo").unwrap();
     }
 
     #[test]
@@ -1657,6 +1711,43 @@ mod tests {
         comp.create_storage("/foo").unwrap();
         comp.create_storage("/foo/bar").unwrap();
         comp.remove_storage("/foo").unwrap();
+    }
+
+    #[test]
+    fn remove_streams() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_stream("/foo")
+            .unwrap()
+            .write_all(&vec![b'x'; 5000])
+            .unwrap();
+        comp.create_storage("/baz").unwrap();
+        comp.create_storage("/quux").unwrap();
+        comp.create_stream("/baz/blarg").unwrap();
+        comp.remove_stream("/foo").unwrap();
+        comp.remove_stream("/baz/blarg").unwrap();
+
+        let cursor = comp.into_inner();
+        let comp = CompoundFile::open(cursor).expect("open");
+        assert_eq!(list_storage(&comp, "/"), vec!["baz", "quux"]);
+        assert!(list_storage(&comp, "/baz").is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "No such stream: \\\"/foo\\\"")]
+    fn remove_nonexistent_stream() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.remove_stream("/foo").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Not a stream: \\\"/foo\\\"")]
+    fn remove_non_stream() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foo").unwrap();
+        comp.remove_stream("/foo").unwrap();
     }
 }
 
