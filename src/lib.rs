@@ -1347,8 +1347,63 @@ impl<'a, F: Seek> Stream<'a, F> {
     }
 }
 
-impl<'a, F: Write + Seek> Stream<'a, F> {
-    // TODO: pub fn set_len(&mut self, size: u64) -> io::Result<()>
+impl<'a, F: Read + Write + Seek> Stream<'a, F> {
+    /// Truncates or extends the stream, updating the size of this stream to
+    /// become `size`.
+    ///
+    /// If `size` is less than the stream's current size, then the stream will
+    /// be shrunk.  If it is greater than the stream's current size, then the
+    /// stream will be padded with zeros.
+    pub fn set_len(&mut self, size: u64) -> io::Result<()> {
+        let current_size = self.len();
+        if size == current_size {
+            Ok(()) // Do nothing.
+        } else if size > current_size {
+            let current_pos = self.seek(SeekFrom::End(0))?;
+            io::copy(&mut io::repeat(0).take(size - current_size), self)?;
+            self.seek(SeekFrom::Start(current_pos))?;
+            Ok(())
+        } else {
+            debug_assert!(current_size > 0);
+            self.mark_modified();
+            if size < self.offset_from_start {
+                self.seek(SeekFrom::Start(size))?;
+            }
+            let mut sector = self.current_sector;
+            debug_assert_ne!(sector, END_OF_CHAIN);
+            if size == 0 {
+                self.dir_entry_mut().start_sector = END_OF_CHAIN;
+                self.current_sector = END_OF_CHAIN;
+            } else {
+                if size % self.sector_len() as u64 == 0 {
+                    self.current_sector = END_OF_CHAIN;
+                }
+                if self.is_in_mini_stream() {
+                    let next = self.comp.minifat[sector as usize];
+                    self.comp.set_minifat(sector, END_OF_CHAIN)?;
+                    sector = next;
+                } else {
+                    let next = self.comp.fat[sector as usize];
+                    self.comp.set_fat(sector, END_OF_CHAIN)?;
+                    sector = next;
+                };
+            }
+            while sector != END_OF_CHAIN {
+                if self.is_in_mini_stream() {
+                    let next = self.comp.minifat[sector as usize];
+                    self.comp.free_mini_sector(sector)?;
+                    sector = next;
+                } else {
+                    let next = self.comp.fat[sector as usize];
+                    self.comp.free_sector(sector)?;
+                    sector = next;
+                }
+            }
+            self.dir_entry_mut().stream_len = size;
+            self.seek_to_current_position()?;
+            Ok(())
+        }
+    }
 
     fn mark_modified(&mut self) {
         if self.finisher.is_none() {
@@ -1359,7 +1414,7 @@ impl<'a, F: Write + Seek> Stream<'a, F> {
     }
 }
 
-impl<'a, F: Seek> Seek for Stream<'a, F> {
+impl<'a, F: Read + Seek> Seek for Stream<'a, F> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let total_len = self.len();
         let new_pos = match pos {
@@ -1748,6 +1803,52 @@ mod tests {
         let mut comp = CompoundFile::create(cursor).expect("create");
         comp.create_storage("/foo").unwrap();
         comp.remove_stream("/foo").unwrap();
+    }
+
+    #[test]
+    fn truncate_stream() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        {
+            let mut stream = comp.create_stream("/foobar").unwrap();
+            stream.write_all(&vec![b'x'; 5000]).unwrap();
+            stream.write_all(&vec![b'y'; 5000]).unwrap();
+            assert_eq!(stream.len(), 10000);
+            stream.set_len(5000).unwrap();
+            assert_eq!(stream.len(), 5000);
+            stream.write_all(&vec![b'x'; 1000]).unwrap();
+            assert_eq!(stream.len(), 6000);
+        }
+
+        let cursor = comp.into_inner();
+        let mut comp = CompoundFile::open(cursor).expect("open");
+        let mut stream = comp.open_stream("/foobar").unwrap();
+        assert_eq!(stream.len(), 6000);
+        let mut actual_data = Vec::new();
+        stream.read_to_end(&mut actual_data).unwrap();
+        assert_eq!(actual_data.len(), 6000);
+        assert!(actual_data == vec![b'x'; 6000]);
+    }
+
+    #[test]
+    fn extend_stream() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        {
+            let mut stream = comp.create_stream("/foobar").unwrap();
+            assert_eq!(stream.len(), 0);
+            stream.set_len(5000).unwrap();
+            assert_eq!(stream.len(), 5000);
+        }
+
+        let cursor = comp.into_inner();
+        let mut comp = CompoundFile::open(cursor).expect("open");
+        let mut stream = comp.open_stream("/foobar").unwrap();
+        assert_eq!(stream.len(), 5000);
+        let mut actual_data = Vec::new();
+        stream.read_to_end(&mut actual_data).unwrap();
+        assert_eq!(actual_data.len(), 5000);
+        assert!(actual_data == vec![0; 5000]);
     }
 }
 
