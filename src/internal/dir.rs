@@ -49,8 +49,8 @@ impl DirEntry {
         }
     }
 
-    pub fn read<R: Read>(reader: &mut R, version: Version)
-                         -> io::Result<DirEntry> {
+    pub fn read_from<R: Read>(reader: &mut R, version: Version)
+                              -> io::Result<DirEntry> {
         let name: String = {
             let mut name_chars: Vec<u16> = Vec::with_capacity(32);
             for _ in 0..32 {
@@ -138,7 +138,7 @@ impl DirEntry {
         })
     }
 
-    pub fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         debug_assert!(internal::path::validate_name(&self.name).is_ok());
         let name_utf16: Vec<u16> = self.name.encode_utf16().collect();
         debug_assert!(name_utf16.len() < 32);
@@ -193,8 +193,8 @@ mod tests {
             0, 0, 0, 0, // start sector
             0, 0, 0, 0, 0, 0, 0, 0, // stream length
         ];
-        let dir_entry = DirEntry::read(&mut (&input as &[u8]), Version::V4)
-            .unwrap();
+        let dir_entry =
+            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
         assert_eq!(&dir_entry.name, "Foobar");
         assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STORAGE);
         assert_eq!(dir_entry.color, consts::COLOR_BLACK);
@@ -232,7 +232,7 @@ mod tests {
             0, 0, 0, 0, // start sector
             0, 0, 0, 0, 0, 0, 0, 0, // stream length
         ];
-        DirEntry::read(&mut (&input as &[u8]), Version::V4).unwrap();
+        DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
             0, 0, 0, 0, // start sector
             0, 0, 0, 0, 0, 0, 0, 0, // stream length
         ];
-        DirEntry::read(&mut (&input as &[u8]), Version::V4).unwrap();
+        DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
     }
 }
 
