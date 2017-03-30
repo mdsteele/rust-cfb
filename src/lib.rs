@@ -357,19 +357,26 @@ impl<F: Seek> CompoundFile<F> {
     fn seek_within_mini_sector(&mut self, mini_sector: u32,
                                offset_within_mini_sector: u64)
                                -> io::Result<Sector<F>> {
-        let sector_len = self.sectors.sector_len() as u64;
+        let sector_len = self.sectors.sector_len();
         let offset_within_mini_stream = offset_within_mini_sector +
                                         consts::MINI_SECTOR_LEN as u64 *
                                         mini_sector as u64;
         let mini_stream_start_sector = self.root_dir_entry().start_sector;
         let mut mini_stream_sector = mini_stream_start_sector;
-        for _ in 0..(offset_within_mini_stream / sector_len) {
+        for _ in 0..(offset_within_mini_stream / sector_len as u64) {
             debug_assert_ne!(mini_stream_sector, END_OF_CHAIN);
             mini_stream_sector = self.fat[mini_stream_sector as usize];
         }
-        let offset_within_sector = offset_within_mini_stream % sector_len;
-        self.sectors
-            .seek_within_sector(mini_stream_sector, offset_within_sector)
+        let mini_sectors_per_sector = sector_len / consts::MINI_SECTOR_LEN;
+        let mini_sector_start_within_sector = (mini_sector as usize %
+                                               mini_sectors_per_sector) *
+                                              consts::MINI_SECTOR_LEN;
+        let offset_within_sector = offset_within_mini_stream %
+                                   sector_len as u64;
+        let sector = self.sectors
+            .seek_within_sector(mini_stream_sector, offset_within_sector)?;
+        Ok(sector.subsector(mini_sector_start_within_sector,
+                            consts::MINI_SECTOR_LEN))
     }
 
     fn seek_to_dir_entry(&mut self, stream_id: u32) -> io::Result<Sector<F>> {
@@ -1469,11 +1476,7 @@ impl<'a, F: Read + Seek> Read for Stream<'a, F> {
             self.advance_to_next_sector();
         }
         debug_assert!(self.offset_within_sector < sector_len);
-        let remaining_in_sector = sector_len - self.offset_within_sector;
-        let max_len = cmp::min(buf.len() as u64,
-                               cmp::min(remaining_in_file,
-                                        remaining_in_sector as u64)) as
-                      usize;
+        let max_len = cmp::min(buf.len() as u64, remaining_in_file) as usize;
         if max_len == 0 {
             return Ok(0);
         }
@@ -1515,12 +1518,7 @@ impl<'a, F: Read + Write + Seek> Write for Stream<'a, F> {
         }
         debug_assert_ne!(self.current_sector, END_OF_CHAIN);
         debug_assert!(self.offset_within_sector < sector_len);
-        let remaining_in_sector = sector_len - self.offset_within_sector;
-        let max_len = cmp::min(buf.len() as u64, remaining_in_sector as u64) as
-                      usize;
-        debug_assert!(max_len > 0);
-        let bytes_written = self.seek_to_current_position()?
-            .write(&buf[0..max_len])?;
+        let bytes_written = self.seek_to_current_position()?.write(buf)?;
         self.offset_within_sector += bytes_written;
         debug_assert!(self.offset_within_sector <= sector_len);
         self.offset_from_start += bytes_written as u64;

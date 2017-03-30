@@ -34,10 +34,11 @@ impl<F> Sectors<F> {
 impl<F: Seek> Sectors<F> {
     pub fn seek_within_header(&mut self, offset_within_header: u64)
                               -> io::Result<Sector<F>> {
-        debug_assert!(offset_within_header < self.sector_len() as u64);
+        debug_assert!(offset_within_header < consts::HEADER_LEN as u64);
         self.inner.seek(SeekFrom::Start(offset_within_header))?;
         Ok(Sector {
-            sectors: self,
+            inner: &mut self.inner,
+            sector_len: consts::HEADER_LEN,
             offset_within_sector: offset_within_header as usize,
         })
     }
@@ -51,12 +52,13 @@ impl<F: Seek> Sectors<F> {
                               -> io::Result<Sector<F>> {
         debug_assert!(sector_id < self.num_sectors);
         debug_assert!(offset_within_sector < self.sector_len() as u64);
-        let sector_len = self.sector_len() as u64;
+        let sector_len = self.sector_len();
         self.inner
-            .seek(SeekFrom::Start((sector_id + 1) as u64 * sector_len +
+            .seek(SeekFrom::Start((sector_id + 1) as u64 * sector_len as u64 +
                                   offset_within_sector))?;
         Ok(Sector {
-            sectors: self,
+            inner: &mut self.inner,
+            sector_len: sector_len,
             offset_within_sector: offset_within_sector as usize,
         })
     }
@@ -81,20 +83,33 @@ impl<F: Write + Seek> Sectors<F> {
 
 // ========================================================================= //
 
-/// A wrapper around a single sector within a CFB file, allowing read and write
-/// access only within that sector.
+/// A wrapper around a single sector or mini sector within a CFB file, allowing
+/// read and write access only within that sector.
 pub struct Sector<'a, F: 'a> {
-    sectors: &'a mut Sectors<F>,
+    inner: &'a mut F,
+    sector_len: usize,
     offset_within_sector: usize,
 }
 
 impl<'a, F> Sector<'a, F> {
     /// Returns the total length of this sector.
-    pub fn len(&self) -> usize { self.sectors.sector_len() }
+    pub fn len(&self) -> usize { self.sector_len }
 
     fn remaining(&self) -> usize {
         debug_assert!(self.offset_within_sector <= self.len());
         self.len() - self.offset_within_sector
+    }
+
+    pub fn subsector(self, start: usize, len: usize) -> Sector<'a, F> {
+        debug_assert!(self.offset_within_sector <= self.len());
+        debug_assert!(start <= self.offset_within_sector);
+        debug_assert!(start + len >= self.offset_within_sector);
+        debug_assert!(start + len <= self.len());
+        Sector {
+            inner: self.inner,
+            sector_len: len,
+            offset_within_sector: self.offset_within_sector - start,
+        }
     }
 }
 
@@ -104,7 +119,7 @@ impl<'a, F: Read> Read for Sector<'a, F> {
         if max_len == 0 {
             return Ok(0);
         }
-        let bytes_read = self.sectors.inner.read(&mut buf[0..max_len])?;
+        let bytes_read = self.inner.read(&mut buf[0..max_len])?;
         self.offset_within_sector += bytes_read;
         debug_assert!(self.offset_within_sector <= self.len());
         Ok(bytes_read)
@@ -117,13 +132,13 @@ impl<'a, F: Write> Write for Sector<'a, F> {
         if max_len == 0 {
             return Ok(0);
         }
-        let bytes_written = self.sectors.inner.write(&buf[0..max_len])?;
+        let bytes_written = self.inner.write(&buf[0..max_len])?;
         self.offset_within_sector += bytes_written;
         debug_assert!(self.offset_within_sector <= self.len());
         Ok(bytes_written)
     }
 
-    fn flush(&mut self) -> io::Result<()> { self.sectors.inner.flush() }
+    fn flush(&mut self) -> io::Result<()> { self.inner.flush() }
 }
 
 impl<'a, F: Seek> Seek for Sector<'a, F> {
@@ -139,9 +154,7 @@ impl<'a, F: Seek> Seek for Sector<'a, F> {
         if new_offset < 0 || new_offset > self.len() as i64 {
             panic!("Internal error: cannot seek outside of sector");
         }
-        self.sectors
-            .inner
-            .seek(SeekFrom::Current(new_offset - old_offset))?;
+        self.inner.seek(SeekFrom::Current(new_offset - old_offset))?;
         self.offset_within_sector = new_offset as usize;
         Ok(new_offset as u64)
     }
@@ -165,11 +178,13 @@ impl SectorInit {
                          sector)?;
             }
             SectorInit::Fat => {
+                debug_assert_eq!(sector.len() % 4, 0);
                 for _ in 0..(sector.len() / 4) {
                     sector.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
                 }
             }
             SectorInit::Dir => {
+                debug_assert_eq!(sector.len() % consts::DIR_ENTRY_LEN, 0);
                 let dir_entry = DirEntry::unallocated();
                 for _ in 0..(sector.len() / consts::DIR_ENTRY_LEN) {
                     dir_entry.write_to(sector)?;
