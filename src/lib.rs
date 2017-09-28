@@ -151,10 +151,10 @@ impl<F> CompoundFile<F> {
     /// Given a path within the compound file, get information about that
     /// stream or storage object.
     pub fn entry<P: AsRef<Path>>(&self, path: P) -> io::Result<Entry> {
-        self.entry_for_path(path.as_ref())
+        self.entry_with_path(path.as_ref())
     }
 
-    fn entry_for_path(&self, path: &Path) -> io::Result<Entry> {
+    fn entry_with_path(&self, path: &Path) -> io::Result<Entry> {
         let names = internal::path::name_chain_from_path(path)?;
         let path = internal::path::path_from_name_chain(&names);
         let stream_id = match self.stream_id_for_name_chain(&names) {
@@ -167,10 +167,10 @@ impl<F> CompoundFile<F> {
     /// Returns an iterator over the entries within a storage object.
     pub fn read_storage<P: AsRef<Path>>(&self, path: P)
                                         -> io::Result<Entries> {
-        self.read_storage_for_path(path.as_ref())
+        self.read_storage_with_path(path.as_ref())
     }
 
-    fn read_storage_for_path(&self, path: &Path) -> io::Result<Entries> {
+    fn read_storage_with_path(&self, path: &Path) -> io::Result<Entries> {
         let names = internal::path::name_chain_from_path(path)?;
         let path = internal::path::path_from_name_chain(&names);
         let stream_id = match self.stream_id_for_name_chain(&names) {
@@ -404,10 +404,10 @@ impl<F: Seek> CompoundFile<F> {
     /// writing (depending on what the underlying file supports).
     pub fn open_stream<P: AsRef<Path>>(&mut self, path: P)
                                        -> io::Result<Stream<F>> {
-        self.open_stream_for_path(path.as_ref())
+        self.open_stream_with_path(path.as_ref())
     }
 
-    fn open_stream_for_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
+    fn open_stream_with_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
         let names = internal::path::name_chain_from_path(path)?;
         let path = internal::path::path_from_name_chain(&names);
         let stream_id = match self.stream_id_for_name_chain(&names) {
@@ -681,8 +681,12 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
 
     fn create_storage_with_path(&mut self, path: &Path) -> io::Result<()> {
         let mut names = internal::path::name_chain_from_path(path)?;
-        if self.stream_id_for_name_chain(&names).is_some() {
-            already_exists!("An object already exists at that path");
+        if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
+            if self.dir_entry(stream_id).obj_type != consts::OBJ_TYPE_STREAM {
+                already_exists!("A storage already exists at that path");
+            } else {
+                already_exists!("A stream already exists at that path");
+            }
         }
         // If names is empty, that means we're trying to create the root.  But
         // the root always already exists and will have been rejected above.
@@ -732,17 +736,34 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     }
 
     /// Creates and returns a new, empty stream object at the provided path.
-    /// The parent storage object must already exist.
+    /// If a stream already exists at that path, it will be replaced by the new
+    /// stream.  The parent storage object must already exist.
     pub fn create_stream<P: AsRef<Path>>(&mut self, path: P)
                                          -> io::Result<Stream<F>> {
-        self.create_stream_with_path(path.as_ref())
+        self.create_stream_with_path(path.as_ref(), true)
     }
 
-    fn create_stream_with_path(&mut self, path: &Path)
+    /// Creates and returns a new, empty stream object at the provided path.
+    /// Returns an error if a stream already exists at that path.  The parent
+    /// storage object must already exist.
+    pub fn create_new_stream<P: AsRef<Path>>(&mut self, path: P)
+                                             -> io::Result<Stream<F>> {
+        self.create_stream_with_path(path.as_ref(), false)
+    }
+
+    fn create_stream_with_path(&mut self, path: &Path, overwrite: bool)
                                -> io::Result<Stream<F>> {
         let mut names = internal::path::name_chain_from_path(path)?;
-        if self.stream_id_for_name_chain(&names).is_some() {
-            already_exists!("An object already exists at that path");
+        if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
+            if self.dir_entry(stream_id).obj_type != consts::OBJ_TYPE_STREAM {
+                already_exists!("A storage already exists at that path");
+            } else if !overwrite {
+                already_exists!("A stream already exists at that path");
+            } else {
+                let mut stream = Stream::new(self, stream_id)?;
+                stream.set_len(0)?;
+                return Ok(stream);
+            }
         }
         // If names is empty, that means we're trying to create the root.  But
         // the root always already exists and will have been rejected above.
@@ -1729,6 +1750,76 @@ mod tests {
     }
 
     #[test]
+    fn create_stream_where_stream_exists() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        let data1 = vec![b'x'; 200];
+        comp.create_stream("/foobar").unwrap().write_all(&data1).unwrap();
+        let data2 = vec![b'y'; 100];
+        comp.create_stream("/foobar").unwrap().write_all(&data2).unwrap();
+        let mut stream = comp.open_stream("/foobar").expect("open");
+        assert_eq!(stream.len(), data2.len() as u64);
+        let mut actual_data = Vec::new();
+        stream.read_to_end(&mut actual_data).unwrap();
+        assert_eq!(actual_data, data2);
+    }
+
+    #[test]
+    #[should_panic(expected = "A storage already exists at that path")]
+    fn create_stream_where_storage_exists() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foobar/").expect("create_storage");
+        comp.create_stream("/foobar").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "A stream already exists at that path")]
+    fn create_new_stream_where_stream_exists() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        let data = vec![b'x'; 200];
+        comp.create_new_stream("/foobar").unwrap().write_all(&data).unwrap();
+        comp.create_new_stream("/foobar").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "A storage already exists at that path")]
+    fn create_new_stream_where_storage_exists() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foobar/").expect("create_storage");
+        comp.create_new_stream("/foobar").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "A stream already exists at that path")]
+    fn create_storage_where_stream_exists() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        let data = vec![b'x'; 200];
+        comp.create_new_stream("/foobar").unwrap().write_all(&data).unwrap();
+        comp.create_storage("/foobar/").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "A storage already exists at that path")]
+    fn create_storage_where_storage_exists() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foobar/").expect("create_storage");
+        comp.create_storage("/foobar/").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "A storage already exists at that path")]
+    fn create_root_storage() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/").unwrap();
+    }
+
+    #[test]
     #[should_panic(expected = "Not a storage: \\\"/foo\\\"")]
     fn read_storage_on_stream() {
         let cursor = Cursor::new(Vec::new());
@@ -1872,6 +1963,31 @@ mod tests {
         stream.read_to_end(&mut actual_data).unwrap();
         assert_eq!(actual_data.len(), 5000);
         assert!(actual_data == vec![0; 5000]);
+    }
+
+    #[test]
+    fn stream_seek() {
+        let mut data = Vec::new();
+        data.append(&mut vec![1; 128]);
+        data.append(&mut vec![2; 128]);
+        data.append(&mut vec![3; 128]);
+        data.append(&mut vec![4; 128]);
+        assert_eq!(data.len(), 512);
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_stream("foobar").unwrap().write_all(&data).unwrap();
+        let mut stream = comp.open_stream("foobar").expect("open");
+        assert_eq!(stream.len(), 512);
+        let mut buffer = vec![0; 128];
+        assert_eq!(stream.seek(SeekFrom::Start(128)).unwrap(), 128);
+        stream.read_exact(&mut buffer).unwrap();
+        assert_eq!(buffer, vec![2; 128]);
+        assert_eq!(stream.seek(SeekFrom::End(-128)).unwrap(), 384);
+        stream.read_exact(&mut buffer).unwrap();
+        assert_eq!(buffer, vec![4; 128]);
+        assert_eq!(stream.seek(SeekFrom::Current(-256)).unwrap(), 256);
+        stream.read_exact(&mut buffer).unwrap();
+        assert_eq!(buffer, vec![3; 128]);
     }
 }
 
