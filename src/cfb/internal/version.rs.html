@@ -17,7 +17,7 @@
     
     
 </head>
-<body class="rustdoc">
+<body class="rustdoc source">
     <!--[if lte IE 8]>
     <div class="warning">
         This old browser is unsupported and will most likely display funky
@@ -43,7 +43,7 @@
         </form>
     </nav>
 
-    <section id='main' class="content source"><pre class="line-numbers"><span id="1"> 1</span>
+    <section id='main' class="content"><pre class="line-numbers"><span id="1"> 1</span>
 <span id="2"> 2</span>
 <span id="3"> 3</span>
 <span id="4"> 4</span>
@@ -120,84 +120,84 @@
 <span id="75">75</span>
 <span id="76">76</span>
 <span id="77">77</span>
-</pre><pre class='rust '>
-<span class='kw'>use</span> <span class='ident'>internal</span>::<span class='ident'>consts</span>;
+</pre><pre class="rust ">
+<span class="kw">use</span> <span class="ident">internal</span>::<span class="ident">consts</span>;
 
-<span class='comment'>// ========================================================================= //</span>
+<span class="comment">// ========================================================================= //</span>
 
-<span class='doccomment'>/// The CFB format version to use.</span>
-<span class='attribute'>#[<span class='ident'>derive</span>(<span class='ident'>Clone</span>, <span class='ident'>Copy</span>, <span class='ident'>Debug</span>, <span class='ident'>Eq</span>, <span class='ident'>PartialEq</span>)]</span>
-<span class='kw'>pub</span> <span class='kw'>enum</span> <span class='ident'>Version</span> {
-    <span class='doccomment'>/// Version 3, which uses 512-byte sectors.</span>
-    <span class='ident'>V3</span>,
-    <span class='doccomment'>/// Version 4, which uses 4096-byte sectors.</span>
-    <span class='ident'>V4</span>,
+<span class="doccomment">/// The CFB format version to use.</span>
+<span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>, <span class="ident">Copy</span>, <span class="ident">Debug</span>, <span class="ident">Eq</span>, <span class="ident">PartialEq</span>)]</span>
+<span class="kw">pub</span> <span class="kw">enum</span> <span class="ident">Version</span> {
+    <span class="doccomment">/// Version 3, which uses 512-byte sectors.</span>
+    <span class="ident">V3</span>,
+    <span class="doccomment">/// Version 4, which uses 4096-byte sectors.</span>
+    <span class="ident">V4</span>,
 }
 
-<span class='kw'>impl</span> <span class='ident'>Version</span> {
-    <span class='doccomment'>/// Returns the version enum for the given version number, or `None`.</span>
-    <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>from_number</span>(<span class='ident'>number</span>: <span class='ident'>u16</span>) <span class='op'>-&gt;</span> <span class='prelude-ty'>Option</span><span class='op'>&lt;</span><span class='ident'>Version</span><span class='op'>&gt;</span> {
-        <span class='kw'>match</span> <span class='ident'>number</span> {
-            <span class='number'>3</span> <span class='op'>=&gt;</span> <span class='prelude-val'>Some</span>(<span class='ident'>Version</span>::<span class='ident'>V3</span>),
-            <span class='number'>4</span> <span class='op'>=&gt;</span> <span class='prelude-val'>Some</span>(<span class='ident'>Version</span>::<span class='ident'>V4</span>),
-            _ <span class='op'>=&gt;</span> <span class='prelude-val'>None</span>,
+<span class="kw">impl</span> <span class="ident">Version</span> {
+    <span class="doccomment">/// Returns the version enum for the given version number, or `None`.</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">from_number</span>(<span class="ident">number</span>: <span class="ident">u16</span>) <span class="op">-&gt;</span> <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">Version</span><span class="op">&gt;</span> {
+        <span class="kw">match</span> <span class="ident">number</span> {
+            <span class="number">3</span> <span class="op">=&gt;</span> <span class="prelude-val">Some</span>(<span class="ident">Version</span>::<span class="ident">V3</span>),
+            <span class="number">4</span> <span class="op">=&gt;</span> <span class="prelude-val">Some</span>(<span class="ident">Version</span>::<span class="ident">V4</span>),
+            _ <span class="op">=&gt;</span> <span class="prelude-val">None</span>,
         }
     }
 
-    <span class='doccomment'>/// Returns the version number for this version.</span>
-    <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>number</span>(<span class='self'>self</span>) <span class='op'>-&gt;</span> <span class='ident'>u16</span> {
-        <span class='kw'>match</span> <span class='self'>self</span> {
-            <span class='ident'>Version</span>::<span class='ident'>V3</span> <span class='op'>=&gt;</span> <span class='number'>3</span>,
-            <span class='ident'>Version</span>::<span class='ident'>V4</span> <span class='op'>=&gt;</span> <span class='number'>4</span>,
+    <span class="doccomment">/// Returns the version number for this version.</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">number</span>(<span class="self">self</span>) <span class="op">-&gt;</span> <span class="ident">u16</span> {
+        <span class="kw">match</span> <span class="self">self</span> {
+            <span class="ident">Version</span>::<span class="ident">V3</span> <span class="op">=&gt;</span> <span class="number">3</span>,
+            <span class="ident">Version</span>::<span class="ident">V4</span> <span class="op">=&gt;</span> <span class="number">4</span>,
         }
     }
 
-    <span class='doccomment'>/// Returns the sector shift used in this version.</span>
-    <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>sector_shift</span>(<span class='self'>self</span>) <span class='op'>-&gt;</span> <span class='ident'>u16</span> {
-        <span class='kw'>match</span> <span class='self'>self</span> {
-            <span class='ident'>Version</span>::<span class='ident'>V3</span> <span class='op'>=&gt;</span> <span class='number'>9</span>, <span class='comment'>// 512-byte sectors</span>
-            <span class='ident'>Version</span>::<span class='ident'>V4</span> <span class='op'>=&gt;</span> <span class='number'>12</span>, <span class='comment'>// 4096-byte sectors</span>
+    <span class="doccomment">/// Returns the sector shift used in this version.</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">sector_shift</span>(<span class="self">self</span>) <span class="op">-&gt;</span> <span class="ident">u16</span> {
+        <span class="kw">match</span> <span class="self">self</span> {
+            <span class="ident">Version</span>::<span class="ident">V3</span> <span class="op">=&gt;</span> <span class="number">9</span>, <span class="comment">// 512-byte sectors</span>
+            <span class="ident">Version</span>::<span class="ident">V4</span> <span class="op">=&gt;</span> <span class="number">12</span>, <span class="comment">// 4096-byte sectors</span>
         }
     }
 
-    <span class='doccomment'>/// Returns the length of sectors used in this version.</span>
-    <span class='doccomment'>///</span>
-    <span class='doccomment'>/// ```</span>
-    <span class='doccomment'>/// use cfb::Version;</span>
-    <span class='doccomment'>/// assert_eq!(Version::V3.sector_len(), 512);</span>
-    <span class='doccomment'>/// assert_eq!(Version::V4.sector_len(), 4096);</span>
-    <span class='doccomment'>/// ```</span>
-    <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>sector_len</span>(<span class='self'>self</span>) <span class='op'>-&gt;</span> <span class='ident'>usize</span> { <span class='number'>1</span> <span class='op'>&lt;&lt;</span> (<span class='self'>self</span>.<span class='ident'>sector_shift</span>() <span class='kw'>as</span> <span class='ident'>usize</span>) }
+    <span class="doccomment">/// Returns the length of sectors used in this version.</span>
+    <span class="doccomment">///</span>
+    <span class="doccomment">/// ```</span>
+    <span class="doccomment">/// use cfb::Version;</span>
+    <span class="doccomment">/// assert_eq!(Version::V3.sector_len(), 512);</span>
+    <span class="doccomment">/// assert_eq!(Version::V4.sector_len(), 4096);</span>
+    <span class="doccomment">/// ```</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">sector_len</span>(<span class="self">self</span>) <span class="op">-&gt;</span> <span class="ident">usize</span> { <span class="number">1</span> <span class="op">&lt;&lt;</span> (<span class="self">self</span>.<span class="ident">sector_shift</span>() <span class="kw">as</span> <span class="ident">usize</span>) }
 
-    <span class='doccomment'>/// Returns the bitmask used for reading stream lengths in this version.</span>
-    <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>stream_len_mask</span>(<span class='self'>self</span>) <span class='op'>-&gt;</span> <span class='ident'>u64</span> {
-        <span class='kw'>match</span> <span class='self'>self</span> {
-            <span class='ident'>Version</span>::<span class='ident'>V3</span> <span class='op'>=&gt;</span> <span class='number'>0xffffffff</span>,
-            <span class='ident'>Version</span>::<span class='ident'>V4</span> <span class='op'>=&gt;</span> <span class='number'>0xffffffffffffffff</span>,
+    <span class="doccomment">/// Returns the bitmask used for reading stream lengths in this version.</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">stream_len_mask</span>(<span class="self">self</span>) <span class="op">-&gt;</span> <span class="ident">u64</span> {
+        <span class="kw">match</span> <span class="self">self</span> {
+            <span class="ident">Version</span>::<span class="ident">V3</span> <span class="op">=&gt;</span> <span class="number">0xffffffff</span>,
+            <span class="ident">Version</span>::<span class="ident">V4</span> <span class="op">=&gt;</span> <span class="number">0xffffffffffffffff</span>,
         }
     }
 
-    <span class='doccomment'>/// Returns the number of directory entries per sector in this version.</span>
-    <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>dir_entries_per_sector</span>(<span class='self'>self</span>) <span class='op'>-&gt;</span> <span class='ident'>usize</span> {
-        <span class='self'>self</span>.<span class='ident'>sector_len</span>() <span class='op'>/</span> <span class='ident'>consts</span>::<span class='ident'>DIR_ENTRY_LEN</span>
-    }
-}
-
-<span class='comment'>// ========================================================================= //</span>
-
-<span class='attribute'>#[<span class='ident'>cfg</span>(<span class='ident'>test</span>)]</span>
-<span class='kw'>mod</span> <span class='ident'>tests</span> {
-    <span class='kw'>use</span> <span class='kw'>super</span>::<span class='ident'>Version</span>;
-
-    <span class='attribute'>#[<span class='ident'>test</span>]</span>
-    <span class='kw'>fn</span> <span class='ident'>number_round_trip</span>() {
-        <span class='kw'>for</span> <span class='kw-2'>&amp;</span><span class='ident'>version</span> <span class='kw'>in</span> <span class='kw-2'>&amp;</span>[<span class='ident'>Version</span>::<span class='ident'>V3</span>, <span class='ident'>Version</span>::<span class='ident'>V4</span>] {
-            <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>Version</span>::<span class='ident'>from_number</span>(<span class='ident'>version</span>.<span class='ident'>number</span>()), <span class='prelude-val'>Some</span>(<span class='ident'>version</span>));
-        }
+    <span class="doccomment">/// Returns the number of directory entries per sector in this version.</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">dir_entries_per_sector</span>(<span class="self">self</span>) <span class="op">-&gt;</span> <span class="ident">usize</span> {
+        <span class="self">self</span>.<span class="ident">sector_len</span>() <span class="op">/</span> <span class="ident">consts</span>::<span class="ident">DIR_ENTRY_LEN</span>
     }
 }
 
-<span class='comment'>// ========================================================================= //</span>
+<span class="comment">// ========================================================================= //</span>
+
+<span class="attribute">#[<span class="ident">cfg</span>(<span class="ident">test</span>)]</span>
+<span class="kw">mod</span> <span class="ident">tests</span> {
+    <span class="kw">use</span> <span class="kw">super</span>::<span class="ident">Version</span>;
+
+    <span class="attribute">#[<span class="ident">test</span>]</span>
+    <span class="kw">fn</span> <span class="ident">number_round_trip</span>() {
+        <span class="kw">for</span> <span class="kw-2">&amp;</span><span class="ident">version</span> <span class="kw">in</span> <span class="kw-2">&amp;</span>[<span class="ident">Version</span>::<span class="ident">V3</span>, <span class="ident">Version</span>::<span class="ident">V4</span>] {
+            <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">Version</span>::<span class="ident">from_number</span>(<span class="ident">version</span>.<span class="ident">number</span>()), <span class="prelude-val">Some</span>(<span class="ident">version</span>));
+        }
+    }
+}
+
+<span class="comment">// ========================================================================= //</span>
 </pre>
 </section>
     <section id='search' class="content hidden"></section>
@@ -256,7 +256,6 @@
         window.rootPath = "../../../";
         window.currentCrate = "cfb";
     </script>
-    <script src="../../../jquery.js"></script>
     <script src="../../../main.js"></script>
     <script defer src="../../../search-index.js"></script>
 </body>

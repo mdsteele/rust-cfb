@@ -1,5 +1,5 @@
 (function() {var implementors = {};
-implementors["cfb"] = ["impl <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html' title='core::marker::Copy'>Copy</a> for <a class='enum' href='cfb/enum.Version.html' title='cfb::Version'>Version</a>",];
+implementors["cfb"] = ["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"cfb/enum.Version.html\" title=\"enum cfb::Version\">Version</a>",];
 
             if (window.register_implementors) {
                 window.register_implementors(implementors);

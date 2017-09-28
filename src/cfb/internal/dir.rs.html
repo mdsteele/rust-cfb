@@ -17,7 +17,7 @@
     
     
 </head>
-<body class="rustdoc">
+<body class="rustdoc source">
     <!--[if lte IE 8]>
     <div class="warning">
         This old browser is unsupported and will most likely display funky
@@ -43,7 +43,7 @@
         </form>
     </nav>
 
-    <section id='main' class="content source"><pre class="line-numbers"><span id="1">  1</span>
+    <section id='main' class="content"><pre class="line-numbers"><span id="1">  1</span>
 <span id="2">  2</span>
 <span id="3">  3</span>
 <span id="4">  4</span>
@@ -306,270 +306,272 @@
 <span id="261">261</span>
 <span id="262">262</span>
 <span id="263">263</span>
-</pre><pre class='rust '>
-<span class='kw'>use</span> <span class='ident'>byteorder</span>::{<span class='ident'>LittleEndian</span>, <span class='ident'>ReadBytesExt</span>, <span class='ident'>WriteBytesExt</span>};
-<span class='kw'>use</span> <span class='ident'>internal</span>::{<span class='self'>self</span>, <span class='ident'>Version</span>};
-<span class='kw'>use</span> <span class='ident'>internal</span>::<span class='ident'>consts</span>::{<span class='self'>self</span>, <span class='ident'>MAX_REGULAR_STREAM_ID</span>, <span class='ident'>NO_STREAM</span>};
-<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>io</span>::{<span class='self'>self</span>, <span class='ident'>Read</span>, <span class='ident'>Write</span>};
+<span id="264">264</span>
+</pre><pre class="rust ">
+<span class="kw">use</span> <span class="ident">byteorder</span>::{<span class="ident">LittleEndian</span>, <span class="ident">ReadBytesExt</span>, <span class="ident">WriteBytesExt</span>};
+<span class="kw">use</span> <span class="ident">internal</span>::{<span class="self">self</span>, <span class="ident">Version</span>};
+<span class="kw">use</span> <span class="ident">internal</span>::<span class="ident">consts</span>::{<span class="self">self</span>, <span class="ident">MAX_REGULAR_STREAM_ID</span>, <span class="ident">NO_STREAM</span>};
+<span class="kw">use</span> <span class="ident">std</span>::<span class="ident">io</span>::{<span class="self">self</span>, <span class="ident">Read</span>, <span class="ident">Write</span>};
 
-<span class='comment'>// ========================================================================= //</span>
+<span class="comment">// ========================================================================= //</span>
 
-<span class='macro'>macro_rules</span><span class='macro'>!</span> <span class='ident'>malformed</span> {
-    (<span class='macro-nonterminal'>$</span><span class='macro-nonterminal'>e</span>:<span class='ident'>expr</span>) <span class='op'>=&gt;</span> { <span class='macro'>invalid_data</span><span class='macro'>!</span>(<span class='string'>&quot;Malformed directory entry ({})&quot;</span>, <span class='macro-nonterminal'>$</span><span class='macro-nonterminal'>e</span>) };
-    (<span class='macro-nonterminal'>$</span><span class='macro-nonterminal'>fmt</span>:<span class='ident'>expr</span>, $(<span class='macro-nonterminal'>$</span><span class='macro-nonterminal'>arg</span>:<span class='ident'>tt</span>)<span class='op'>+</span>) <span class='op'>=&gt;</span> {
-        <span class='macro'>invalid_data</span><span class='macro'>!</span>(<span class='string'>&quot;Malformed directory entry ({})&quot;</span>,
-                      <span class='macro'>format</span><span class='macro'>!</span>(<span class='macro-nonterminal'>$</span><span class='macro-nonterminal'>fmt</span>, $(<span class='macro-nonterminal'>$</span><span class='macro-nonterminal'>arg</span>)<span class='op'>+</span>))
+<span class="macro">macro_rules</span><span class="macro">!</span> <span class="ident">malformed</span> {
+    (<span class="macro-nonterminal">$</span><span class="macro-nonterminal">e</span>:<span class="ident">expr</span>) <span class="op">=&gt;</span> { <span class="macro">invalid_data</span><span class="macro">!</span>(<span class="string">&quot;Malformed directory entry ({})&quot;</span>, <span class="macro-nonterminal">$</span><span class="macro-nonterminal">e</span>) };
+    (<span class="macro-nonterminal">$</span><span class="macro-nonterminal">fmt</span>:<span class="ident">expr</span>, $(<span class="macro-nonterminal">$</span><span class="macro-nonterminal">arg</span>:<span class="ident">tt</span>)<span class="op">+</span>) <span class="op">=&gt;</span> {
+        <span class="macro">invalid_data</span><span class="macro">!</span>(<span class="string">&quot;Malformed directory entry ({})&quot;</span>,
+                      <span class="macro">format</span><span class="macro">!</span>(<span class="macro-nonterminal">$</span><span class="macro-nonterminal">fmt</span>, $(<span class="macro-nonterminal">$</span><span class="macro-nonterminal">arg</span>)<span class="op">+</span>))
     };
 }
 
-<span class='comment'>// ========================================================================= //</span>
+<span class="comment">// ========================================================================= //</span>
 
-<span class='kw'>pub</span> <span class='kw'>struct</span> <span class='ident'>DirEntry</span> {
-    <span class='kw'>pub</span> <span class='ident'>name</span>: <span class='ident'>String</span>,
-    <span class='kw'>pub</span> <span class='ident'>obj_type</span>: <span class='ident'>u8</span>,
-    <span class='kw'>pub</span> <span class='ident'>color</span>: <span class='ident'>u8</span>,
-    <span class='kw'>pub</span> <span class='ident'>left_sibling</span>: <span class='ident'>u32</span>,
-    <span class='kw'>pub</span> <span class='ident'>right_sibling</span>: <span class='ident'>u32</span>,
-    <span class='kw'>pub</span> <span class='ident'>child</span>: <span class='ident'>u32</span>,
-    <span class='kw'>pub</span> <span class='ident'>clsid</span>: [<span class='ident'>u8</span>; <span class='number'>16</span>],
-    <span class='kw'>pub</span> <span class='ident'>state_bits</span>: <span class='ident'>u32</span>,
-    <span class='kw'>pub</span> <span class='ident'>creation_time</span>: <span class='ident'>u64</span>,
-    <span class='kw'>pub</span> <span class='ident'>modified_time</span>: <span class='ident'>u64</span>,
-    <span class='kw'>pub</span> <span class='ident'>start_sector</span>: <span class='ident'>u32</span>,
-    <span class='kw'>pub</span> <span class='ident'>stream_len</span>: <span class='ident'>u64</span>,
+<span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>)]</span>
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">DirEntry</span> {
+    <span class="kw">pub</span> <span class="ident">name</span>: <span class="ident">String</span>,
+    <span class="kw">pub</span> <span class="ident">obj_type</span>: <span class="ident">u8</span>,
+    <span class="kw">pub</span> <span class="ident">color</span>: <span class="ident">u8</span>,
+    <span class="kw">pub</span> <span class="ident">left_sibling</span>: <span class="ident">u32</span>,
+    <span class="kw">pub</span> <span class="ident">right_sibling</span>: <span class="ident">u32</span>,
+    <span class="kw">pub</span> <span class="ident">child</span>: <span class="ident">u32</span>,
+    <span class="kw">pub</span> <span class="ident">clsid</span>: [<span class="ident">u8</span>; <span class="number">16</span>],
+    <span class="kw">pub</span> <span class="ident">state_bits</span>: <span class="ident">u32</span>,
+    <span class="kw">pub</span> <span class="ident">creation_time</span>: <span class="ident">u64</span>,
+    <span class="kw">pub</span> <span class="ident">modified_time</span>: <span class="ident">u64</span>,
+    <span class="kw">pub</span> <span class="ident">start_sector</span>: <span class="ident">u32</span>,
+    <span class="kw">pub</span> <span class="ident">stream_len</span>: <span class="ident">u64</span>,
 }
 
-<span class='kw'>impl</span> <span class='ident'>DirEntry</span> {
-    <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>unallocated</span>() <span class='op'>-&gt;</span> <span class='ident'>DirEntry</span> {
-        <span class='ident'>DirEntry</span> {
-            <span class='ident'>name</span>: <span class='ident'>String</span>::<span class='ident'>new</span>(),
-            <span class='ident'>obj_type</span>: <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_UNALLOCATED</span>,
-            <span class='ident'>color</span>: <span class='number'>0</span>,
-            <span class='ident'>left_sibling</span>: <span class='ident'>NO_STREAM</span>,
-            <span class='ident'>right_sibling</span>: <span class='ident'>NO_STREAM</span>,
-            <span class='ident'>child</span>: <span class='ident'>NO_STREAM</span>,
-            <span class='ident'>clsid</span>: <span class='ident'>consts</span>::<span class='ident'>NULL_CLSID</span>,
-            <span class='ident'>state_bits</span>: <span class='number'>0</span>,
-            <span class='ident'>creation_time</span>: <span class='number'>0</span>,
-            <span class='ident'>modified_time</span>: <span class='number'>0</span>,
-            <span class='ident'>start_sector</span>: <span class='number'>0</span>,
-            <span class='ident'>stream_len</span>: <span class='number'>0</span>,
+<span class="kw">impl</span> <span class="ident">DirEntry</span> {
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">unallocated</span>() <span class="op">-&gt;</span> <span class="ident">DirEntry</span> {
+        <span class="ident">DirEntry</span> {
+            <span class="ident">name</span>: <span class="ident">String</span>::<span class="ident">new</span>(),
+            <span class="ident">obj_type</span>: <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_UNALLOCATED</span>,
+            <span class="ident">color</span>: <span class="number">0</span>,
+            <span class="ident">left_sibling</span>: <span class="ident">NO_STREAM</span>,
+            <span class="ident">right_sibling</span>: <span class="ident">NO_STREAM</span>,
+            <span class="ident">child</span>: <span class="ident">NO_STREAM</span>,
+            <span class="ident">clsid</span>: <span class="ident">consts</span>::<span class="ident">NULL_CLSID</span>,
+            <span class="ident">state_bits</span>: <span class="number">0</span>,
+            <span class="ident">creation_time</span>: <span class="number">0</span>,
+            <span class="ident">modified_time</span>: <span class="number">0</span>,
+            <span class="ident">start_sector</span>: <span class="number">0</span>,
+            <span class="ident">stream_len</span>: <span class="number">0</span>,
         }
     }
 
-    <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>read</span><span class='op'>&lt;</span><span class='ident'>R</span>: <span class='ident'>Read</span><span class='op'>&gt;</span>(<span class='ident'>reader</span>: <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>R</span>, <span class='ident'>version</span>: <span class='ident'>Version</span>)
-                         <span class='op'>-&gt;</span> <span class='ident'>io</span>::<span class='prelude-ty'>Result</span><span class='op'>&lt;</span><span class='ident'>DirEntry</span><span class='op'>&gt;</span> {
-        <span class='kw'>let</span> <span class='ident'>name</span>: <span class='ident'>String</span> <span class='op'>=</span> {
-            <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>name_chars</span>: <span class='ident'>Vec</span><span class='op'>&lt;</span><span class='ident'>u16</span><span class='op'>&gt;</span> <span class='op'>=</span> <span class='ident'>Vec</span>::<span class='ident'>with_capacity</span>(<span class='number'>32</span>);
-            <span class='kw'>for</span> _ <span class='kw'>in</span> <span class='number'>0</span>..<span class='number'>32</span> {
-                <span class='ident'>name_chars</span>.<span class='ident'>push</span>(<span class='ident'>reader</span>.<span class='ident'>read_u16</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span>);
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">read_from</span><span class="op">&lt;</span><span class="ident">R</span>: <span class="ident">Read</span><span class="op">&gt;</span>(<span class="ident">reader</span>: <span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="ident">R</span>, <span class="ident">version</span>: <span class="ident">Version</span>)
+                              <span class="op">-&gt;</span> <span class="ident">io</span>::<span class="prelude-ty">Result</span><span class="op">&lt;</span><span class="ident">DirEntry</span><span class="op">&gt;</span> {
+        <span class="kw">let</span> <span class="ident">name</span>: <span class="ident">String</span> <span class="op">=</span> {
+            <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">name_chars</span>: <span class="ident">Vec</span><span class="op">&lt;</span><span class="ident">u16</span><span class="op">&gt;</span> <span class="op">=</span> <span class="ident">Vec</span>::<span class="ident">with_capacity</span>(<span class="number">32</span>);
+            <span class="kw">for</span> _ <span class="kw">in</span> <span class="number">0</span>..<span class="number">32</span> {
+                <span class="ident">name_chars</span>.<span class="ident">push</span>(<span class="ident">reader</span>.<span class="ident">read_u16</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span>);
             }
-            <span class='kw'>let</span> <span class='ident'>name_len_bytes</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u16</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span>;
-            <span class='kw'>if</span> <span class='ident'>name_len_bytes</span> <span class='op'>&gt;</span> <span class='number'>64</span> {
-                <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;name length too large: {}&quot;</span>, <span class='ident'>name_len_bytes</span>);
-            } <span class='kw'>else</span> <span class='kw'>if</span> <span class='ident'>name_len_bytes</span> <span class='op'>%</span> <span class='number'>2</span> <span class='op'>!=</span> <span class='number'>0</span> {
-                <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;odd name length: {}&quot;</span>, <span class='ident'>name_len_bytes</span>);
+            <span class="kw">let</span> <span class="ident">name_len_bytes</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u16</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span>;
+            <span class="kw">if</span> <span class="ident">name_len_bytes</span> <span class="op">&gt;</span> <span class="number">64</span> {
+                <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;name length too large: {}&quot;</span>, <span class="ident">name_len_bytes</span>);
+            } <span class="kw">else</span> <span class="kw">if</span> <span class="ident">name_len_bytes</span> <span class="op">%</span> <span class="number">2</span> <span class="op">!=</span> <span class="number">0</span> {
+                <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;odd name length: {}&quot;</span>, <span class="ident">name_len_bytes</span>);
             }
-            <span class='kw'>let</span> <span class='ident'>name_len_chars</span> <span class='op'>=</span> <span class='kw'>if</span> <span class='ident'>name_len_bytes</span> <span class='op'>&gt;</span> <span class='number'>0</span> {
-                (<span class='ident'>name_len_bytes</span> <span class='op'>/</span> <span class='number'>2</span> <span class='op'>-</span> <span class='number'>1</span>) <span class='kw'>as</span> <span class='ident'>usize</span>
-            } <span class='kw'>else</span> {
-                <span class='number'>0</span>
+            <span class="kw">let</span> <span class="ident">name_len_chars</span> <span class="op">=</span> <span class="kw">if</span> <span class="ident">name_len_bytes</span> <span class="op">&gt;</span> <span class="number">0</span> {
+                (<span class="ident">name_len_bytes</span> <span class="op">/</span> <span class="number">2</span> <span class="op">-</span> <span class="number">1</span>) <span class="kw">as</span> <span class="ident">usize</span>
+            } <span class="kw">else</span> {
+                <span class="number">0</span>
             };
-            <span class='macro'>debug_assert</span><span class='macro'>!</span>(<span class='ident'>name_len_chars</span> <span class='op'>&lt;</span> <span class='ident'>name_chars</span>.<span class='ident'>len</span>());
-            <span class='kw'>if</span> <span class='ident'>name_chars</span>[<span class='ident'>name_len_chars</span>] <span class='op'>!=</span> <span class='number'>0</span> {
-                <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;name not null-terminated&quot;</span>);
+            <span class="macro">debug_assert</span><span class="macro">!</span>(<span class="ident">name_len_chars</span> <span class="op">&lt;</span> <span class="ident">name_chars</span>.<span class="ident">len</span>());
+            <span class="kw">if</span> <span class="ident">name_chars</span>[<span class="ident">name_len_chars</span>] <span class="op">!=</span> <span class="number">0</span> {
+                <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;name not null-terminated&quot;</span>);
             }
-            <span class='kw'>match</span> <span class='ident'>String</span>::<span class='ident'>from_utf16</span>(<span class='kw-2'>&amp;</span><span class='ident'>name_chars</span>[<span class='number'>0</span>..<span class='ident'>name_len_chars</span>]) {
-                <span class='prelude-val'>Ok</span>(<span class='ident'>name</span>) <span class='op'>=&gt;</span> <span class='ident'>name</span>,
-                <span class='prelude-val'>Err</span>(_) <span class='op'>=&gt;</span> <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;name not valid UTF-16&quot;</span>),
+            <span class="kw">match</span> <span class="ident">String</span>::<span class="ident">from_utf16</span>(<span class="kw-2">&amp;</span><span class="ident">name_chars</span>[<span class="number">0</span>..<span class="ident">name_len_chars</span>]) {
+                <span class="prelude-val">Ok</span>(<span class="ident">name</span>) <span class="op">=&gt;</span> <span class="ident">name</span>,
+                <span class="prelude-val">Err</span>(_) <span class="op">=&gt;</span> <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;name not valid UTF-16&quot;</span>),
             }
         };
-        <span class='ident'>internal</span>::<span class='ident'>path</span>::<span class='ident'>validate_name</span>(<span class='kw-2'>&amp;</span><span class='ident'>name</span>)<span class='question-mark'>?</span>;
-        <span class='kw'>let</span> <span class='ident'>obj_type</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u8</span>()<span class='question-mark'>?</span>;
-        <span class='kw'>if</span> <span class='ident'>obj_type</span> <span class='op'>!=</span> <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_UNALLOCATED</span> <span class='op'>&amp;&amp;</span>
-           <span class='ident'>obj_type</span> <span class='op'>!=</span> <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_STORAGE</span> <span class='op'>&amp;&amp;</span>
-           <span class='ident'>obj_type</span> <span class='op'>!=</span> <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_STREAM</span> <span class='op'>&amp;&amp;</span>
-           <span class='ident'>obj_type</span> <span class='op'>!=</span> <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_ROOT</span> {
-            <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;invalid object type: {}&quot;</span>, <span class='ident'>obj_type</span>);
+        <span class="ident">internal</span>::<span class="ident">path</span>::<span class="ident">validate_name</span>(<span class="kw-2">&amp;</span><span class="ident">name</span>)<span class="question-mark">?</span>;
+        <span class="kw">let</span> <span class="ident">obj_type</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u8</span>()<span class="question-mark">?</span>;
+        <span class="kw">if</span> <span class="ident">obj_type</span> <span class="op">!=</span> <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_UNALLOCATED</span> <span class="op">&amp;&amp;</span>
+           <span class="ident">obj_type</span> <span class="op">!=</span> <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_STORAGE</span> <span class="op">&amp;&amp;</span>
+           <span class="ident">obj_type</span> <span class="op">!=</span> <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_STREAM</span> <span class="op">&amp;&amp;</span>
+           <span class="ident">obj_type</span> <span class="op">!=</span> <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_ROOT</span> {
+            <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;invalid object type: {}&quot;</span>, <span class="ident">obj_type</span>);
         }
-        <span class='kw'>let</span> <span class='ident'>color</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u8</span>()<span class='question-mark'>?</span>;
-        <span class='kw'>if</span> <span class='ident'>color</span> <span class='op'>!=</span> <span class='ident'>consts</span>::<span class='ident'>COLOR_RED</span> <span class='op'>&amp;&amp;</span> <span class='ident'>color</span> <span class='op'>!=</span> <span class='ident'>consts</span>::<span class='ident'>COLOR_BLACK</span> {
-            <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;invalid color: {}&quot;</span>, <span class='ident'>color</span>);
+        <span class="kw">let</span> <span class="ident">color</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u8</span>()<span class="question-mark">?</span>;
+        <span class="kw">if</span> <span class="ident">color</span> <span class="op">!=</span> <span class="ident">consts</span>::<span class="ident">COLOR_RED</span> <span class="op">&amp;&amp;</span> <span class="ident">color</span> <span class="op">!=</span> <span class="ident">consts</span>::<span class="ident">COLOR_BLACK</span> {
+            <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;invalid color: {}&quot;</span>, <span class="ident">color</span>);
         }
-        <span class='kw'>let</span> <span class='ident'>left_sibling</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span>;
-        <span class='kw'>if</span> <span class='ident'>left_sibling</span> <span class='op'>!=</span> <span class='ident'>NO_STREAM</span> <span class='op'>&amp;&amp;</span> <span class='ident'>left_sibling</span> <span class='op'>&gt;</span> <span class='ident'>MAX_REGULAR_STREAM_ID</span> {
-            <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;invalid left sibling: {}&quot;</span>, <span class='ident'>left_sibling</span>);
+        <span class="kw">let</span> <span class="ident">left_sibling</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span>;
+        <span class="kw">if</span> <span class="ident">left_sibling</span> <span class="op">!=</span> <span class="ident">NO_STREAM</span> <span class="op">&amp;&amp;</span> <span class="ident">left_sibling</span> <span class="op">&gt;</span> <span class="ident">MAX_REGULAR_STREAM_ID</span> {
+            <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;invalid left sibling: {}&quot;</span>, <span class="ident">left_sibling</span>);
         }
-        <span class='kw'>let</span> <span class='ident'>right_sibling</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span>;
-        <span class='kw'>if</span> <span class='ident'>right_sibling</span> <span class='op'>!=</span> <span class='ident'>NO_STREAM</span> <span class='op'>&amp;&amp;</span>
-           <span class='ident'>right_sibling</span> <span class='op'>&gt;</span> <span class='ident'>MAX_REGULAR_STREAM_ID</span> {
-            <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;invalid right sibling: {}&quot;</span>, <span class='ident'>right_sibling</span>);
+        <span class="kw">let</span> <span class="ident">right_sibling</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span>;
+        <span class="kw">if</span> <span class="ident">right_sibling</span> <span class="op">!=</span> <span class="ident">NO_STREAM</span> <span class="op">&amp;&amp;</span>
+           <span class="ident">right_sibling</span> <span class="op">&gt;</span> <span class="ident">MAX_REGULAR_STREAM_ID</span> {
+            <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;invalid right sibling: {}&quot;</span>, <span class="ident">right_sibling</span>);
         }
-        <span class='kw'>let</span> <span class='ident'>child</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span>;
-        <span class='kw'>if</span> <span class='ident'>child</span> <span class='op'>!=</span> <span class='ident'>NO_STREAM</span> {
-            <span class='kw'>if</span> <span class='ident'>obj_type</span> <span class='op'>==</span> <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_STREAM</span> {
-                <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;non-empty stream child: {}&quot;</span>, <span class='ident'>child</span>);
-            } <span class='kw'>else</span> <span class='kw'>if</span> <span class='ident'>child</span> <span class='op'>&gt;</span> <span class='ident'>MAX_REGULAR_STREAM_ID</span> {
-                <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;invalid child: {}&quot;</span>, <span class='ident'>child</span>);
+        <span class="kw">let</span> <span class="ident">child</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span>;
+        <span class="kw">if</span> <span class="ident">child</span> <span class="op">!=</span> <span class="ident">NO_STREAM</span> {
+            <span class="kw">if</span> <span class="ident">obj_type</span> <span class="op">==</span> <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_STREAM</span> {
+                <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;non-empty stream child: {}&quot;</span>, <span class="ident">child</span>);
+            } <span class="kw">else</span> <span class="kw">if</span> <span class="ident">child</span> <span class="op">&gt;</span> <span class="ident">MAX_REGULAR_STREAM_ID</span> {
+                <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;invalid child: {}&quot;</span>, <span class="ident">child</span>);
             }
         }
-        <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>clsid</span> <span class='op'>=</span> <span class='ident'>consts</span>::<span class='ident'>NULL_CLSID</span>;
-        <span class='ident'>reader</span>.<span class='ident'>read_exact</span>(<span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>clsid</span>)<span class='question-mark'>?</span>;
-        <span class='kw'>if</span> <span class='ident'>obj_type</span> <span class='op'>==</span> <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_STREAM</span> <span class='op'>&amp;&amp;</span> <span class='ident'>clsid</span> <span class='op'>!=</span> <span class='ident'>consts</span>::<span class='ident'>NULL_CLSID</span> {
-            <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;non-null stream CLSID: {:?}&quot;</span>, <span class='ident'>clsid</span>);
+        <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">clsid</span> <span class="op">=</span> <span class="ident">consts</span>::<span class="ident">NULL_CLSID</span>;
+        <span class="ident">reader</span>.<span class="ident">read_exact</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="ident">clsid</span>)<span class="question-mark">?</span>;
+        <span class="kw">if</span> <span class="ident">obj_type</span> <span class="op">==</span> <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_STREAM</span> <span class="op">&amp;&amp;</span> <span class="ident">clsid</span> <span class="op">!=</span> <span class="ident">consts</span>::<span class="ident">NULL_CLSID</span> {
+            <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;non-null stream CLSID: {:?}&quot;</span>, <span class="ident">clsid</span>);
         }
-        <span class='kw'>let</span> <span class='ident'>state_bits</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span>;
-        <span class='kw'>let</span> <span class='ident'>creation_time</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u64</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span>;
-        <span class='kw'>let</span> <span class='ident'>modified_time</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u64</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span>;
-        <span class='kw'>let</span> <span class='ident'>start_sector</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span>;
-        <span class='kw'>if</span> <span class='ident'>obj_type</span> <span class='op'>==</span> <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_STORAGE</span> <span class='op'>&amp;&amp;</span> <span class='ident'>start_sector</span> <span class='op'>!=</span> <span class='number'>0</span> {
-            <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;non-zero storage start sector: {}&quot;</span>, <span class='ident'>start_sector</span>);
+        <span class="kw">let</span> <span class="ident">state_bits</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span>;
+        <span class="kw">let</span> <span class="ident">creation_time</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u64</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span>;
+        <span class="kw">let</span> <span class="ident">modified_time</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u64</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span>;
+        <span class="kw">let</span> <span class="ident">start_sector</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span>;
+        <span class="kw">if</span> <span class="ident">obj_type</span> <span class="op">==</span> <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_STORAGE</span> <span class="op">&amp;&amp;</span> <span class="ident">start_sector</span> <span class="op">!=</span> <span class="number">0</span> {
+            <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;non-zero storage start sector: {}&quot;</span>, <span class="ident">start_sector</span>);
         }
-        <span class='kw'>let</span> <span class='ident'>stream_len</span> <span class='op'>=</span> <span class='ident'>reader</span>.<span class='ident'>read_u64</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>()<span class='question-mark'>?</span> <span class='op'>&amp;</span>
-                         <span class='ident'>version</span>.<span class='ident'>stream_len_mask</span>();
-        <span class='kw'>if</span> <span class='ident'>obj_type</span> <span class='op'>==</span> <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_STORAGE</span> <span class='op'>&amp;&amp;</span> <span class='ident'>stream_len</span> <span class='op'>!=</span> <span class='number'>0</span> {
-            <span class='macro'>malformed</span><span class='macro'>!</span>(<span class='string'>&quot;non-zero storage stream length: {}&quot;</span>, <span class='ident'>stream_len</span>);
+        <span class="kw">let</span> <span class="ident">stream_len</span> <span class="op">=</span> <span class="ident">reader</span>.<span class="ident">read_u64</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>()<span class="question-mark">?</span> <span class="op">&amp;</span>
+                         <span class="ident">version</span>.<span class="ident">stream_len_mask</span>();
+        <span class="kw">if</span> <span class="ident">obj_type</span> <span class="op">==</span> <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_STORAGE</span> <span class="op">&amp;&amp;</span> <span class="ident">stream_len</span> <span class="op">!=</span> <span class="number">0</span> {
+            <span class="macro">malformed</span><span class="macro">!</span>(<span class="string">&quot;non-zero storage stream length: {}&quot;</span>, <span class="ident">stream_len</span>);
         }
-        <span class='prelude-val'>Ok</span>(<span class='ident'>DirEntry</span> {
-            <span class='ident'>name</span>: <span class='ident'>name</span>,
-            <span class='ident'>obj_type</span>: <span class='ident'>obj_type</span>,
-            <span class='ident'>color</span>: <span class='ident'>color</span>,
-            <span class='ident'>left_sibling</span>: <span class='ident'>left_sibling</span>,
-            <span class='ident'>right_sibling</span>: <span class='ident'>right_sibling</span>,
-            <span class='ident'>child</span>: <span class='ident'>child</span>,
-            <span class='ident'>clsid</span>: <span class='ident'>clsid</span>,
-            <span class='ident'>state_bits</span>: <span class='ident'>state_bits</span>,
-            <span class='ident'>creation_time</span>: <span class='ident'>creation_time</span>,
-            <span class='ident'>modified_time</span>: <span class='ident'>modified_time</span>,
-            <span class='ident'>start_sector</span>: <span class='ident'>start_sector</span>,
-            <span class='ident'>stream_len</span>: <span class='ident'>stream_len</span>,
+        <span class="prelude-val">Ok</span>(<span class="ident">DirEntry</span> {
+            <span class="ident">name</span>: <span class="ident">name</span>,
+            <span class="ident">obj_type</span>: <span class="ident">obj_type</span>,
+            <span class="ident">color</span>: <span class="ident">color</span>,
+            <span class="ident">left_sibling</span>: <span class="ident">left_sibling</span>,
+            <span class="ident">right_sibling</span>: <span class="ident">right_sibling</span>,
+            <span class="ident">child</span>: <span class="ident">child</span>,
+            <span class="ident">clsid</span>: <span class="ident">clsid</span>,
+            <span class="ident">state_bits</span>: <span class="ident">state_bits</span>,
+            <span class="ident">creation_time</span>: <span class="ident">creation_time</span>,
+            <span class="ident">modified_time</span>: <span class="ident">modified_time</span>,
+            <span class="ident">start_sector</span>: <span class="ident">start_sector</span>,
+            <span class="ident">stream_len</span>: <span class="ident">stream_len</span>,
         })
     }
 
-    <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>write</span><span class='op'>&lt;</span><span class='ident'>W</span>: <span class='ident'>Write</span><span class='op'>&gt;</span>(<span class='kw-2'>&amp;</span><span class='self'>self</span>, <span class='ident'>writer</span>: <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>W</span>) <span class='op'>-&gt;</span> <span class='ident'>io</span>::<span class='prelude-ty'>Result</span><span class='op'>&lt;</span>()<span class='op'>&gt;</span> {
-        <span class='macro'>debug_assert</span><span class='macro'>!</span>(<span class='ident'>internal</span>::<span class='ident'>path</span>::<span class='ident'>validate_name</span>(<span class='kw-2'>&amp;</span><span class='self'>self</span>.<span class='ident'>name</span>).<span class='ident'>is_ok</span>());
-        <span class='kw'>let</span> <span class='ident'>name_utf16</span>: <span class='ident'>Vec</span><span class='op'>&lt;</span><span class='ident'>u16</span><span class='op'>&gt;</span> <span class='op'>=</span> <span class='self'>self</span>.<span class='ident'>name</span>.<span class='ident'>encode_utf16</span>().<span class='ident'>collect</span>();
-        <span class='macro'>debug_assert</span><span class='macro'>!</span>(<span class='ident'>name_utf16</span>.<span class='ident'>len</span>() <span class='op'>&lt;</span> <span class='number'>32</span>);
-        <span class='kw'>for</span> <span class='kw-2'>&amp;</span><span class='ident'>chr</span> <span class='kw'>in</span> <span class='ident'>name_utf16</span>.<span class='ident'>iter</span>() {
-            <span class='ident'>writer</span>.<span class='ident'>write_u16</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='ident'>chr</span>)<span class='question-mark'>?</span>;
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">write_to</span><span class="op">&lt;</span><span class="ident">W</span>: <span class="ident">Write</span><span class="op">&gt;</span>(<span class="kw-2">&amp;</span><span class="self">self</span>, <span class="ident">writer</span>: <span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="ident">W</span>) <span class="op">-&gt;</span> <span class="ident">io</span>::<span class="prelude-ty">Result</span><span class="op">&lt;</span>()<span class="op">&gt;</span> {
+        <span class="macro">debug_assert</span><span class="macro">!</span>(<span class="ident">internal</span>::<span class="ident">path</span>::<span class="ident">validate_name</span>(<span class="kw-2">&amp;</span><span class="self">self</span>.<span class="ident">name</span>).<span class="ident">is_ok</span>());
+        <span class="kw">let</span> <span class="ident">name_utf16</span>: <span class="ident">Vec</span><span class="op">&lt;</span><span class="ident">u16</span><span class="op">&gt;</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">name</span>.<span class="ident">encode_utf16</span>().<span class="ident">collect</span>();
+        <span class="macro">debug_assert</span><span class="macro">!</span>(<span class="ident">name_utf16</span>.<span class="ident">len</span>() <span class="op">&lt;</span> <span class="number">32</span>);
+        <span class="kw">for</span> <span class="kw-2">&amp;</span><span class="ident">chr</span> <span class="kw">in</span> <span class="ident">name_utf16</span>.<span class="ident">iter</span>() {
+            <span class="ident">writer</span>.<span class="ident">write_u16</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="ident">chr</span>)<span class="question-mark">?</span>;
         }
-        <span class='kw'>for</span> _ <span class='kw'>in</span> <span class='ident'>name_utf16</span>.<span class='ident'>len</span>()..<span class='number'>32</span> {
-            <span class='ident'>writer</span>.<span class='ident'>write_u16</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='number'>0</span>)<span class='question-mark'>?</span>;
+        <span class="kw">for</span> _ <span class="kw">in</span> <span class="ident">name_utf16</span>.<span class="ident">len</span>()..<span class="number">32</span> {
+            <span class="ident">writer</span>.<span class="ident">write_u16</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="number">0</span>)<span class="question-mark">?</span>;
         }
-        <span class='ident'>writer</span>.<span class='ident'>write_u16</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>((<span class='ident'>name_utf16</span>.<span class='ident'>len</span>() <span class='kw'>as</span> <span class='ident'>u16</span> <span class='op'>+</span> <span class='number'>1</span>) <span class='op'>*</span> <span class='number'>2</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u8</span>(<span class='self'>self</span>.<span class='ident'>obj_type</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u8</span>(<span class='self'>self</span>.<span class='ident'>color</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='self'>self</span>.<span class='ident'>left_sibling</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='self'>self</span>.<span class='ident'>right_sibling</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='self'>self</span>.<span class='ident'>child</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_all</span>(<span class='kw-2'>&amp;</span><span class='self'>self</span>.<span class='ident'>clsid</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='self'>self</span>.<span class='ident'>state_bits</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u64</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='self'>self</span>.<span class='ident'>creation_time</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u64</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='self'>self</span>.<span class='ident'>modified_time</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u32</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='self'>self</span>.<span class='ident'>start_sector</span>)<span class='question-mark'>?</span>;
-        <span class='ident'>writer</span>.<span class='ident'>write_u64</span>::<span class='op'>&lt;</span><span class='ident'>LittleEndian</span><span class='op'>&gt;</span>(<span class='self'>self</span>.<span class='ident'>stream_len</span>)<span class='question-mark'>?</span>;
-        <span class='prelude-val'>Ok</span>(())
+        <span class="ident">writer</span>.<span class="ident">write_u16</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>((<span class="ident">name_utf16</span>.<span class="ident">len</span>() <span class="kw">as</span> <span class="ident">u16</span> <span class="op">+</span> <span class="number">1</span>) <span class="op">*</span> <span class="number">2</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u8</span>(<span class="self">self</span>.<span class="ident">obj_type</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u8</span>(<span class="self">self</span>.<span class="ident">color</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="self">self</span>.<span class="ident">left_sibling</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="self">self</span>.<span class="ident">right_sibling</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="self">self</span>.<span class="ident">child</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_all</span>(<span class="kw-2">&amp;</span><span class="self">self</span>.<span class="ident">clsid</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="self">self</span>.<span class="ident">state_bits</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u64</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="self">self</span>.<span class="ident">creation_time</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u64</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="self">self</span>.<span class="ident">modified_time</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u32</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="self">self</span>.<span class="ident">start_sector</span>)<span class="question-mark">?</span>;
+        <span class="ident">writer</span>.<span class="ident">write_u64</span>::<span class="op">&lt;</span><span class="ident">LittleEndian</span><span class="op">&gt;</span>(<span class="self">self</span>.<span class="ident">stream_len</span>)<span class="question-mark">?</span>;
+        <span class="prelude-val">Ok</span>(())
     }
 }
 
-<span class='comment'>// ========================================================================= //</span>
+<span class="comment">// ========================================================================= //</span>
 
-<span class='attribute'>#[<span class='ident'>cfg</span>(<span class='ident'>test</span>)]</span>
-<span class='kw'>mod</span> <span class='ident'>tests</span> {
-    <span class='kw'>use</span> <span class='kw'>super</span>::<span class='ident'>DirEntry</span>;
-    <span class='kw'>use</span> <span class='ident'>internal</span>::<span class='ident'>Version</span>;
-    <span class='kw'>use</span> <span class='ident'>internal</span>::<span class='ident'>consts</span>;
+<span class="attribute">#[<span class="ident">cfg</span>(<span class="ident">test</span>)]</span>
+<span class="kw">mod</span> <span class="ident">tests</span> {
+    <span class="kw">use</span> <span class="kw">super</span>::<span class="ident">DirEntry</span>;
+    <span class="kw">use</span> <span class="ident">internal</span>::<span class="ident">Version</span>;
+    <span class="kw">use</span> <span class="ident">internal</span>::<span class="ident">consts</span>;
 
-    <span class='attribute'>#[<span class='ident'>test</span>]</span>
-    <span class='kw'>fn</span> <span class='ident'>parse_valid_storage_entry</span>() {
-        <span class='kw'>let</span> <span class='ident'>input</span>: [<span class='ident'>u8</span>; <span class='ident'>consts</span>::<span class='ident'>DIR_ENTRY_LEN</span>] <span class='op'>=</span> [
-            <span class='comment'>// Name:</span>
-            <span class='number'>70</span>, <span class='number'>0</span>, <span class='number'>111</span>, <span class='number'>0</span>, <span class='number'>111</span>, <span class='number'>0</span>, <span class='number'>98</span>, <span class='number'>0</span>, <span class='number'>97</span>, <span class='number'>0</span>, <span class='number'>114</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>14</span>, <span class='number'>0</span>, <span class='comment'>// name length</span>
-            <span class='number'>1</span>, <span class='comment'>// obj type</span>
-            <span class='number'>1</span>, <span class='comment'>// color,</span>
-            <span class='number'>12</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// left sibling</span>
-            <span class='number'>34</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// right sibling</span>
-            <span class='number'>56</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// child</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// CLSID</span>
-            <span class='number'>239</span>, <span class='number'>190</span>, <span class='number'>173</span>, <span class='number'>222</span>, <span class='comment'>// state bits</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// created</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// modified</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// start sector</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// stream length</span>
+    <span class="attribute">#[<span class="ident">test</span>]</span>
+    <span class="kw">fn</span> <span class="ident">parse_valid_storage_entry</span>() {
+        <span class="kw">let</span> <span class="ident">input</span>: [<span class="ident">u8</span>; <span class="ident">consts</span>::<span class="ident">DIR_ENTRY_LEN</span>] <span class="op">=</span> [
+            <span class="comment">// Name:</span>
+            <span class="number">70</span>, <span class="number">0</span>, <span class="number">111</span>, <span class="number">0</span>, <span class="number">111</span>, <span class="number">0</span>, <span class="number">98</span>, <span class="number">0</span>, <span class="number">97</span>, <span class="number">0</span>, <span class="number">114</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">14</span>, <span class="number">0</span>, <span class="comment">// name length</span>
+            <span class="number">1</span>, <span class="comment">// obj type</span>
+            <span class="number">1</span>, <span class="comment">// color,</span>
+            <span class="number">12</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// left sibling</span>
+            <span class="number">34</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// right sibling</span>
+            <span class="number">56</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// child</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// CLSID</span>
+            <span class="number">239</span>, <span class="number">190</span>, <span class="number">173</span>, <span class="number">222</span>, <span class="comment">// state bits</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// created</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// modified</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// start sector</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// stream length</span>
         ];
-        <span class='kw'>let</span> <span class='ident'>dir_entry</span> <span class='op'>=</span> <span class='ident'>DirEntry</span>::<span class='ident'>read</span>(<span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> (<span class='kw-2'>&amp;</span><span class='ident'>input</span> <span class='kw'>as</span> <span class='kw-2'>&amp;</span>[<span class='ident'>u8</span>]), <span class='ident'>Version</span>::<span class='ident'>V4</span>)
-            .<span class='ident'>unwrap</span>();
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='kw-2'>&amp;</span><span class='ident'>dir_entry</span>.<span class='ident'>name</span>, <span class='string'>&quot;Foobar&quot;</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>obj_type</span>, <span class='ident'>consts</span>::<span class='ident'>OBJ_TYPE_STORAGE</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>color</span>, <span class='ident'>consts</span>::<span class='ident'>COLOR_BLACK</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>left_sibling</span>, <span class='number'>12</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>right_sibling</span>, <span class='number'>34</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>child</span>, <span class='number'>56</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>clsid</span>, <span class='ident'>consts</span>::<span class='ident'>NULL_CLSID</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>state_bits</span>, <span class='number'>0xdeadbeef</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>creation_time</span>, <span class='number'>0</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>modified_time</span>, <span class='number'>0</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>start_sector</span>, <span class='number'>0</span>);
-        <span class='macro'>assert_eq</span><span class='macro'>!</span>(<span class='ident'>dir_entry</span>.<span class='ident'>stream_len</span>, <span class='number'>0</span>);
+        <span class="kw">let</span> <span class="ident">dir_entry</span> <span class="op">=</span>
+            <span class="ident">DirEntry</span>::<span class="ident">read_from</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> (<span class="kw-2">&amp;</span><span class="ident">input</span> <span class="kw">as</span> <span class="kw-2">&amp;</span>[<span class="ident">u8</span>]), <span class="ident">Version</span>::<span class="ident">V4</span>).<span class="ident">unwrap</span>();
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="kw-2">&amp;</span><span class="ident">dir_entry</span>.<span class="ident">name</span>, <span class="string">&quot;Foobar&quot;</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">obj_type</span>, <span class="ident">consts</span>::<span class="ident">OBJ_TYPE_STORAGE</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">color</span>, <span class="ident">consts</span>::<span class="ident">COLOR_BLACK</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">left_sibling</span>, <span class="number">12</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">right_sibling</span>, <span class="number">34</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">child</span>, <span class="number">56</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">clsid</span>, <span class="ident">consts</span>::<span class="ident">NULL_CLSID</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">state_bits</span>, <span class="number">0xdeadbeef</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">creation_time</span>, <span class="number">0</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">modified_time</span>, <span class="number">0</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">start_sector</span>, <span class="number">0</span>);
+        <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">dir_entry</span>.<span class="ident">stream_len</span>, <span class="number">0</span>);
     }
 
-    <span class='attribute'>#[<span class='ident'>test</span>]</span>
-    <span class='attribute'>#[<span class='ident'>should_panic</span>(<span class='ident'>expected</span> <span class='op'>=</span> <span class='string'>&quot;Malformed directory entry \
+    <span class="attribute">#[<span class="ident">test</span>]</span>
+    <span class="attribute">#[<span class="ident">should_panic</span>(<span class="ident">expected</span> <span class="op">=</span> <span class="string">&quot;Malformed directory entry \
                                (invalid object type: 3)&quot;</span>)]</span>
-    <span class='kw'>fn</span> <span class='ident'>invalid_object_type</span>() {
-        <span class='kw'>let</span> <span class='ident'>input</span>: [<span class='ident'>u8</span>; <span class='ident'>consts</span>::<span class='ident'>DIR_ENTRY_LEN</span>] <span class='op'>=</span> [
-            <span class='comment'>// Name:</span>
-            <span class='number'>70</span>, <span class='number'>0</span>, <span class='number'>111</span>, <span class='number'>0</span>, <span class='number'>111</span>, <span class='number'>0</span>, <span class='number'>98</span>, <span class='number'>0</span>, <span class='number'>97</span>, <span class='number'>0</span>, <span class='number'>114</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>14</span>, <span class='number'>0</span>, <span class='comment'>// name length</span>
-            <span class='number'>3</span>, <span class='comment'>// obj type</span>
-            <span class='number'>1</span>, <span class='comment'>// color,</span>
-            <span class='number'>12</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// left sibling</span>
-            <span class='number'>34</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// right sibling</span>
-            <span class='number'>56</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// child</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// CLSID</span>
-            <span class='number'>239</span>, <span class='number'>190</span>, <span class='number'>173</span>, <span class='number'>222</span>, <span class='comment'>// state bits</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// created</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// modified</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// start sector</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// stream length</span>
+    <span class="kw">fn</span> <span class="ident">invalid_object_type</span>() {
+        <span class="kw">let</span> <span class="ident">input</span>: [<span class="ident">u8</span>; <span class="ident">consts</span>::<span class="ident">DIR_ENTRY_LEN</span>] <span class="op">=</span> [
+            <span class="comment">// Name:</span>
+            <span class="number">70</span>, <span class="number">0</span>, <span class="number">111</span>, <span class="number">0</span>, <span class="number">111</span>, <span class="number">0</span>, <span class="number">98</span>, <span class="number">0</span>, <span class="number">97</span>, <span class="number">0</span>, <span class="number">114</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">14</span>, <span class="number">0</span>, <span class="comment">// name length</span>
+            <span class="number">3</span>, <span class="comment">// obj type</span>
+            <span class="number">1</span>, <span class="comment">// color,</span>
+            <span class="number">12</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// left sibling</span>
+            <span class="number">34</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// right sibling</span>
+            <span class="number">56</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// child</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// CLSID</span>
+            <span class="number">239</span>, <span class="number">190</span>, <span class="number">173</span>, <span class="number">222</span>, <span class="comment">// state bits</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// created</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// modified</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// start sector</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// stream length</span>
         ];
-        <span class='ident'>DirEntry</span>::<span class='ident'>read</span>(<span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> (<span class='kw-2'>&amp;</span><span class='ident'>input</span> <span class='kw'>as</span> <span class='kw-2'>&amp;</span>[<span class='ident'>u8</span>]), <span class='ident'>Version</span>::<span class='ident'>V4</span>).<span class='ident'>unwrap</span>();
+        <span class="ident">DirEntry</span>::<span class="ident">read_from</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> (<span class="kw-2">&amp;</span><span class="ident">input</span> <span class="kw">as</span> <span class="kw-2">&amp;</span>[<span class="ident">u8</span>]), <span class="ident">Version</span>::<span class="ident">V4</span>).<span class="ident">unwrap</span>();
     }
 
-    <span class='attribute'>#[<span class='ident'>test</span>]</span>
-    <span class='attribute'>#[<span class='ident'>should_panic</span>(<span class='ident'>expected</span> <span class='op'>=</span> <span class='string'>&quot;Malformed directory entry (invalid color: 2)&quot;</span>)]</span>
-    <span class='kw'>fn</span> <span class='ident'>invalid_color</span>() {
-        <span class='kw'>let</span> <span class='ident'>input</span>: [<span class='ident'>u8</span>; <span class='ident'>consts</span>::<span class='ident'>DIR_ENTRY_LEN</span>] <span class='op'>=</span> [
-            <span class='comment'>// Name:</span>
-            <span class='number'>70</span>, <span class='number'>0</span>, <span class='number'>111</span>, <span class='number'>0</span>, <span class='number'>111</span>, <span class='number'>0</span>, <span class='number'>98</span>, <span class='number'>0</span>, <span class='number'>97</span>, <span class='number'>0</span>, <span class='number'>114</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>,
-            <span class='number'>14</span>, <span class='number'>0</span>, <span class='comment'>// name length</span>
-            <span class='number'>1</span>, <span class='comment'>// obj type</span>
-            <span class='number'>2</span>, <span class='comment'>// color,</span>
-            <span class='number'>12</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// left sibling</span>
-            <span class='number'>34</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// right sibling</span>
-            <span class='number'>56</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// child</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// CLSID</span>
-            <span class='number'>239</span>, <span class='number'>190</span>, <span class='number'>173</span>, <span class='number'>222</span>, <span class='comment'>// state bits</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// created</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// modified</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// start sector</span>
-            <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='number'>0</span>, <span class='comment'>// stream length</span>
+    <span class="attribute">#[<span class="ident">test</span>]</span>
+    <span class="attribute">#[<span class="ident">should_panic</span>(<span class="ident">expected</span> <span class="op">=</span> <span class="string">&quot;Malformed directory entry (invalid color: 2)&quot;</span>)]</span>
+    <span class="kw">fn</span> <span class="ident">invalid_color</span>() {
+        <span class="kw">let</span> <span class="ident">input</span>: [<span class="ident">u8</span>; <span class="ident">consts</span>::<span class="ident">DIR_ENTRY_LEN</span>] <span class="op">=</span> [
+            <span class="comment">// Name:</span>
+            <span class="number">70</span>, <span class="number">0</span>, <span class="number">111</span>, <span class="number">0</span>, <span class="number">111</span>, <span class="number">0</span>, <span class="number">98</span>, <span class="number">0</span>, <span class="number">97</span>, <span class="number">0</span>, <span class="number">114</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>,
+            <span class="number">14</span>, <span class="number">0</span>, <span class="comment">// name length</span>
+            <span class="number">1</span>, <span class="comment">// obj type</span>
+            <span class="number">2</span>, <span class="comment">// color,</span>
+            <span class="number">12</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// left sibling</span>
+            <span class="number">34</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// right sibling</span>
+            <span class="number">56</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// child</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// CLSID</span>
+            <span class="number">239</span>, <span class="number">190</span>, <span class="number">173</span>, <span class="number">222</span>, <span class="comment">// state bits</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// created</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// modified</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// start sector</span>
+            <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="comment">// stream length</span>
         ];
-        <span class='ident'>DirEntry</span>::<span class='ident'>read</span>(<span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> (<span class='kw-2'>&amp;</span><span class='ident'>input</span> <span class='kw'>as</span> <span class='kw-2'>&amp;</span>[<span class='ident'>u8</span>]), <span class='ident'>Version</span>::<span class='ident'>V4</span>).<span class='ident'>unwrap</span>();
+        <span class="ident">DirEntry</span>::<span class="ident">read_from</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> (<span class="kw-2">&amp;</span><span class="ident">input</span> <span class="kw">as</span> <span class="kw-2">&amp;</span>[<span class="ident">u8</span>]), <span class="ident">Version</span>::<span class="ident">V4</span>).<span class="ident">unwrap</span>();
     }
 }
 
-<span class='comment'>// ========================================================================= //</span>
+<span class="comment">// ========================================================================= //</span>
 </pre>
 </section>
     <section id='search' class="content hidden"></section>
@@ -628,7 +630,6 @@
         window.rootPath = "../../../";
         window.currentCrate = "cfb";
     </script>
-    <script src="../../../jquery.js"></script>
     <script src="../../../main.js"></script>
     <script defer src="../../../search-index.js"></script>
 </body>
