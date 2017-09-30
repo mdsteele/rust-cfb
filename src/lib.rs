@@ -190,7 +190,7 @@ impl<F> CompoundFile<F> {
     }
 
     /// Returns true if there is an existing stream or storage at the given
-    /// path, false otherwise.
+    /// path, or false if there is nothing at that path.
     pub fn exists<P: AsRef<Path>>(&self, path: P) -> bool {
         match internal::path::name_chain_from_path(path.as_ref()) {
             Ok(names) => self.stream_id_for_name_chain(&names).is_some(),
@@ -198,9 +198,39 @@ impl<F> CompoundFile<F> {
         }
     }
 
-    // TODO: pub fn is_stream
+    /// Returns true if there is an existing stream at the given path, or false
+    /// if there is a storage or nothing at that path.
+    pub fn is_stream<P: AsRef<Path>>(&self, path: P) -> bool {
+        match internal::path::name_chain_from_path(path.as_ref()) {
+            Ok(names) => {
+                match self.stream_id_for_name_chain(&names) {
+                    Some(stream_id) => {
+                        self.dir_entry(stream_id).obj_type ==
+                        consts::OBJ_TYPE_STREAM
+                    }
+                    None => false,
+                }
+            }
+            Err(_) => false,
+        }
+    }
 
-    // TODO: pub fn is_storage
+    /// Returns true if there is an existing storage at the given path, or
+    /// false if there is a stream or nothing at that path.
+    pub fn is_storage<P: AsRef<Path>>(&self, path: P) -> bool {
+        match internal::path::name_chain_from_path(path.as_ref()) {
+            Ok(names) => {
+                match self.stream_id_for_name_chain(&names) {
+                    Some(stream_id) => {
+                        self.dir_entry(stream_id).obj_type !=
+                        consts::OBJ_TYPE_STREAM
+                    }
+                    None => false,
+                }
+            }
+            Err(_) => false,
+        }
+    }
 
     // TODO: pub fn walk_storage
 
@@ -1846,7 +1876,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_path_exists() {
+    fn path_exists() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
         comp.create_stream("/foo").unwrap().write_all(b"foo").unwrap();
@@ -1860,7 +1890,46 @@ mod tests {
         assert!(comp.exists("bar/quux"));
         assert!(!comp.exists("bar/foo"));
         assert!(comp.exists("/bar/../foo"));
+        assert!(comp.exists("/bar/../bar"));
         assert!(!comp.exists("../../foo"));
+    }
+
+    #[test]
+    fn path_is_stream() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_stream("/foo").unwrap().write_all(b"foo").unwrap();
+        comp.create_storage("/bar/").unwrap();
+        comp.create_stream("/bar/quux").unwrap().write_all(b"quux").unwrap();
+
+        assert!(!comp.is_stream("/"));
+        assert!(comp.is_stream("foo"));
+        assert!(!comp.is_stream("/bar"));
+        assert!(!comp.is_stream("quux"));
+        assert!(comp.is_stream("bar/quux"));
+        assert!(!comp.is_stream("bar/foo"));
+        assert!(comp.is_stream("/bar/../foo"));
+        assert!(!comp.is_stream("/bar/../bar"));
+        assert!(!comp.is_stream("../../foo"));
+    }
+
+    #[test]
+    fn path_is_storage() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_stream("/foo").unwrap().write_all(b"foo").unwrap();
+        comp.create_storage("/bar/").unwrap();
+        comp.create_stream("/bar/quux").unwrap().write_all(b"quux").unwrap();
+
+        assert!(comp.is_storage("/"));
+        assert!(!comp.is_storage("foo"));
+        assert!(comp.is_storage("/bar"));
+        assert!(!comp.is_storage("quux"));
+        assert!(!comp.is_storage("bar/quux"));
+        assert!(!comp.is_storage("bar/foo"));
+        assert!(!comp.is_storage("/bar/../foo"));
+        assert!(comp.is_storage("/bar/../bar"));
+        assert!(!comp.is_storage("../../bar"));
     }
 
     #[test]
