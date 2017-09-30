@@ -129,7 +129,7 @@ impl<F> CompoundFile<F> {
         &mut self.directory[stream_id as usize]
     }
 
-    fn stream_id_for_name_chain(&self, names: &Vec<&str>) -> Option<u32> {
+    fn stream_id_for_name_chain(&self, names: &[&str]) -> Option<u32> {
         let mut stream_id = consts::ROOT_STREAM_ID;
         for name in names.iter() {
             stream_id = self.dir_entry(stream_id).child;
@@ -188,6 +188,19 @@ impl<F> CompoundFile<F> {
         };
         Ok(internal::new_entries(&self.directory, path, start))
     }
+
+    /// Returns true if there is an existing stream or storage at the given
+    /// path, false otherwise.
+    pub fn exists<P: AsRef<Path>>(&self, path: P) -> bool {
+        match internal::path::name_chain_from_path(path.as_ref()) {
+            Ok(names) => self.stream_id_for_name_chain(&names).is_some(),
+            Err(_) => false,
+        }
+    }
+
+    // TODO: pub fn is_stream
+
+    // TODO: pub fn is_storage
 
     // TODO: pub fn walk_storage
 
@@ -702,6 +715,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         Ok(())
     }
 
+    // TODO: pub fn create_storage_all
+
     /// Removes the storage object at the provided path.  The storage object
     /// must exist and have no children.
     pub fn remove_storage<P: AsRef<Path>>(&mut self, path: P)
@@ -734,6 +749,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         self.remove_dir_entry(parent_id, name)?;
         Ok(())
     }
+
+    // TODO: pub fn remove_storage_all
 
     /// Creates and returns a new, empty stream object at the provided path.
     /// If a stream already exists at that path, it will be replaced by the new
@@ -1826,6 +1843,24 @@ mod tests {
         let mut comp = CompoundFile::create(cursor).expect("create");
         comp.create_stream("/foo").unwrap().write_all(b"foobar").unwrap();
         comp.read_storage("/foo").unwrap();
+    }
+
+    #[test]
+    fn valid_path_exists() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_stream("/foo").unwrap().write_all(b"foo").unwrap();
+        comp.create_storage("/bar/").unwrap();
+        comp.create_stream("/bar/quux").unwrap().write_all(b"quux").unwrap();
+
+        assert!(comp.exists("/"));
+        assert!(comp.exists("foo"));
+        assert!(comp.exists("/bar"));
+        assert!(!comp.exists("quux"));
+        assert!(comp.exists("bar/quux"));
+        assert!(!comp.exists("bar/foo"));
+        assert!(comp.exists("/bar/../foo"));
+        assert!(!comp.exists("../../foo"));
     }
 
     #[test]
