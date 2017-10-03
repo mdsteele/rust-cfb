@@ -60,14 +60,14 @@ fn main() {
         .author("Matthew D. Steele <mdsteele@alum.mit.edu>")
         .about("Inspects and modifies CFB files")
         .subcommand(SubCommand::with_name("cat")
-            .about("Concatenates and prints streams")
-            .arg(Arg::with_name("path").multiple(true)))
+                        .about("Concatenates and prints streams")
+                        .arg(Arg::with_name("path").multiple(true)))
         .subcommand(SubCommand::with_name("ls")
-            .about("Lists storage contents")
-            .arg(Arg::with_name("long")
-                .short("l")
-                .help("Lists in long format"))
-            .arg(Arg::with_name("path").multiple(true)))
+                        .about("Lists storage contents")
+                        .arg(Arg::with_name("long")
+                                 .short("l")
+                                 .help("Lists in long format"))
+                        .arg(Arg::with_name("path").multiple(true)))
         .get_matches();
     if let Some(submatches) = matches.subcommand_matches("cat") {
         if let Some(paths) = submatches.values_of("path") {

@@ -37,10 +37,10 @@ impl<F: Seek> Sectors<F> {
         debug_assert!(offset_within_header < consts::HEADER_LEN as u64);
         self.inner.seek(SeekFrom::Start(offset_within_header))?;
         Ok(Sector {
-            inner: &mut self.inner,
-            sector_len: consts::HEADER_LEN,
-            offset_within_sector: offset_within_header as usize,
-        })
+               inner: &mut self.inner,
+               sector_len: consts::HEADER_LEN,
+               offset_within_sector: offset_within_header as usize,
+           })
     }
 
     pub fn seek_to_sector(&mut self, sector_id: u32) -> io::Result<Sector<F>> {
@@ -55,12 +55,12 @@ impl<F: Seek> Sectors<F> {
         let sector_len = self.sector_len();
         self.inner
             .seek(SeekFrom::Start((sector_id + 1) as u64 * sector_len as u64 +
-                                  offset_within_sector))?;
+                                      offset_within_sector))?;
         Ok(Sector {
-            inner: &mut self.inner,
-            sector_len: sector_len,
-            offset_within_sector: offset_within_sector as usize,
-        })
+               inner: &mut self.inner,
+               sector_len: sector_len,
+               offset_within_sector: offset_within_sector as usize,
+           })
     }
 }
 

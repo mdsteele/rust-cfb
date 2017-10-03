@@ -79,9 +79,10 @@ impl DirEntry {
         internal::path::validate_name(&name)?;
         let obj_type = reader.read_u8()?;
         if obj_type != consts::OBJ_TYPE_UNALLOCATED &&
-           obj_type != consts::OBJ_TYPE_STORAGE &&
-           obj_type != consts::OBJ_TYPE_STREAM &&
-           obj_type != consts::OBJ_TYPE_ROOT {
+            obj_type != consts::OBJ_TYPE_STORAGE &&
+            obj_type != consts::OBJ_TYPE_STREAM &&
+            obj_type != consts::OBJ_TYPE_ROOT
+        {
             malformed!("invalid object type: {}", obj_type);
         }
         let color = reader.read_u8()?;
@@ -94,7 +95,8 @@ impl DirEntry {
         }
         let right_sibling = reader.read_u32::<LittleEndian>()?;
         if right_sibling != NO_STREAM &&
-           right_sibling > MAX_REGULAR_STREAM_ID {
+            right_sibling > MAX_REGULAR_STREAM_ID
+        {
             malformed!("invalid right sibling: {}", right_sibling);
         }
         let child = reader.read_u32::<LittleEndian>()?;
@@ -118,24 +120,24 @@ impl DirEntry {
             malformed!("non-zero storage start sector: {}", start_sector);
         }
         let stream_len = reader.read_u64::<LittleEndian>()? &
-                         version.stream_len_mask();
+            version.stream_len_mask();
         if obj_type == consts::OBJ_TYPE_STORAGE && stream_len != 0 {
             malformed!("non-zero storage stream length: {}", stream_len);
         }
         Ok(DirEntry {
-            name: name,
-            obj_type: obj_type,
-            color: color,
-            left_sibling: left_sibling,
-            right_sibling: right_sibling,
-            child: child,
-            clsid: clsid,
-            state_bits: state_bits,
-            creation_time: creation_time,
-            modified_time: modified_time,
-            start_sector: start_sector,
-            stream_len: stream_len,
-        })
+               name: name,
+               obj_type: obj_type,
+               color: color,
+               left_sibling: left_sibling,
+               right_sibling: right_sibling,
+               child: child,
+               clsid: clsid,
+               state_bits: state_bits,
+               creation_time: creation_time,
+               modified_time: modified_time,
+               start_sector: start_sector,
+               stream_len: stream_len,
+           })
     }
 
     pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {

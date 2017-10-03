@@ -5,8 +5,8 @@ pub const DIR_ENTRY_LEN: usize = 128; // length of directory entry, in bytes
 pub const NUM_DIFAT_ENTRIES_IN_HEADER: usize = 109;
 
 // Constants for CFB file header values:
-pub const MAGIC_NUMBER: [u8; 8] = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a,
-                                   0xe1];
+pub const MAGIC_NUMBER: [u8; 8] =
+    [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 pub const MINOR_VERSION: u16 = 0x3e;
 pub const BYTE_ORDER_MARK: u16 = 0xfffe;
 pub const MINI_SECTOR_SHIFT: u16 = 6; // 64-byte mini sectors

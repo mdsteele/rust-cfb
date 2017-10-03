@@ -47,7 +47,7 @@ impl Entry {
     /// within the compound file), either the root or a nested storage.
     pub fn is_storage(&self) -> bool {
         self.obj_type == consts::OBJ_TYPE_STORAGE ||
-        self.obj_type == consts::OBJ_TYPE_ROOT
+            self.obj_type == consts::OBJ_TYPE_ROOT
     }
 
     /// Returns whether this entry is specifically for the root storage object
