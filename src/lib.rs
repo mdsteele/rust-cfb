@@ -739,10 +739,15 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     fn create_storage_with_path(&mut self, path: &Path) -> io::Result<()> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
+            let path = internal::path::path_from_name_chain(&names);
             if self.dir_entry(stream_id).obj_type != consts::OBJ_TYPE_STREAM {
-                already_exists!("A storage already exists at that path");
+                already_exists!("Cannot create storage at {:?} because a \
+                                 storage already exists there",
+                                path);
             } else {
-                already_exists!("A stream already exists at that path");
+                already_exists!("Cannot create storage at {:?} because a \
+                                 stream already exists there",
+                                path);
             }
         }
         // If names is empty, that means we're trying to create the root.  But
@@ -759,7 +764,25 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         Ok(())
     }
 
-    // TODO: pub fn create_storage_all
+    /// Recursively creates a storage and all of its parent storages if they
+    /// are missing.
+    pub fn create_storage_all<P: AsRef<Path>>(&mut self, path: P)
+                                              -> io::Result<()> {
+        self.create_storage_all_with_path(path.as_ref())
+    }
+
+    fn create_storage_all_with_path(&mut self, path: &Path) -> io::Result<()> {
+        let names = internal::path::name_chain_from_path(path)?;
+        for length in 1..(names.len() + 1) {
+            let prefix_path =
+                internal::path::path_from_name_chain(&names[..length]);
+            if self.is_storage(&prefix_path) {
+                continue;
+            }
+            self.create_storage_with_path(&prefix_path)?;
+        }
+        Ok(())
+    }
 
     /// Removes the storage object at the provided path.  The storage object
     /// must exist and have no children.
@@ -848,9 +871,13 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
             if self.dir_entry(stream_id).obj_type != consts::OBJ_TYPE_STREAM {
-                already_exists!("A storage already exists at that path");
+                already_exists!("Cannot create stream at {:?} because a \
+                                 storage already exists there",
+                                internal::path::path_from_name_chain(&names));
             } else if !overwrite {
-                already_exists!("A stream already exists at that path");
+                already_exists!("Cannot create new stream at {:?} because a \
+                                 stream already exists there",
+                                internal::path::path_from_name_chain(&names));
             } else {
                 let mut stream = Stream::new(self, stream_id)?;
                 stream.set_len(0)?;
@@ -1949,7 +1976,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "A storage already exists at that path")]
+    #[should_panic(expected = "Cannot create stream at \\\"/foobar\\\" \
+                               because a storage already exists there")]
     fn create_stream_where_storage_exists() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
@@ -1958,7 +1986,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "A stream already exists at that path")]
+    #[should_panic(expected = "Cannot create new stream at \\\"/foobar\\\" \
+                               because a stream already exists there")]
     fn create_new_stream_where_stream_exists() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
@@ -1968,7 +1997,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "A storage already exists at that path")]
+    #[should_panic(expected = "Cannot create stream at \\\"/foobar\\\" \
+                               because a storage already exists there")]
     fn create_new_stream_where_storage_exists() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
@@ -1977,7 +2007,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "A stream already exists at that path")]
+    #[should_panic(expected = "Cannot create storage at \\\"/foobar\\\" \
+                               because a stream already exists there")]
     fn create_storage_where_stream_exists() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
@@ -1987,7 +2018,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "A storage already exists at that path")]
+    #[should_panic(expected = "Cannot create storage at \\\"/foobar\\\" \
+                               because a storage already exists there")]
     fn create_storage_where_storage_exists() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
@@ -1996,7 +2028,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "A storage already exists at that path")]
+    #[should_panic(expected = "Cannot create storage at \\\"/\\\" because a \
+                               storage already exists there")]
     fn create_root_storage() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
@@ -2067,6 +2100,31 @@ mod tests {
         assert!(!comp.is_storage("/bar/../foo"));
         assert!(comp.is_storage("/bar/../bar"));
         assert!(!comp.is_storage("../../bar"));
+    }
+
+    #[test]
+    fn create_all_storages() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage_all("/").unwrap();
+        comp.create_storage_all("/foo/bar").unwrap();
+        assert_eq!(list_storage(&comp, "/"), vec!["foo"]);
+        assert_eq!(list_storage(&comp, "/foo"), vec!["bar"]);
+        comp.create_storage_all("/foo").unwrap();
+        comp.create_storage_all("/foo/bar/baz").unwrap();
+        assert_eq!(list_storage(&comp, "/foo/bar"), vec!["baz"]);
+        assert!(comp.is_storage("/foo/bar/baz"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot create storage at \\\"/foo/bar\\\" \
+                               because a stream already exists there")]
+    fn create_storage_all_with_stream_in_the_way() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("foo").unwrap();
+        comp.create_stream("foo/bar").unwrap();
+        comp.create_storage_all("foo/bar/baz").unwrap();
     }
 
     #[test]
