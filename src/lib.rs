@@ -911,6 +911,30 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         Ok(())
     }
 
+    /// Sets the user-defined bitflags for the object at the provided path.
+    /// (To get the current state bits for an object, use
+    /// `self.entry(path)?.state_bits()`.)
+    pub fn set_state_bits<P: AsRef<Path>>(&mut self, path: P, bits: u32)
+                                          -> io::Result<()> {
+        self.set_state_bits_with_path(path.as_ref(), bits)
+    }
+
+    fn set_state_bits_with_path(&mut self, path: &Path, bits: u32)
+                                -> io::Result<()> {
+        let names = internal::path::name_chain_from_path(path)?;
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => {
+                not_found!("No such object: {:?}",
+                           internal::path::path_from_name_chain(&names))
+            }
+        };
+        self.dir_entry_mut(stream_id).state_bits = bits;
+        let mut sector = self.seek_within_dir_entry(stream_id, 96)?;
+        sector.write_u32::<LittleEndian>(bits)?;
+        Ok(())
+    }
+
     /// Sets the modified time for the object at the given path to now.  Has no
     /// effect when called on the root storage.
     pub fn touch<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
@@ -1803,6 +1827,30 @@ mod tests {
         comp.create_new_stream("/foo").unwrap();
         let uuid = Uuid::from_bytes(b"ABCDEFGHIJKLMNOP").unwrap();
         comp.set_storage_clsid("/foo", uuid).unwrap();
+    }
+
+    #[test]
+    fn state_bits() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_stream("foo").unwrap();
+        comp.create_storage("bar").unwrap();
+        comp.set_state_bits("foo", 0x12345678).unwrap();
+        comp.set_state_bits("bar", 0x0ABCDEF0).unwrap();
+
+        let cursor = comp.into_inner();
+        let comp = CompoundFile::open(cursor).expect("open");
+        assert_eq!(comp.root_entry().state_bits(), 0);
+        assert_eq!(comp.entry("foo").unwrap().state_bits(), 0x12345678);
+        assert_eq!(comp.entry("bar").unwrap().state_bits(), 0x0ABCDEF0);
+    }
+
+    #[test]
+    #[should_panic(expected = "No such object")]
+    fn set_nonexistent_state_bits() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.set_state_bits("/foo", 0x12345678).unwrap();
     }
 
     #[test]
