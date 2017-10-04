@@ -2,6 +2,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use internal::{self, Version};
 use internal::consts::{self, MAX_REGULAR_STREAM_ID, NO_STREAM};
 use std::io::{self, Read, Write};
+use uuid::Uuid;
 
 // ========================================================================= //
 
@@ -23,7 +24,7 @@ pub struct DirEntry {
     pub left_sibling: u32,
     pub right_sibling: u32,
     pub child: u32,
-    pub clsid: [u8; 16],
+    pub clsid: Uuid,
     pub state_bits: u32,
     pub creation_time: u64,
     pub modified_time: u64,
@@ -40,13 +41,38 @@ impl DirEntry {
             left_sibling: NO_STREAM,
             right_sibling: NO_STREAM,
             child: NO_STREAM,
-            clsid: consts::NULL_CLSID,
+            clsid: Uuid::nil(),
             state_bits: 0,
             creation_time: 0,
             modified_time: 0,
             start_sector: 0,
             stream_len: 0,
         }
+    }
+
+    pub fn read_clsid<R: Read>(reader: &mut R) -> io::Result<Uuid> {
+        let d1 = reader.read_u32::<LittleEndian>()?;
+        let d2 = reader.read_u16::<LittleEndian>()?;
+        let d3 = reader.read_u16::<LittleEndian>()?;
+        let mut d4 = [0u8; 8];
+        reader.read_exact(&mut d4)?;
+        Ok(Uuid::from_fields(d1, d2, d3, &d4).unwrap())
+    }
+
+    pub fn write_clsid<W: Write>(writer: &mut W, clsid: &Uuid)
+                                 -> io::Result<()> {
+        // TODO: Use Uuid::as_fields() method here, if and when
+        //   https://github.com/rust-lang-nursery/uuid/pull/102 gets accepted.
+        let bytes = clsid.as_bytes();
+        let d1 = ((bytes[0] as u32) << 24) | ((bytes[1] as u32) << 16) |
+            ((bytes[2] as u32) << 8) | (bytes[3] as u32);
+        let d2 = ((bytes[4] as u16) << 8) | (bytes[5] as u16);
+        let d3 = ((bytes[6] as u16) << 8) | (bytes[7] as u16);
+        writer.write_u32::<LittleEndian>(d1)?;
+        writer.write_u16::<LittleEndian>(d2)?;
+        writer.write_u16::<LittleEndian>(d3)?;
+        writer.write_all(&bytes[8..16])?;
+        Ok(())
     }
 
     pub fn read_from<R: Read>(reader: &mut R, version: Version)
@@ -107,9 +133,8 @@ impl DirEntry {
                 malformed!("invalid child: {}", child);
             }
         }
-        let mut clsid = consts::NULL_CLSID;
-        reader.read_exact(&mut clsid)?;
-        if obj_type == consts::OBJ_TYPE_STREAM && clsid != consts::NULL_CLSID {
+        let clsid = DirEntry::read_clsid(reader)?;
+        if obj_type == consts::OBJ_TYPE_STREAM && !clsid.is_nil() {
             malformed!("non-null stream CLSID: {:?}", clsid);
         }
         let state_bits = reader.read_u32::<LittleEndian>()?;
@@ -156,7 +181,7 @@ impl DirEntry {
         writer.write_u32::<LittleEndian>(self.left_sibling)?;
         writer.write_u32::<LittleEndian>(self.right_sibling)?;
         writer.write_u32::<LittleEndian>(self.child)?;
-        writer.write_all(&self.clsid)?;
+        DirEntry::write_clsid(writer, &self.clsid)?;
         writer.write_u32::<LittleEndian>(self.state_bits)?;
         writer.write_u64::<LittleEndian>(self.creation_time)?;
         writer.write_u64::<LittleEndian>(self.modified_time)?;
@@ -173,6 +198,7 @@ mod tests {
     use super::DirEntry;
     use internal::Version;
     use internal::consts;
+    use uuid::Uuid;
 
     #[test]
     fn parse_valid_storage_entry() {
@@ -188,7 +214,8 @@ mod tests {
             12, 0, 0, 0, // left sibling
             34, 0, 0, 0, // right sibling
             56, 0, 0, 0, // child
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+            0xe0, 0x85, 0x9f, 0xf2, 0xf9, 0x4f, 0x68, 0x10, // CLSID
+            0xab, 0x91, 0x08, 0x00, 0x2b, 0x27, 0xb3, 0xd9, // CLSID
             239, 190, 173, 222, // state bits
             0, 0, 0, 0, 0, 0, 0, 0, // created
             0, 0, 0, 0, 0, 0, 0, 0, // modified
@@ -203,7 +230,9 @@ mod tests {
         assert_eq!(dir_entry.left_sibling, 12);
         assert_eq!(dir_entry.right_sibling, 34);
         assert_eq!(dir_entry.child, 56);
-        assert_eq!(dir_entry.clsid, consts::NULL_CLSID);
+        assert_eq!(dir_entry.clsid,
+                   Uuid::parse_str("F29F85E0-4FF9-1068-AB91-08002B27B3D9")
+                       .unwrap());
         assert_eq!(dir_entry.state_bits, 0xdeadbeef);
         assert_eq!(dir_entry.creation_time, 0);
         assert_eq!(dir_entry.modified_time, 0);

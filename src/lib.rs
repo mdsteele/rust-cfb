@@ -46,6 +46,7 @@
 #![warn(missing_docs)]
 
 extern crate byteorder;
+extern crate uuid;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use internal::{DirEntry, Sector, SectorInit, Sectors};
@@ -56,6 +57,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use uuid::Uuid;
 
 #[macro_use]
 mod internal;
@@ -162,7 +164,7 @@ impl<F> CompoundFile<F> {
             Some(stream_id) => stream_id,
             None => not_found!("No such object: {:?}", path),
         };
-        Ok(internal::new_entry(self.dir_entry(stream_id), path))
+        Ok(Entry::new(self.dir_entry(stream_id), path))
     }
 
     /// Returns an iterator over the entries within a storage object.
@@ -187,7 +189,7 @@ impl<F> CompoundFile<F> {
                               dir_entry.obj_type == consts::OBJ_TYPE_ROOT);
             dir_entry.child
         };
-        Ok(internal::new_entries(&self.directory, path, start))
+        Ok(Entries::new(&self.directory, path, start))
     }
 
     /// Returns true if there is an existing stream or storage at the given
@@ -362,8 +364,8 @@ impl<F> CompoundFile<F> {
                 {
                     invalid_data!("Malformed directory (name ordering, \
                                    {:?} vs {:?})",
-                                  &dir_entry.name,
-                                  &entry.name);
+                                  dir_entry.name,
+                                  entry.name);
                 }
                 stack.push((left_sibling, node_is_red));
             }
@@ -379,8 +381,8 @@ impl<F> CompoundFile<F> {
                 {
                     invalid_data!("Malformed directory (name ordering, \
                                    {:?} vs {:?})",
-                                  &dir_entry.name,
-                                  &entry.name);
+                                  dir_entry.name,
+                                  entry.name);
                 }
                 stack.push((right_sibling, node_is_red));
             }
@@ -698,7 +700,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             left_sibling: NO_STREAM,
             right_sibling: NO_STREAM,
             child: NO_STREAM,
-            clsid: consts::NULL_CLSID,
+            clsid: Uuid::nil(),
             state_bits: 0,
             creation_time: 0,
             modified_time: 0,
@@ -787,6 +789,37 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     }
 
     // TODO: pub fn remove_storage_all
+
+    /// Sets the CLSID for the storage object at the provided path.  (To get
+    /// the current CLSID for a storage object, use
+    /// `self.entry(path)?.clsid()`.)
+    pub fn set_storage_clsid<P: AsRef<Path>>(&mut self, path: P, clsid: Uuid)
+                                             -> io::Result<()> {
+        self.set_storage_clsid_with_path(path.as_ref(), clsid)
+    }
+
+    fn set_storage_clsid_with_path(&mut self, path: &Path, clsid: Uuid)
+                                   -> io::Result<()> {
+        let names = internal::path::name_chain_from_path(path)?;
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => {
+                not_found!("No such storage: {:?}",
+                           internal::path::path_from_name_chain(&names))
+            }
+        };
+        {
+            let dir_entry = self.dir_entry_mut(stream_id);
+            if dir_entry.obj_type == consts::OBJ_TYPE_STREAM {
+                invalid_input!("Not a storage: {:?}",
+                               internal::path::path_from_name_chain(&names));
+            }
+            dir_entry.clsid = clsid;
+        }
+        let mut sector = self.seek_within_dir_entry(stream_id, 80)?;
+        DirEntry::write_clsid(&mut sector, &clsid)?;
+        Ok(())
+    }
 
     /// Creates and returns a new, empty stream object at the provided path.
     /// If a stream already exists at that path, it will be replaced by the new
@@ -1137,7 +1170,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             left_sibling: NO_STREAM,
             right_sibling: NO_STREAM,
             child: NO_STREAM,
-            clsid: consts::NULL_CLSID,
+            clsid: Uuid::nil(),
             state_bits: 0,
             creation_time: now,
             modified_time: now,
@@ -1663,6 +1696,7 @@ mod tests {
     use super::{CompoundFile, Version};
     use internal::consts;
     use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+    use uuid::Uuid;
 
     fn list_storage<F>(comp: &CompoundFile<F>, path: &str) -> Vec<String> {
         comp.read_storage(path)
@@ -1718,6 +1752,42 @@ mod tests {
         assert_eq!(list_storage(&comp, "/foo"), vec!["bar"]);
         assert!(list_storage(&comp, "/baz").is_empty());
         assert!(list_storage(&comp, "/foo/bar").is_empty());
+    }
+
+    #[test]
+    fn storage_clsids() {
+        let uuid1 = Uuid::from_bytes(b"ABCDEFGHIJKLMNOP").unwrap();
+        let uuid2 = Uuid::from_bytes(b"0123456789abcdef").unwrap();
+
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foo").unwrap();
+        comp.set_storage_clsid("/", uuid1).unwrap();
+        comp.set_storage_clsid("/foo", uuid2).unwrap();
+
+        let cursor = comp.into_inner();
+        let comp = CompoundFile::open(cursor).expect("open");
+        assert_eq!(comp.entry("/").unwrap().clsid(), &uuid1);
+        assert_eq!(comp.entry("/foo").unwrap().clsid(), &uuid2);
+    }
+
+    #[test]
+    #[should_panic(expected = "No such storage")]
+    fn set_nonexistent_storage_clsid() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        let uuid = Uuid::from_bytes(b"ABCDEFGHIJKLMNOP").unwrap();
+        comp.set_storage_clsid("/foo", uuid).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Not a storage")]
+    fn set_storage_clsid_for_stream() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_new_stream("/foo").unwrap();
+        let uuid = Uuid::from_bytes(b"ABCDEFGHIJKLMNOP").unwrap();
+        comp.set_storage_clsid("/foo", uuid).unwrap();
     }
 
     #[test]

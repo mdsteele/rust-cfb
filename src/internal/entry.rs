@@ -1,6 +1,7 @@
 use internal::{self, DirEntry, consts};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use uuid::Uuid;
 
 // ========================================================================= //
 
@@ -10,27 +11,27 @@ pub struct Entry {
     name: String,
     path: PathBuf,
     obj_type: u8,
-    clsid: [u8; 16],
+    clsid: Uuid,
     state_bits: u32,
     creation_time: u64,
     modified_time: u64,
     stream_len: u64,
 }
 
-pub fn new_entry(dir_entry: &DirEntry, path: PathBuf) -> Entry {
-    Entry {
-        name: dir_entry.name.clone(),
-        path: path,
-        obj_type: dir_entry.obj_type,
-        clsid: dir_entry.clsid,
-        state_bits: dir_entry.state_bits,
-        creation_time: dir_entry.creation_time,
-        modified_time: dir_entry.modified_time,
-        stream_len: dir_entry.stream_len,
-    }
-}
-
 impl Entry {
+    pub(crate) fn new(dir_entry: &DirEntry, path: PathBuf) -> Entry {
+        Entry {
+            name: dir_entry.name.clone(),
+            path: path,
+            obj_type: dir_entry.obj_type,
+            clsid: dir_entry.clsid,
+            state_bits: dir_entry.state_bits,
+            creation_time: dir_entry.creation_time,
+            modified_time: dir_entry.modified_time,
+            stream_len: dir_entry.stream_len,
+        }
+    }
+
     /// Returns the name of the object that this entry represents.
     pub fn name(&self) -> &str { &self.name }
 
@@ -59,7 +60,7 @@ impl Entry {
 
     /// Returns the CLSID (that is, the object class GUID) for this object.
     /// This will always be all zeros for stream objects.
-    pub fn clsid(&self) -> &[u8; 16] { &self.clsid }
+    pub fn clsid(&self) -> &Uuid { &self.clsid }
 
     /// Returns the user-defined bitflags set for this object.
     pub fn state_bits(&self) -> u32 { self.state_bits }
@@ -87,14 +88,16 @@ pub struct Entries<'a> {
     current: u32,
 }
 
-pub fn new_entries<'a>(directory: &'a Vec<DirEntry>, path: PathBuf,
-                       start: u32)
-                       -> Entries<'a> {
-    Entries {
-        directory: directory,
-        path: path,
-        stack: Vec::new(),
-        current: start,
+impl<'a> Entries<'a> {
+    pub(crate) fn new(directory: &'a Vec<DirEntry>, path: PathBuf,
+                      start: u32)
+                      -> Entries<'a> {
+        Entries {
+            directory: directory,
+            path: path,
+            stack: Vec::new(),
+            current: start,
+        }
     }
 }
 
@@ -109,7 +112,7 @@ impl<'a> Iterator for Entries<'a> {
         if let Some(parent) = self.stack.pop() {
             let dir_entry = &self.directory[parent as usize];
             self.current = dir_entry.right_sibling;
-            Some(new_entry(dir_entry, self.path.join(&dir_entry.name)))
+            Some(Entry::new(dir_entry, self.path.join(&dir_entry.name)))
         } else {
             None
         }

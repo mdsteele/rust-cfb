@@ -27,7 +27,6 @@ pub const OBJ_TYPE_STREAM: u8 = 2;
 pub const OBJ_TYPE_ROOT: u8 = 5;
 pub const COLOR_RED: u8 = 0;
 pub const COLOR_BLACK: u8 = 1;
-pub const NULL_CLSID: [u8; 16] = [0; 16];
 pub const ROOT_STREAM_ID: u32 = 0;
 pub const MAX_REGULAR_STREAM_ID: u32 = 0xfffffffa;
 pub const NO_STREAM: u32 = 0xffffffff;
