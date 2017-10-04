@@ -56,7 +56,7 @@ use std::cmp::{self, Ordering};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[macro_use]
@@ -149,6 +149,12 @@ impl<F> CompoundFile<F> {
             }
         }
         Some(stream_id)
+    }
+
+    /// Returns information about the root storage object.  This is equivalent
+    /// to `self.entry("/").unwrap()` (but always succeeds).
+    pub fn root_entry(&self) -> Entry {
+        Entry::new(self.root_dir_entry(), PathBuf::from("/"))
     }
 
     /// Given a path within the compound file, get information about that
@@ -1739,6 +1745,15 @@ mod tests {
     }
 
     #[test]
+    fn root_entry() {
+        let cursor = Cursor::new(Vec::new());
+        let comp = CompoundFile::create(cursor).expect("create");
+        assert_eq!(comp.root_entry().path(), comp.entry("/").unwrap().path());
+        assert_eq!(comp.root_entry().name(), comp.entry("/").unwrap().name());
+        assert!(comp.root_entry().is_root());
+    }
+
+    #[test]
     fn create_directory_tree() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
@@ -1767,7 +1782,7 @@ mod tests {
 
         let cursor = comp.into_inner();
         let comp = CompoundFile::open(cursor).expect("open");
-        assert_eq!(comp.entry("/").unwrap().clsid(), &uuid1);
+        assert_eq!(comp.root_entry().clsid(), &uuid1);
         assert_eq!(comp.entry("/foo").unwrap().clsid(), &uuid2);
     }
 
