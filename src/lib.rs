@@ -1579,13 +1579,18 @@ impl<'a, F: Read + Write + Seek> Stream<'a, F> {
     ///
     /// If `size` is less than the stream's current size, then the stream will
     /// be shrunk.  If it is greater than the stream's current size, then the
-    /// stream will be padded with zeros.
+    /// stream will be padded with zero bytes.
+    ///
+    /// Does not change the current read/write position within the stream,
+    /// unless the stream is truncated to before the current position, in which
+    /// case the position becomes the new end of the stream.
     pub fn set_len(&mut self, size: u64) -> io::Result<()> {
         let current_size = self.len();
         if size == current_size {
             Ok(()) // Do nothing.
         } else if size > current_size {
-            let current_pos = self.seek(SeekFrom::End(0))?;
+            let current_pos = self.seek(SeekFrom::Current(0))?;
+            self.seek(SeekFrom::End(0))?;
             io::copy(&mut io::repeat(0).take(size - current_size), self)?;
             self.seek(SeekFrom::Start(current_pos))?;
             Ok(())
@@ -2332,6 +2337,10 @@ mod tests {
             stream.write_all(&vec![b'x'; 5000]).unwrap();
             stream.write_all(&vec![b'y'; 5000]).unwrap();
             assert_eq!(stream.len(), 10000);
+            assert_eq!(stream.seek(SeekFrom::Start(6000)).unwrap(), 6000);
+            stream.set_len(7000).unwrap();
+            assert_eq!(stream.len(), 7000);
+            assert_eq!(stream.seek(SeekFrom::Current(0)).unwrap(), 6000);
             stream.set_len(5000).unwrap();
             assert_eq!(stream.len(), 5000);
             stream.write_all(&vec![b'x'; 1000]).unwrap();
@@ -2355,8 +2364,18 @@ mod tests {
         {
             let mut stream = comp.create_stream("/foobar").unwrap();
             assert_eq!(stream.len(), 0);
+            stream.write_all(&vec![b'x'; 2000]).unwrap();
+            assert_eq!(stream.len(), 2000);
+            assert_eq!(stream.seek(SeekFrom::Start(1000)).unwrap(), 1000);
+            stream.write_all(&vec![b'y'; 500]).unwrap();
+            assert_eq!(stream.len(), 2000);
+            assert_eq!(stream.seek(SeekFrom::Current(0)).unwrap(), 1500);
             stream.set_len(5000).unwrap();
             assert_eq!(stream.len(), 5000);
+            assert_eq!(stream.seek(SeekFrom::Current(0)).unwrap(), 1500);
+            stream.write_all(&vec![b'z'; 500]).unwrap();
+            assert_eq!(stream.len(), 5000);
+            assert_eq!(stream.seek(SeekFrom::Current(0)).unwrap(), 2000);
         }
 
         let cursor = comp.into_inner();
@@ -2366,7 +2385,10 @@ mod tests {
         let mut actual_data = Vec::new();
         stream.read_to_end(&mut actual_data).unwrap();
         assert_eq!(actual_data.len(), 5000);
-        assert!(actual_data == vec![0; 5000]);
+        assert_eq!(&actual_data[0..1000], &[b'x'; 1000] as &[u8]);
+        assert_eq!(&actual_data[1000..1500], &[b'y'; 500] as &[u8]);
+        assert_eq!(&actual_data[1500..2000], &[b'z'; 500] as &[u8]);
+        assert_eq!(&actual_data[2000..5000], &[0u8; 3000] as &[u8]);
     }
 
     #[test]
