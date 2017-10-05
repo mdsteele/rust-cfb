@@ -20,7 +20,7 @@ pub const END_OF_CHAIN: u32 = 0xfffffffe;
 pub const FREE_SECTOR: u32 = 0xffffffff;
 
 // Constants for directory entries:
-pub const ROOT_DIR_NAME: &'static str = "Root Entry";
+pub const ROOT_DIR_NAME: &str = "Root Entry";
 pub const OBJ_TYPE_UNALLOCATED: u8 = 0;
 pub const OBJ_TYPE_STORAGE: u8 = 1;
 pub const OBJ_TYPE_STREAM: u8 = 2;

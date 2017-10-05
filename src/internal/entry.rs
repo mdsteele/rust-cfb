@@ -80,23 +80,54 @@ impl Entry {
 
 // ========================================================================= //
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum EntriesOrder {
+    Nonrecursive,
+    Preorder,
+}
+
+// ========================================================================= //
+
 /// An iterator over the entries in a storage object.
 pub struct Entries<'a> {
+    order: EntriesOrder,
     directory: &'a Vec<DirEntry>,
-    path: PathBuf,
-    stack: Vec<u32>,
-    current: u32,
+    stack: Vec<(PathBuf, u32, bool)>,
 }
 
 impl<'a> Entries<'a> {
-    pub(crate) fn new(directory: &'a Vec<DirEntry>, path: PathBuf,
-                      start: u32)
+    pub(crate) fn new(order: EntriesOrder, directory: &'a Vec<DirEntry>,
+                      parent_path: PathBuf, start: u32)
                       -> Entries<'a> {
-        Entries {
+        let mut entries = Entries {
+            order: order,
             directory: directory,
-            path: path,
             stack: Vec::new(),
-            current: start,
+        };
+        match order {
+            EntriesOrder::Nonrecursive => {
+                entries.stack_left_spine(&parent_path, start);
+            }
+            EntriesOrder::Preorder => {
+                entries.stack.push((parent_path, start, false));
+            }
+        }
+        entries
+    }
+
+    fn join_path(parent_path: &Path, dir_entry: &DirEntry) -> PathBuf {
+        if dir_entry.obj_type == consts::OBJ_TYPE_ROOT {
+            parent_path.to_path_buf()
+        } else {
+            parent_path.join(&dir_entry.name)
+        }
+    }
+
+    fn stack_left_spine(&mut self, parent_path: &Path, mut current_id: u32) {
+        while current_id != consts::NO_STREAM {
+            let dir_entry = &self.directory[current_id as usize];
+            self.stack.push((parent_path.to_path_buf(), current_id, true));
+            current_id = dir_entry.left_sibling;
         }
     }
 }
@@ -105,17 +136,134 @@ impl<'a> Iterator for Entries<'a> {
     type Item = Entry;
 
     fn next(&mut self) -> Option<Entry> {
-        while self.current != consts::NO_STREAM {
-            self.stack.push(self.current);
-            self.current = self.directory[self.current as usize].left_sibling;
-        }
-        if let Some(parent) = self.stack.pop() {
-            let dir_entry = &self.directory[parent as usize];
-            self.current = dir_entry.right_sibling;
-            Some(Entry::new(dir_entry, self.path.join(&dir_entry.name)))
+        if let Some((parent, stream_id, visit_siblings)) = self.stack.pop() {
+            let dir_entry = &self.directory[stream_id as usize];
+            let path = Entries::join_path(&parent, dir_entry);
+            if visit_siblings {
+                self.stack_left_spine(&parent, dir_entry.right_sibling);
+            }
+            if self.order == EntriesOrder::Preorder &&
+                dir_entry.obj_type != consts::OBJ_TYPE_STREAM &&
+                dir_entry.child != consts::NO_STREAM
+            {
+                self.stack_left_spine(&path, dir_entry.child);
+            }
+            Some(Entry::new(dir_entry, path))
         } else {
             None
         }
+    }
+}
+
+// ========================================================================= //
+
+#[cfg(test)]
+mod tests {
+    use super::{Entries, EntriesOrder, Entry};
+    use internal::DirEntry;
+    use internal::consts::{NO_STREAM, OBJ_TYPE_ROOT, OBJ_TYPE_STORAGE,
+                           OBJ_TYPE_STREAM, ROOT_DIR_NAME};
+    use std::path::PathBuf;
+
+    fn make_entry(name: &str, obj_type: u8, left: u32, child: u32,
+                  right: u32)
+                  -> DirEntry {
+        let mut dir_entry = DirEntry::unallocated();
+        dir_entry.name = name.to_string();
+        dir_entry.obj_type = obj_type;
+        dir_entry.left_sibling = left;
+        dir_entry.child = child;
+        dir_entry.right_sibling = right;
+        dir_entry
+    }
+
+    fn make_directory() -> Vec<DirEntry> {
+        // Root contains:      3 contains:
+        //      5                  8
+        //     / \                / \
+        //    3   6              7   9
+        //   / \
+        //  1   4
+        //   \
+        //    2
+        vec![
+            make_entry(ROOT_DIR_NAME, OBJ_TYPE_ROOT, NO_STREAM, 5, NO_STREAM),
+            make_entry("1", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, 2),
+            make_entry("2", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, NO_STREAM),
+            make_entry("3", OBJ_TYPE_STORAGE, 1, 8, 4),
+            make_entry("4", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, NO_STREAM),
+            make_entry("5", OBJ_TYPE_STREAM, 3, NO_STREAM, 6),
+            make_entry("6", OBJ_TYPE_STORAGE, NO_STREAM, NO_STREAM, NO_STREAM),
+            make_entry("7", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, NO_STREAM),
+            make_entry("8", OBJ_TYPE_STREAM, 7, NO_STREAM, 9),
+            make_entry("9", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, NO_STREAM),
+        ]
+    }
+
+    fn paths_for_entries<'a>(entries: &'a [Entry]) -> Vec<&'a str> {
+        entries.iter().map(|entry| entry.path().to_str().unwrap()).collect()
+    }
+
+    #[test]
+    fn nonrecursive_entries_from_root() {
+        let directory = make_directory();
+        let entries: Vec<Entry> = Entries::new(EntriesOrder::Nonrecursive,
+                                               &directory,
+                                               PathBuf::from("/"),
+                                               5)
+            .collect();
+        let paths = paths_for_entries(&entries);
+        assert_eq!(paths, vec!["/1", "/2", "/3", "/4", "/5", "/6"]);
+    }
+
+    #[test]
+    fn nonrecursive_entries_from_storage() {
+        let directory = make_directory();
+        let entries: Vec<Entry> = Entries::new(EntriesOrder::Nonrecursive,
+                                               &directory,
+                                               PathBuf::from("/3"),
+                                               8)
+            .collect();
+        let paths = paths_for_entries(&entries);
+        assert_eq!(paths, vec!["/3/7", "/3/8", "/3/9"]);
+    }
+
+    #[test]
+    fn preorder_entries_from_root() {
+        let directory = make_directory();
+        let entries: Vec<Entry> = Entries::new(EntriesOrder::Preorder,
+                                               &directory,
+                                               PathBuf::from("/"),
+                                               0)
+            .collect();
+        let paths = paths_for_entries(&entries);
+        assert_eq!(
+            paths,
+            vec![
+                "/",
+                "/1",
+                "/2",
+                "/3",
+                "/3/7",
+                "/3/8",
+                "/3/9",
+                "/4",
+                "/5",
+                "/6",
+            ]
+        );
+    }
+
+    #[test]
+    fn preorder_entries_from_storage() {
+        let directory = make_directory();
+        let entries: Vec<Entry> = Entries::new(EntriesOrder::Preorder,
+                                               &directory,
+                                               PathBuf::from("/"),
+                                               3)
+            .collect();
+        let paths = paths_for_entries(&entries);
+        assert_eq!(paths, vec!["/3", "/3/7", "/3/8", "/3/9"]);
     }
 }
 

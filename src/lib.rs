@@ -49,7 +49,7 @@ extern crate byteorder;
 extern crate uuid;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use internal::{DirEntry, Sector, SectorInit, Sectors};
+use internal::{DirEntry, EntriesOrder, Sector, SectorInit, Sectors};
 pub use internal::{Entries, Entry, Version};
 use internal::consts::{self, END_OF_CHAIN, NO_STREAM};
 use std::cmp::{self, Ordering};
@@ -195,7 +195,35 @@ impl<F> CompoundFile<F> {
                               dir_entry.obj_type == consts::OBJ_TYPE_ROOT);
             dir_entry.child
         };
-        Ok(Entries::new(&self.directory, path, start))
+        Ok(Entries::new(EntriesOrder::Nonrecursive,
+                        &self.directory,
+                        path,
+                        start))
+    }
+
+    /// Returns an iterator over all entries under a storage subtree, including
+    /// the given path itself.  The iterator walks the storage tree in a
+    /// preorder traversal.
+    pub fn walk_storage<P: AsRef<Path>>(&self, path: P)
+                                        -> io::Result<Entries> {
+        self.walk_storage_with_path(path.as_ref())
+    }
+
+    fn walk_storage_with_path(&self, path: &Path) -> io::Result<Entries> {
+        let mut names = internal::path::name_chain_from_path(path)?;
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => {
+                not_found!("No such object: {:?}",
+                           internal::path::path_from_name_chain(&names));
+            }
+        };
+        names.pop();
+        let parent_path = internal::path::path_from_name_chain(&names);
+        Ok(Entries::new(EntriesOrder::Preorder,
+                        &self.directory,
+                        parent_path,
+                        stream_id))
     }
 
     /// Returns true if there is an existing stream or storage at the given
@@ -240,8 +268,6 @@ impl<F> CompoundFile<F> {
             Err(_) => false,
         }
     }
-
-    // TODO: pub fn walk_storage
 
     // TODO: pub fn copy_stream
 
@@ -1755,10 +1781,19 @@ mod tests {
     use std::io::{Cursor, Read, Seek, SeekFrom, Write};
     use uuid::Uuid;
 
-    fn list_storage<F>(comp: &CompoundFile<F>, path: &str) -> Vec<String> {
+    fn read_storage_to_vec<F>(comp: &CompoundFile<F>, path: &str)
+                              -> Vec<String> {
         comp.read_storage(path)
             .unwrap()
             .map(|e| e.name().to_string())
+            .collect()
+    }
+
+    fn walk_storage_to_vec<F>(comp: &CompoundFile<F>, path: &str)
+                              -> Vec<String> {
+        comp.walk_storage(path)
+            .unwrap()
+            .map(|e| e.path().to_string_lossy().to_string())
             .collect()
     }
 
@@ -1814,10 +1849,25 @@ mod tests {
 
         let cursor = comp.into_inner();
         let comp = CompoundFile::open(cursor).expect("open");
-        assert_eq!(list_storage(&comp, "/"), vec!["baz", "foo"]);
-        assert_eq!(list_storage(&comp, "/foo"), vec!["bar"]);
-        assert!(list_storage(&comp, "/baz").is_empty());
-        assert!(list_storage(&comp, "/foo/bar").is_empty());
+        assert_eq!(read_storage_to_vec(&comp, "/"), vec!["baz", "foo"]);
+        assert_eq!(read_storage_to_vec(&comp, "/foo"), vec!["bar"]);
+        assert!(read_storage_to_vec(&comp, "/baz").is_empty());
+        assert!(read_storage_to_vec(&comp, "/foo/bar").is_empty());
+    }
+
+    #[test]
+    fn walk_directory_tree() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foo").unwrap();
+        comp.create_stream("/baz").unwrap();
+        comp.create_storage("/quux").unwrap();
+        comp.create_stream("/foo/bar").unwrap();
+        assert_eq!(walk_storage_to_vec(&comp, "/"),
+                   vec!["/", "/baz", "/foo", "/foo/bar", "/quux"]);
+        assert_eq!(walk_storage_to_vec(&comp, "/foo"),
+                   vec!["/foo", "/foo/bar"]);
+        assert_eq!(walk_storage_to_vec(&comp, "/baz"), vec!["/baz"]);
     }
 
     #[test]
@@ -2108,11 +2158,11 @@ mod tests {
         let mut comp = CompoundFile::create(cursor).expect("create");
         comp.create_storage_all("/").unwrap();
         comp.create_storage_all("/foo/bar").unwrap();
-        assert_eq!(list_storage(&comp, "/"), vec!["foo"]);
-        assert_eq!(list_storage(&comp, "/foo"), vec!["bar"]);
+        assert_eq!(read_storage_to_vec(&comp, "/"), vec!["foo"]);
+        assert_eq!(read_storage_to_vec(&comp, "/foo"), vec!["bar"]);
         comp.create_storage_all("/foo").unwrap();
         comp.create_storage_all("/foo/bar/baz").unwrap();
-        assert_eq!(list_storage(&comp, "/foo/bar"), vec!["baz"]);
+        assert_eq!(read_storage_to_vec(&comp, "/foo/bar"), vec!["baz"]);
         assert!(comp.is_storage("/foo/bar/baz"));
     }
 
@@ -2142,8 +2192,8 @@ mod tests {
 
         let cursor = comp.into_inner();
         let comp = CompoundFile::open(cursor).expect("open");
-        assert_eq!(list_storage(&comp, "/"), vec!["baz", "quux"]);
-        assert!(list_storage(&comp, "/baz").is_empty());
+        assert_eq!(read_storage_to_vec(&comp, "/"), vec!["baz", "quux"]);
+        assert!(read_storage_to_vec(&comp, "/baz").is_empty());
     }
 
     #[test]
@@ -2197,8 +2247,8 @@ mod tests {
 
         let cursor = comp.into_inner();
         let comp = CompoundFile::open(cursor).expect("open");
-        assert_eq!(list_storage(&comp, "/"), vec!["baz", "quux"]);
-        assert!(list_storage(&comp, "/baz").is_empty());
+        assert_eq!(read_storage_to_vec(&comp, "/"), vec!["baz", "quux"]);
+        assert!(read_storage_to_vec(&comp, "/baz").is_empty());
     }
 
     #[test]

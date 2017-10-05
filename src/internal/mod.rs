@@ -10,6 +10,6 @@ pub mod time;
 mod version;
 
 pub use self::dir::DirEntry;
-pub use self::entry::{Entries, Entry};
+pub use self::entry::{Entries, EntriesOrder, Entry};
 pub use self::sector::{Sector, SectorInit, Sectors};
 pub use self::version::Version;
