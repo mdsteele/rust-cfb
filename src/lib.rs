@@ -843,7 +843,28 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         Ok(())
     }
 
-    // TODO: pub fn remove_storage_all
+    /// Recursively removes a storage and all of its children.  If called on
+    /// the root storage, recursively removes all of its children but not the
+    /// root storage itself (which cannot be removed).
+    pub fn remove_storage_all<P: AsRef<Path>>(&mut self, path: P)
+                                              -> io::Result<()> {
+        self.remove_storage_all_with_path(path.as_ref())
+    }
+
+    fn remove_storage_all_with_path(&mut self, path: &Path) -> io::Result<()> {
+        let mut stack = Vec::<Entry>::new();
+        for entry in self.walk_storage_with_path(path)? {
+            stack.push(entry);
+        }
+        while let Some(entry) = stack.pop() {
+            if entry.is_stream() {
+                self.remove_stream_with_path(entry.path())?;
+            } else if !entry.is_root() {
+                self.remove_storage_with_path(entry.path())?;
+            }
+        }
+        Ok(())
+    }
 
     /// Sets the CLSID for the storage object at the provided path.  (To get
     /// the current CLSID for a storage object, use
@@ -2229,6 +2250,40 @@ mod tests {
         comp.create_storage("/foo").unwrap();
         comp.create_storage("/foo/bar").unwrap();
         comp.remove_storage("/foo").unwrap();
+    }
+
+    #[test]
+    fn remove_storage_all_on_storage() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foo").unwrap();
+        comp.create_storage("/foo/bar").unwrap();
+        comp.create_stream("/foo/bar/baz").unwrap();
+        comp.create_stream("/foo/bar/quux").unwrap();
+        comp.create_stream("/foo/blarg").unwrap();
+        comp.create_storage("/stuff").unwrap();
+        comp.create_stream("/stuff/foo").unwrap();
+        comp.remove_storage_all("foo").unwrap();
+
+        let cursor = comp.into_inner();
+        let comp = CompoundFile::open(cursor).expect("open");
+        assert_eq!(read_storage_to_vec(&comp, "/"), vec!["stuff"]);
+        assert_eq!(read_storage_to_vec(&comp, "/stuff"), vec!["foo"]);
+    }
+
+    #[test]
+    fn remove_storage_all_on_root() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_storage("/foo").unwrap();
+        comp.create_stream("/foo/bar").unwrap();
+        comp.create_storage("/stuff").unwrap();
+        comp.create_stream("/stuff/foo").unwrap();
+        comp.remove_storage_all("/").unwrap();
+
+        let cursor = comp.into_inner();
+        let comp = CompoundFile::open(cursor).expect("open");
+        assert!(read_storage_to_vec(&comp, "/").is_empty());
     }
 
     #[test]
