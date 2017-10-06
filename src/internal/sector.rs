@@ -166,6 +166,7 @@ impl<'a, F: Seek> Seek for Sector<'a, F> {
 pub enum SectorInit {
     Zero,
     Fat,
+    Difat,
     Dir,
 }
 
@@ -183,6 +184,14 @@ impl SectorInit {
                     sector.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
                 }
             }
+            SectorInit::Difat => {
+                debug_assert_eq!(sector.len() % 4, 0);
+                debug_assert!(sector.len() >= 4);
+                for _ in 0..((sector.len() - 4) / 4) {
+                    sector.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
+                }
+                sector.write_u32::<LittleEndian>(consts::END_OF_CHAIN)?;
+            }
             SectorInit::Dir => {
                 debug_assert_eq!(sector.len() % consts::DIR_ENTRY_LEN, 0);
                 let dir_entry = DirEntry::unallocated();
@@ -199,8 +208,9 @@ impl SectorInit {
 
 #[cfg(test)]
 mod tests {
-    use super::Sectors;
-    use internal::Version;
+    use super::{SectorInit, Sectors};
+    use byteorder::{LittleEndian, ReadBytesExt};
+    use internal::{DirEntry, Version, consts};
     use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
     #[test]
@@ -274,6 +284,49 @@ mod tests {
         assert_eq!(sector.seek(SeekFrom::Current(-256)).unwrap(), 256);
         sector.read_exact(&mut buffer).unwrap();
         assert_eq!(buffer, vec![3; 128]);
+    }
+
+    #[test]
+    fn sector_init() {
+        let data = vec![0u8; 512];
+        let mut sectors = Sectors::new(Version::V3, 0, Cursor::new(data));
+        {
+            sectors.init_sector(0, SectorInit::Zero).unwrap();
+            let mut sector = sectors.seek_to_sector(0).unwrap();
+            let mut buffer = vec![0xff; 512];
+            sector.read_exact(&mut buffer).unwrap();
+            assert_eq!(buffer, vec![0; 512]);
+        }
+        {
+            sectors.init_sector(1, SectorInit::Fat).unwrap();
+            let mut sector = sectors.seek_to_sector(1).unwrap();
+            for _ in 0..128 {
+                assert_eq!(sector.read_u32::<LittleEndian>().unwrap(),
+                           consts::FREE_SECTOR);
+            }
+        }
+        {
+            sectors.init_sector(2, SectorInit::Difat).unwrap();
+            let mut sector = sectors.seek_to_sector(2).unwrap();
+            for _ in 0..127 {
+                assert_eq!(sector.read_u32::<LittleEndian>().unwrap(),
+                           consts::FREE_SECTOR);
+            }
+            assert_eq!(sector.read_u32::<LittleEndian>().unwrap(),
+                       consts::END_OF_CHAIN);
+        }
+        {
+            sectors.init_sector(3, SectorInit::Dir).unwrap();
+            let mut sector = sectors.seek_to_sector(3).unwrap();
+            for _ in 0..4 {
+                let dir_entry = DirEntry::read_from(&mut sector, Version::V3)
+                    .unwrap();
+                assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_UNALLOCATED);
+                assert_eq!(dir_entry.left_sibling, consts::NO_STREAM);
+                assert_eq!(dir_entry.right_sibling, consts::NO_STREAM);
+                assert_eq!(dir_entry.child, consts::NO_STREAM);
+            }
+        }
     }
 }
 

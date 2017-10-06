@@ -543,10 +543,10 @@ impl<F: Read + Seek> CompoundFile<F> {
             difat.push(next);
         }
         let mut sectors = Sectors::new(version, num_sectors as u32, inner);
-        let mut difat_sectors = Vec::new();
+        let mut difat_sector_ids = Vec::new();
         let mut current_difat_sector = first_difat_sector;
         while current_difat_sector != END_OF_CHAIN {
-            difat_sectors.push(current_difat_sector);
+            difat_sector_ids.push(current_difat_sector);
             let mut sector = sectors.seek_to_sector(current_difat_sector)?;
             for _ in 0..(sector_len / 4 - 1) {
                 let next = sector.read_u32::<LittleEndian>()?;
@@ -559,11 +559,11 @@ impl<F: Read + Seek> CompoundFile<F> {
             }
             current_difat_sector = sector.read_u32::<LittleEndian>()?;
         }
-        if num_difat_sectors as usize != difat_sectors.len() {
+        if num_difat_sectors as usize != difat_sector_ids.len() {
             invalid_data!("Incorrect DIFAT chain length \
                            (header says {}, actual is {})",
                           num_difat_sectors,
-                          difat_sectors.len());
+                          difat_sector_ids.len());
         }
         while difat.last() == Some(&consts::FREE_SECTOR) {
             difat.pop();
@@ -587,7 +587,8 @@ impl<F: Read + Seek> CompoundFile<F> {
             fat.pop();
         }
 
-        let mut allocator = Allocator::new(sectors, difat, fat)?;
+        let mut allocator =
+            Allocator::new(sectors, difat_sector_ids, difat, fat)?;
 
         // Read in MiniFAT.
         let mut minifat = Vec::<u32>::new();
@@ -683,13 +684,15 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         }
 
         // Write FAT sector:
-        let fat = vec![consts::FAT_SECTOR, END_OF_CHAIN];
+        let fat: Vec<u32> = vec![consts::FAT_SECTOR, END_OF_CHAIN];
         for &entry in fat.iter() {
             inner.write_u32::<LittleEndian>(entry)?;
         }
         for _ in fat.len()..(sector_len / 4) {
             inner.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
         }
+        let difat: Vec<u32> = vec![0];
+        let difat_sector_ids: Vec<u32> = vec![];
 
         // Write directory sector:
         let root_dir_entry = DirEntry {
@@ -712,7 +715,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         }
 
         let sectors = Sectors::new(version, 2, inner);
-        let allocator = Allocator::new(sectors, vec![0], fat)
+        let allocator = Allocator::new(sectors, difat_sector_ids, difat, fat)
             .expect("allocator");
         Ok(CompoundFile {
                allocator: allocator,

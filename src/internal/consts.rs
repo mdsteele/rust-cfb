@@ -15,6 +15,8 @@ pub const MINI_STREAM_CUTOFF: u32 = 4096;
 
 // Constants for FAT entries:
 pub const MAX_REGULAR_SECTOR: u32 = 0xfffffffa;
+pub const INVALID_SECTOR: u32 = 0xfffffffb;
+pub const DIFAT_SECTOR: u32 = 0xfffffffc;
 pub const FAT_SECTOR: u32 = 0xfffffffd;
 pub const END_OF_CHAIN: u32 = 0xfffffffe;
 pub const FREE_SECTOR: u32 = 0xffffffff;
