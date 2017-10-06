@@ -49,7 +49,8 @@ extern crate byteorder;
 extern crate uuid;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use internal::{Allocator, DirEntry, EntriesOrder, Sector, SectorInit, Sectors};
+use internal::{Allocator, Chain, DirEntry, EntriesOrder, Sector, SectorInit,
+               Sectors};
 pub use internal::{Entries, Entry, Version};
 use internal::consts::{self, END_OF_CHAIN, NO_STREAM};
 use std::cmp::{self, Ordering};
@@ -591,29 +592,26 @@ impl<F: Read + Seek> CompoundFile<F> {
             Allocator::new(sectors, difat_sector_ids, difat, fat)?;
 
         // Read in MiniFAT.
-        let mut minifat = Vec::<u32>::new();
-        let mut minifat_sectors = Vec::new();
-        let mut current_minifat_sector = first_minifat_sector;
-        while current_minifat_sector != END_OF_CHAIN {
-            minifat_sectors.push(current_minifat_sector);
-            {
-                let mut sector = allocator
-                    .seek_to_sector(current_minifat_sector)?;
-                for _ in 0..(sector_len / 4) {
-                    minifat.push(sector.read_u32::<LittleEndian>()?);
-                }
+        let minifat = {
+            let mut chain = Chain::new(&mut allocator,
+                                       first_minifat_sector,
+                                       SectorInit::Fat);
+            if num_minifat_sectors as usize != chain.num_sectors() {
+                invalid_data!("Incorrect MiniFAT chain length \
+                               (header says {}, actual is {})",
+                              num_minifat_sectors,
+                              chain.num_sectors());
             }
-            current_minifat_sector = allocator.next(current_minifat_sector);
-        }
-        if num_minifat_sectors as usize != minifat_sectors.len() {
-            invalid_data!("Incorrect MiniFAT chain length \
-                           (header says {}, actual is {})",
-                          num_minifat_sectors,
-                          minifat_sectors.len());
-        }
-        while minifat.last() == Some(&consts::FREE_SECTOR) {
-            minifat.pop();
-        }
+            let num_minifat_entries = (chain.len() / 4) as usize;
+            let mut minifat = Vec::<u32>::with_capacity(num_minifat_entries);
+            for _ in 0..num_minifat_entries {
+                minifat.push(chain.read_u32::<LittleEndian>()?);
+            }
+            while minifat.last() == Some(&consts::FREE_SECTOR) {
+                minifat.pop();
+            }
+            minifat
+        };
 
         let mut comp = CompoundFile {
             allocator: allocator,
@@ -1336,41 +1334,27 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     /// Sets `self.minifat[index] = value`, and also writes that change to the
     /// underlying file.  The `index` must be <= `self.minifat.len()`.
     fn set_minifat(&mut self, index: u32, value: u32) -> io::Result<()> {
-        let index = index as usize;
-        debug_assert!(index <= self.minifat.len());
-        let minifat_entries_per_sector = self.allocator.sector_len() / 4;
-        let mut minifat_sector = self.minifat_start_sector;
-        for _ in 0..(index / minifat_entries_per_sector) {
-            debug_assert_ne!(minifat_sector, END_OF_CHAIN);
-            minifat_sector = self.allocator.next(minifat_sector);
-        }
-        let offset = 4 * (index % minifat_entries_per_sector) as u64;
-        let mut sector = self.allocator
-            .seek_within_sector(minifat_sector, offset)?;
-        sector.write_u32::<LittleEndian>(value)?;
-        if index == self.minifat.len() {
+        debug_assert!(index as usize <= self.minifat.len());
+        let mut chain = Chain::new(&mut self.allocator,
+                                   self.minifat_start_sector,
+                                   SectorInit::Fat);
+        chain.seek(SeekFrom::Start((index as u64) * 4))?;
+        chain.write_u32::<LittleEndian>(value)?;
+        if (index as usize) == self.minifat.len() {
             self.minifat.push(value);
         } else {
-            self.minifat[index] = value;
+            self.minifat[index as usize] = value;
         }
         Ok(())
     }
 
     fn write_dir_entry(&mut self, stream_id: u32) -> io::Result<()> {
-        let dir_entries_per_sector = self.version().dir_entries_per_sector();
-        let index_within_sector = stream_id as usize % dir_entries_per_sector;
-        let offset_within_sector = index_within_sector * consts::DIR_ENTRY_LEN;
-        let mut directory_sector = self.directory_start_sector;
-        for _ in 0..(stream_id as usize / dir_entries_per_sector) {
-            debug_assert_ne!(directory_sector, END_OF_CHAIN);
-            directory_sector = self.allocator.next(directory_sector);
-        }
-        let mut sector =
-            self.allocator
-                .seek_within_sector(directory_sector,
-                                    offset_within_sector as u64)?;
-        self.directory[stream_id as usize].write_to(&mut sector)?;
-        Ok(())
+        let mut chain = Chain::new(&mut self.allocator,
+                                   self.directory_start_sector,
+                                   SectorInit::Dir);
+        let offset = (consts::DIR_ENTRY_LEN as u64) * (stream_id as u64);
+        chain.seek(SeekFrom::Start(offset))?;
+        self.directory[stream_id as usize].write_to(&mut chain)
     }
 }
 
