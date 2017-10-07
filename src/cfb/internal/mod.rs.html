@@ -58,20 +58,28 @@
 <span id="13">13</span>
 <span id="14">14</span>
 <span id="15">15</span>
+<span id="16">16</span>
+<span id="17">17</span>
+<span id="18">18</span>
+<span id="19">19</span>
 </pre><pre class="rust ">
 <span class="attribute">#[<span class="ident">macro_use</span>]</span>
 <span class="kw">mod</span> <span class="ident">macros</span>;
 
+<span class="kw">mod</span> <span class="ident">alloc</span>;
+<span class="kw">mod</span> <span class="ident">chain</span>;
 <span class="kw">pub</span> <span class="kw">mod</span> <span class="ident">consts</span>;
-<span class="kw">mod</span> <span class="ident">dir</span>;
+<span class="kw">mod</span> <span class="ident">direntry</span>;
 <span class="kw">mod</span> <span class="ident">entry</span>;
 <span class="kw">pub</span> <span class="kw">mod</span> <span class="ident">path</span>;
 <span class="kw">mod</span> <span class="ident">sector</span>;
 <span class="kw">pub</span> <span class="kw">mod</span> <span class="ident">time</span>;
 <span class="kw">mod</span> <span class="ident">version</span>;
 
-<span class="kw">pub</span> <span class="kw">use</span> <span class="self">self</span>::<span class="ident">dir</span>::<span class="ident">DirEntry</span>;
-<span class="kw">pub</span> <span class="kw">use</span> <span class="self">self</span>::<span class="ident">entry</span>::{<span class="ident">Entries</span>, <span class="ident">Entry</span>, <span class="ident">new_entries</span>, <span class="ident">new_entry</span>};
+<span class="kw">pub</span> <span class="kw">use</span> <span class="self">self</span>::<span class="ident">alloc</span>::<span class="ident">Allocator</span>;
+<span class="kw">pub</span> <span class="kw">use</span> <span class="self">self</span>::<span class="ident">chain</span>::<span class="ident">Chain</span>;
+<span class="kw">pub</span> <span class="kw">use</span> <span class="self">self</span>::<span class="ident">direntry</span>::<span class="ident">DirEntry</span>;
+<span class="kw">pub</span> <span class="kw">use</span> <span class="self">self</span>::<span class="ident">entry</span>::{<span class="ident">Entries</span>, <span class="ident">EntriesOrder</span>, <span class="ident">Entry</span>};
 <span class="kw">pub</span> <span class="kw">use</span> <span class="self">self</span>::<span class="ident">sector</span>::{<span class="ident">Sector</span>, <span class="ident">SectorInit</span>, <span class="ident">Sectors</span>};
 <span class="kw">pub</span> <span class="kw">use</span> <span class="self">self</span>::<span class="ident">version</span>::<span class="ident">Version</span>;
 </pre>

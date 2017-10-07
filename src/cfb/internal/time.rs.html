@@ -127,7 +127,7 @@
     <span class="attribute">#[<span class="ident">test</span>]</span>
     <span class="kw">fn</span> <span class="ident">system_time</span>() {
         <span class="kw">let</span> <span class="ident">sat_18_mar_2017_at_18_46_36_gmt</span> <span class="op">=</span> <span class="ident">UNIX_EPOCH</span> <span class="op">+</span>
-                                              <span class="ident">Duration</span>::<span class="ident">from_secs</span>(<span class="number">1489862796</span>);
+            <span class="ident">Duration</span>::<span class="ident">from_secs</span>(<span class="number">1489862796</span>);
         <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">system_time_from_timestamp</span>(<span class="number">131343363960000000</span>),
                    <span class="ident">sat_18_mar_2017_at_18_46_36_gmt</span>);
     }
