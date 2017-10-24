@@ -934,15 +934,25 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             Some(parent_id) => parent_id,
             None => not_found!("No such stream: {:?}", path),
         };
-        let start_sector_id = {
+        let (start_sector_id, is_in_mini_stream) = {
             let dir_entry = self.dir_entry(stream_id);
             if dir_entry.obj_type != consts::OBJ_TYPE_STREAM {
                 invalid_input!("Not a stream: {:?}", path);
             }
             debug_assert_eq!(dir_entry.child, NO_STREAM);
-            dir_entry.start_sector
+            (dir_entry.start_sector,
+             dir_entry.stream_len < consts::MINI_STREAM_CUTOFF as u64)
         };
-        self.allocator.free_chain(start_sector_id)?;
+        if is_in_mini_stream {
+            let mut mini_sector_id = start_sector_id;
+            while mini_sector_id != END_OF_CHAIN {
+                let next = self.minifat[mini_sector_id as usize];
+                self.free_mini_sector(mini_sector_id)?;
+                mini_sector_id = next;
+            }
+        } else {
+            self.allocator.free_chain(start_sector_id)?;
+        }
         debug_assert!(!names.is_empty());
         let name = names.pop().unwrap();
         let parent_id = self.stream_id_for_name_chain(&names).unwrap();
@@ -2172,6 +2182,17 @@ mod tests {
         let comp = CompoundFile::open(cursor).expect("open");
         assert_eq!(read_storage_to_vec(&comp, "/"), vec!["baz", "quux"]);
         assert!(read_storage_to_vec(&comp, "/baz").is_empty());
+    }
+
+    #[test]
+    fn remove_small_stream() {
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).expect("create");
+        comp.create_stream("/foo")
+            .unwrap()
+            .write_all(&vec![b'x'; 500])
+            .unwrap();
+        comp.remove_stream("/foo").unwrap();
     }
 
     #[test]
