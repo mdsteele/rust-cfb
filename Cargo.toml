@@ -1,6 +1,6 @@
 [package]
 name = "cfb"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Matthew D. Steele <mdsteele@alum.mit.edu>"]
 description = "Read/write Compound File Binary (structured storage) files"
 repository = "https://github.com/mdsteele/rust-cfb"
@@ -15,4 +15,4 @@ uuid = "0.5"
 
 [dev-dependencies]
 chrono = "0.4"
-clap = "2.26"
+clap = "2.27"
