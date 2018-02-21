@@ -61,17 +61,11 @@ impl DirEntry {
 
     pub fn write_clsid<W: Write>(writer: &mut W, clsid: &Uuid)
                                  -> io::Result<()> {
-        // TODO: Use Uuid::as_fields() method here, if and when
-        //   https://github.com/rust-lang-nursery/uuid/pull/102 gets accepted.
-        let bytes = clsid.as_bytes();
-        let d1 = ((bytes[0] as u32) << 24) | ((bytes[1] as u32) << 16) |
-            ((bytes[2] as u32) << 8) | (bytes[3] as u32);
-        let d2 = ((bytes[4] as u16) << 8) | (bytes[5] as u16);
-        let d3 = ((bytes[6] as u16) << 8) | (bytes[7] as u16);
+        let (d1, d2, d3, d4) = clsid.as_fields();
         writer.write_u32::<LittleEndian>(d1)?;
         writer.write_u16::<LittleEndian>(d2)?;
         writer.write_u16::<LittleEndian>(d3)?;
-        writer.write_all(&bytes[8..16])?;
+        writer.write_all(d4)?;
         Ok(())
     }
 

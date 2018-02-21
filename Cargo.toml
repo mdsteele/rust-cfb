@@ -11,7 +11,7 @@ readme = "README.md"
 
 [dependencies]
 byteorder = "1"
-uuid = "0.5"
+uuid = "0.6"
 
 [dev-dependencies]
 chrono = "0.4"
