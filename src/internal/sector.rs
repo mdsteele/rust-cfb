@@ -14,11 +14,15 @@ pub struct Sectors<F> {
 }
 
 impl<F> Sectors<F> {
-    pub fn new(version: Version, num_sectors: u32, inner: F) -> Sectors<F> {
+    pub fn new(version: Version, inner_len: u64, inner: F) -> Sectors<F> {
+        let sector_len = version.sector_len() as u64;
+        debug_assert!(inner_len >= sector_len);
+        let num_sectors = ((inner_len + sector_len - 1) / sector_len) as
+            u32 - 1;
         Sectors {
-            inner: inner,
-            version: version,
-            num_sectors: num_sectors,
+            inner,
+            version,
+            num_sectors,
         }
     }
 
@@ -219,8 +223,9 @@ mod tests {
         data.append(&mut vec![2; 512]);
         data.append(&mut vec![3; 512]);
         data.append(&mut vec![4; 512]);
-        let mut sectors = Sectors::new(Version::V3, 4, Cursor::new(data));
+        let mut sectors = Sectors::new(Version::V3, 2048, Cursor::new(data));
         assert_eq!(sectors.sector_len(), 512);
+        assert_eq!(sectors.num_sectors(), 3);
         let mut sector = sectors.seek_to_sector(1).unwrap();
         assert_eq!(sector.len(), 512);
         {
@@ -245,8 +250,9 @@ mod tests {
     #[test]
     fn sector_write() {
         let cursor = Cursor::new(vec![0u8; 2048]);
-        let mut sectors = Sectors::new(Version::V3, 4, cursor);
+        let mut sectors = Sectors::new(Version::V3, 2048, cursor);
         assert_eq!(sectors.sector_len(), 512);
+        assert_eq!(sectors.num_sectors(), 3);
         {
             let mut sector = sectors.seek_to_sector(1).unwrap();
             assert_eq!(sector.len(), 512);
@@ -271,8 +277,9 @@ mod tests {
         data.append(&mut vec![3; 128]);
         data.append(&mut vec![4; 128]);
         assert_eq!(data.len(), 1024);
-        let mut sectors = Sectors::new(Version::V3, 2, Cursor::new(data));
+        let mut sectors = Sectors::new(Version::V3, 1536, Cursor::new(data));
         assert_eq!(sectors.sector_len(), 512);
+        assert_eq!(sectors.num_sectors(), 2);
         let mut sector = sectors.seek_to_sector(0).unwrap();
         let mut buffer = vec![0; 128];
         assert_eq!(sector.seek(SeekFrom::Start(128)).unwrap(), 128);
@@ -289,7 +296,8 @@ mod tests {
     #[test]
     fn sector_init() {
         let data = vec![0u8; 512];
-        let mut sectors = Sectors::new(Version::V3, 0, Cursor::new(data));
+        let mut sectors = Sectors::new(Version::V3, 512, Cursor::new(data));
+        assert_eq!(sectors.num_sectors(), 0);
         {
             sectors.init_sector(0, SectorInit::Zero).unwrap();
             let mut sector = sectors.seek_to_sector(0).unwrap();
@@ -327,6 +335,17 @@ mod tests {
                 assert_eq!(dir_entry.child, consts::NO_STREAM);
             }
         }
+    }
+
+    #[test]
+    fn partial_final_sector() {
+        let data = vec![0u8; 1124];
+        let len = data.len() as u64;
+        let mut sectors = Sectors::new(Version::V3, len, Cursor::new(data));
+        assert_eq!(sectors.num_sectors(), 2);
+        sectors.init_sector(2, SectorInit::Zero).unwrap();
+        let data: Vec<u8> = sectors.into_inner().into_inner();
+        assert_eq!(data, vec![0u8; 2048]);
     }
 }
 

@@ -493,8 +493,9 @@ impl<F: Read + Seek> CompoundFile<F> {
             invalid_data!("Invalid CFB file ({} bytes is too small)",
                           inner_len);
         }
-        let num_sectors = (inner_len - sector_len as u64) / sector_len as u64;
-        if num_sectors > (consts::MAX_REGULAR_SECTOR + 1) as u64 {
+        if inner_len >
+            ((consts::MAX_REGULAR_SECTOR + 1) as u64) * (sector_len as u64)
+        {
             invalid_data!("Invalid CFB file ({} bytes is too large)",
                           inner_len);
         }
@@ -543,7 +544,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             }
             difat.push(next);
         }
-        let mut sectors = Sectors::new(version, num_sectors as u32, inner);
+        let mut sectors = Sectors::new(version, inner_len, inner);
         let mut difat_sector_ids = Vec::new();
         let mut current_difat_sector = first_difat_sector;
         while current_difat_sector != END_OF_CHAIN {
@@ -712,7 +713,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             DirEntry::unallocated().write_to(&mut inner)?;
         }
 
-        let sectors = Sectors::new(version, 2, inner);
+        let sectors = Sectors::new(version, 3 * sector_len as u64, inner);
         let allocator = Allocator::new(sectors, difat_sector_ids, difat, fat)
             .expect("allocator");
         Ok(CompoundFile {
@@ -2298,6 +2299,45 @@ mod tests {
         assert_eq!(stream.seek(SeekFrom::Current(-256)).unwrap(), 256);
         stream.read_exact(&mut buffer).unwrap();
         assert_eq!(buffer, vec![3; 128]);
+    }
+
+    #[test]
+    fn partial_final_sector() {
+        // Create a CFB with 4096-byte sectors.
+        let mut comp =
+            CompoundFile::create_with_version(Version::V4,
+                                              Cursor::new(Vec::new()))
+                .unwrap();
+        // Create a stream with 10,000 bytes of data in it.  This should take
+        // up a little over two sectors.
+        let stream_data = vec![b'x'; 10000];
+        comp.create_stream("s").unwrap().write_all(&stream_data).unwrap();
+        // Get the raw CFB data.  Due to the way we constructed the CFB file,
+        // it should consist of exactly eight sectors (header, FAT, directory,
+        // MiniFAT, MiniStream, and three for the stream), and the final sector
+        // of the stream should be the final sector of the file.  However, we
+        // should still pad out the file to the end of that sector, even though
+        // the stream doesn't use the whole last sector, for compatibility with
+        // other tools that don't support partial final sectors.
+        let mut cfb_data = comp.into_inner().into_inner();
+        assert_eq!(cfb_data.len(), 8 * 4096);
+        let mut expected_final_sector = vec![b'\0'; 4096];
+        for i in 0..(stream_data.len() % 4096) {
+            expected_final_sector[i] = b'x';
+        }
+        assert_eq!(&cfb_data[(7 * 4096)..(8 * 4096)],
+                   expected_final_sector.as_slice());
+        // Now, truncate the raw CFB data so that the final sector only
+        // contains as much data as is actually needed by the stream, then read
+        // it as a CFB file.  For compatibility with other tools that create
+        // partial final sectors, we should consider it valid and still be able
+        // to read the stream.
+        cfb_data.truncate(7 * 4096 + stream_data.len() % 4096);
+        let mut comp = CompoundFile::open(Cursor::new(cfb_data)).unwrap();
+        assert_eq!(comp.entry("s").unwrap().len(), stream_data.len() as u64);
+        let mut actual_data = Vec::new();
+        comp.open_stream("s").unwrap().read_to_end(&mut actual_data).unwrap();
+        assert_eq!(actual_data, stream_data);
     }
 }
 
