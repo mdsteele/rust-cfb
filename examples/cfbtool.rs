@@ -55,7 +55,7 @@ fn list_entry(name: &str, entry: &cfb::Entry, long: bool) {
              last_modified,
              name);
     if entry.is_storage() {
-        println!(" {}", entry.clsid().hyphenated());
+        println!(" {}", entry.clsid().to_hyphenated());
     }
 }
 

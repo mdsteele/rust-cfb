@@ -1771,8 +1771,8 @@ mod tests {
 
     #[test]
     fn storage_clsids() {
-        let uuid1 = Uuid::from_bytes(b"ABCDEFGHIJKLMNOP").unwrap();
-        let uuid2 = Uuid::from_bytes(b"0123456789abcdef").unwrap();
+        let uuid1 = Uuid::from_bytes(*b"ABCDEFGHIJKLMNOP");
+        let uuid2 = Uuid::from_bytes(*b"0123456789abcdef");
 
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
@@ -1791,7 +1791,7 @@ mod tests {
     fn set_nonexistent_storage_clsid() {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
-        let uuid = Uuid::from_bytes(b"ABCDEFGHIJKLMNOP").unwrap();
+        let uuid = Uuid::from_bytes(*b"ABCDEFGHIJKLMNOP");
         comp.set_storage_clsid("/foo", uuid).unwrap();
     }
 
@@ -1801,7 +1801,7 @@ mod tests {
         let cursor = Cursor::new(Vec::new());
         let mut comp = CompoundFile::create(cursor).expect("create");
         comp.create_new_stream("/foo").unwrap();
-        let uuid = Uuid::from_bytes(b"ABCDEFGHIJKLMNOP").unwrap();
+        let uuid = Uuid::from_bytes(*b"ABCDEFGHIJKLMNOP");
         comp.set_storage_clsid("/foo", uuid).unwrap();
     }
 
