@@ -135,7 +135,10 @@ impl DirEntry {
         let creation_time = reader.read_u64::<LittleEndian>()?;
         let modified_time = reader.read_u64::<LittleEndian>()?;
         let start_sector = reader.read_u32::<LittleEndian>()?;
-        if obj_type == consts::OBJ_TYPE_STORAGE && start_sector != 0 {
+
+        // Spec say this is suppose to be zero for DirEntries
+        // but some cfb implementations set start_sector to FREE_SECTOR instead
+        if obj_type == consts::OBJ_TYPE_STORAGE && !(start_sector == 0 || start_sector == consts::FREE_SECTOR) {
             malformed!("non-zero storage start sector: {}", start_sector);
         }
         let stream_len = reader.read_u64::<LittleEndian>()? &
