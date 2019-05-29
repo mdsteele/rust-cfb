@@ -530,8 +530,13 @@ impl<F: Read + Seek> CompoundFile<F> {
         }
         let first_minifat_sector = inner.read_u32::<LittleEndian>()?;
         let num_minifat_sectors = inner.read_u32::<LittleEndian>()?;
-        let first_difat_sector = inner.read_u32::<LittleEndian>()?;
+        let mut first_difat_sector = inner.read_u32::<LittleEndian>()?;
         let num_difat_sectors = inner.read_u32::<LittleEndian>()?;
+
+        // Some cfb implementations use FREE_SECTOR to indicate END_OF_CHAIN
+        if first_difat_sector == consts::FREE_SECTOR {
+            first_difat_sector = END_OF_CHAIN;
+        }
 
         // Read in DIFAT.
         let mut difat = Vec::<u32>::new();
