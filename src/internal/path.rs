@@ -30,10 +30,12 @@ pub fn validate_name(name: &str) -> io::Result<Vec<u16>> {
     let name_utf16: Vec<u16> =
         name.encode_utf16().take(MAX_NAME_LEN + 1).collect();
     if name_utf16.len() > MAX_NAME_LEN {
-        invalid_input!("Object name cannot be more than {} UTF-16 code units \
+        invalid_input!(
+            "Object name cannot be more than {} UTF-16 code units \
                         (was {})",
-                       MAX_NAME_LEN,
-                       name.encode_utf16().count());
+            MAX_NAME_LEN,
+            name.encode_utf16().count()
+        );
     }
     for &chr in &['/', '\\', ':', '!'] {
         if name.contains(chr) {
@@ -61,12 +63,10 @@ pub fn name_chain_from_path<'a>(path: &'a Path) -> io::Result<Vec<&'a str>> {
                     invalid_input!("Invalid path (must be within root)");
                 }
             }
-            Component::Normal(osstr) => {
-                match osstr.to_str() {
-                    Some(name) => names.push(name),
-                    None => invalid_input!("Non UTF-8 path"),
-                }
-            }
+            Component::Normal(osstr) => match osstr.to_str() {
+                Some(name) => names.push(name),
+                None => invalid_input!("Non UTF-8 path"),
+            },
         }
     }
     Ok(names)
@@ -84,8 +84,10 @@ pub fn path_from_name_chain(names: &[&str]) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_names, name_chain_from_path, path_from_name_chain,
-                validate_name};
+    use super::{
+        compare_names, name_chain_from_path, path_from_name_chain,
+        validate_name,
+    };
     use std::cmp::Ordering;
     use std::path::{Path, PathBuf};
 
@@ -98,38 +100,49 @@ mod tests {
 
     #[test]
     fn short_name_is_valid() {
-        assert_eq!(validate_name("Foobar").unwrap(),
-                   vec![70, 111, 111, 98, 97, 114]);
+        assert_eq!(
+            validate_name("Foobar").unwrap(),
+            vec![70, 111, 111, 98, 97, 114]
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Object name cannot be more than 31 UTF-16 code \
-                               units (was 35)")]
+    #[should_panic(
+        expected = "Object name cannot be more than 31 UTF-16 code \
+                               units (was 35)"
+    )]
     fn long_name_is_invalid() {
         validate_name("ThisNameIsMostDefinitelyMuchTooLong").unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Object name cannot contain / character")]
-    fn name_with_slash_is_invalid() { validate_name("foo/bar").unwrap(); }
+    fn name_with_slash_is_invalid() {
+        validate_name("foo/bar").unwrap();
+    }
 
     #[test]
     fn absolute_path_is_valid() {
-        assert_eq!(name_chain_from_path(&Path::new("/foo/bar/baz/")).unwrap(),
-                   vec!["foo", "bar", "baz"]);
+        assert_eq!(
+            name_chain_from_path(&Path::new("/foo/bar/baz/")).unwrap(),
+            vec!["foo", "bar", "baz"]
+        );
     }
 
     #[test]
     fn relative_path_is_valid() {
-        assert_eq!(name_chain_from_path(&Path::new("foo/bar/baz")).unwrap(),
-                   vec!["foo", "bar", "baz"]);
+        assert_eq!(
+            name_chain_from_path(&Path::new("foo/bar/baz")).unwrap(),
+            vec!["foo", "bar", "baz"]
+        );
     }
 
     #[test]
     fn path_with_parents_is_valid() {
-        assert_eq!(name_chain_from_path(&Path::new("foo/bar/../baz"))
-                       .unwrap(),
-                   vec!["foo", "baz"]);
+        assert_eq!(
+            name_chain_from_path(&Path::new("foo/bar/../baz")).unwrap(),
+            vec!["foo", "baz"]
+        );
     }
 
     #[test]

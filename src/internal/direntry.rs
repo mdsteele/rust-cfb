@@ -1,6 +1,6 @@
+use crate::internal::consts::{self, MAX_REGULAR_STREAM_ID, NO_STREAM};
+use crate::internal::{self, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use internal::{self, Version};
-use internal::consts::{self, MAX_REGULAR_STREAM_ID, NO_STREAM};
 use std::io::{self, Read, Write};
 use uuid::Uuid;
 
@@ -59,8 +59,10 @@ impl DirEntry {
         Ok(Uuid::from_fields(d1, d2, d3, &d4).unwrap())
     }
 
-    pub fn write_clsid<W: Write>(writer: &mut W, clsid: &Uuid)
-                                 -> io::Result<()> {
+    pub fn write_clsid<W: Write>(
+        writer: &mut W,
+        clsid: &Uuid,
+    ) -> io::Result<()> {
         let (d1, d2, d3, d4) = clsid.as_fields();
         writer.write_u32::<LittleEndian>(d1)?;
         writer.write_u16::<LittleEndian>(d2)?;
@@ -69,8 +71,10 @@ impl DirEntry {
         Ok(())
     }
 
-    pub fn read_from<R: Read>(reader: &mut R, version: Version)
-                              -> io::Result<DirEntry> {
+    pub fn read_from<R: Read>(
+        reader: &mut R,
+        version: Version,
+    ) -> io::Result<DirEntry> {
         let name: String = {
             let mut name_chars: Vec<u16> = Vec::with_capacity(32);
             for _ in 0..32 {
@@ -98,10 +102,10 @@ impl DirEntry {
         };
         internal::path::validate_name(&name)?;
         let obj_type = reader.read_u8()?;
-        if obj_type != consts::OBJ_TYPE_UNALLOCATED &&
-            obj_type != consts::OBJ_TYPE_STORAGE &&
-            obj_type != consts::OBJ_TYPE_STREAM &&
-            obj_type != consts::OBJ_TYPE_ROOT
+        if obj_type != consts::OBJ_TYPE_UNALLOCATED
+            && obj_type != consts::OBJ_TYPE_STORAGE
+            && obj_type != consts::OBJ_TYPE_STREAM
+            && obj_type != consts::OBJ_TYPE_ROOT
         {
             malformed!("invalid object type: {}", obj_type);
         }
@@ -114,8 +118,7 @@ impl DirEntry {
             malformed!("invalid left sibling: {}", left_sibling);
         }
         let right_sibling = reader.read_u32::<LittleEndian>()?;
-        if right_sibling != NO_STREAM &&
-            right_sibling > MAX_REGULAR_STREAM_ID
+        if right_sibling != NO_STREAM && right_sibling > MAX_REGULAR_STREAM_ID
         {
             malformed!("invalid right sibling: {}", right_sibling);
         }
@@ -138,28 +141,30 @@ impl DirEntry {
 
         // Spec say this is suppose to be zero for DirEntries
         // but some cfb implementations set start_sector to FREE_SECTOR instead
-        if obj_type == consts::OBJ_TYPE_STORAGE && !(start_sector == 0 || start_sector == consts::FREE_SECTOR) {
+        if obj_type == consts::OBJ_TYPE_STORAGE
+            && !(start_sector == 0 || start_sector == consts::FREE_SECTOR)
+        {
             malformed!("non-zero storage start sector: {}", start_sector);
         }
-        let stream_len = reader.read_u64::<LittleEndian>()? &
-            version.stream_len_mask();
+        let stream_len =
+            reader.read_u64::<LittleEndian>()? & version.stream_len_mask();
         if obj_type == consts::OBJ_TYPE_STORAGE && stream_len != 0 {
             malformed!("non-zero storage stream length: {}", stream_len);
         }
         Ok(DirEntry {
-               name: name,
-               obj_type: obj_type,
-               color: color,
-               left_sibling: left_sibling,
-               right_sibling: right_sibling,
-               child: child,
-               clsid: clsid,
-               state_bits: state_bits,
-               creation_time: creation_time,
-               modified_time: modified_time,
-               start_sector: start_sector,
-               stream_len: stream_len,
-           })
+            name,
+            obj_type,
+            color,
+            left_sibling,
+            right_sibling,
+            child,
+            clsid,
+            state_bits,
+            creation_time,
+            modified_time,
+            start_sector,
+            stream_len,
+        })
     }
 
     pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
@@ -193,19 +198,18 @@ impl DirEntry {
 #[cfg(test)]
 mod tests {
     use super::DirEntry;
-    use internal::Version;
-    use internal::consts;
+    use crate::internal::consts;
+    use crate::internal::Version;
     use uuid::Uuid;
 
     #[test]
     fn parse_valid_storage_entry() {
         let input: [u8; consts::DIR_ENTRY_LEN] = [
             // Name:
-            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            14, 0, // name length
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14, 0, // name length
             1, // obj type
             1, // color,
             12, 0, 0, 0, // left sibling
@@ -227,9 +231,10 @@ mod tests {
         assert_eq!(dir_entry.left_sibling, 12);
         assert_eq!(dir_entry.right_sibling, 34);
         assert_eq!(dir_entry.child, 56);
-        assert_eq!(dir_entry.clsid,
-                   Uuid::parse_str("F29F85E0-4FF9-1068-AB91-08002B27B3D9")
-                       .unwrap());
+        assert_eq!(
+            dir_entry.clsid,
+            Uuid::parse_str("F29F85E0-4FF9-1068-AB91-08002B27B3D9").unwrap()
+        );
         assert_eq!(dir_entry.state_bits, 0xdeadbeef);
         assert_eq!(dir_entry.creation_time, 0);
         assert_eq!(dir_entry.modified_time, 0);
@@ -243,11 +248,10 @@ mod tests {
     fn invalid_object_type() {
         let input: [u8; consts::DIR_ENTRY_LEN] = [
             // Name:
-            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            14, 0, // name length
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14, 0, // name length
             3, // obj type
             1, // color,
             12, 0, 0, 0, // left sibling
@@ -268,11 +272,10 @@ mod tests {
     fn invalid_color() {
         let input: [u8; consts::DIR_ENTRY_LEN] = [
             // Name:
-            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            14, 0, // name length
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14, 0, // name length
             1, // obj type
             2, // color,
             12, 0, 0, 0, // left sibling

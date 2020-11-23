@@ -1,5 +1,5 @@
+use crate::internal::{consts, Sector, SectorInit, Sectors, Version};
 use byteorder::{LittleEndian, WriteBytesExt};
-use internal::{Sector, SectorInit, Sectors, Version, consts};
 use std::collections::HashSet;
 use std::io::{self, Seek, Write};
 
@@ -24,71 +24,89 @@ pub struct Allocator<F> {
 }
 
 impl<F> Allocator<F> {
-    pub fn new(sectors: Sectors<F>, difat_sector_ids: Vec<u32>,
-               difat: Vec<u32>, fat: Vec<u32>)
-               -> io::Result<Allocator<F>> {
-        let alloc = Allocator {
-            sectors: sectors,
-            difat_sector_ids: difat_sector_ids,
-            difat: difat,
-            fat: fat,
-        };
+    pub fn new(
+        sectors: Sectors<F>,
+        difat_sector_ids: Vec<u32>,
+        difat: Vec<u32>,
+        fat: Vec<u32>,
+    ) -> io::Result<Allocator<F>> {
+        let alloc = Allocator { sectors, difat_sector_ids, difat, fat };
         alloc.validate()?;
         Ok(alloc)
     }
 
-    pub fn version(&self) -> Version { self.sectors.version() }
+    pub fn version(&self) -> Version {
+        self.sectors.version()
+    }
 
-    pub fn sector_len(&self) -> usize { self.sectors.sector_len() }
+    pub fn sector_len(&self) -> usize {
+        self.sectors.sector_len()
+    }
 
     pub fn next(&self, sector_id: u32) -> u32 {
         let next_id = self.fat[sector_id as usize];
-        debug_assert!(next_id <= consts::MAX_REGULAR_SECTOR ||
-                          next_id == consts::END_OF_CHAIN);
+        debug_assert!(
+            next_id <= consts::MAX_REGULAR_SECTOR
+                || next_id == consts::END_OF_CHAIN
+        );
         next_id
     }
 
-    pub fn into_inner(self) -> F { self.sectors.into_inner() }
+    pub fn into_inner(self) -> F {
+        self.sectors.into_inner()
+    }
 
     fn validate(&self) -> io::Result<()> {
         if self.fat.len() > self.sectors.num_sectors() as usize {
-            malformed!("FAT has {} entries, but file has only {} sectors",
-                       self.fat.len(),
-                       self.sectors.num_sectors());
+            malformed!(
+                "FAT has {} entries, but file has only {} sectors",
+                self.fat.len(),
+                self.sectors.num_sectors()
+            );
         }
         for &difat_sector in self.difat_sector_ids.iter() {
             if difat_sector as usize >= self.fat.len() {
-                malformed!("FAT has {} entries, but DIFAT lists {} as a \
+                malformed!(
+                    "FAT has {} entries, but DIFAT lists {} as a \
                             DIFAT sector",
-                           self.fat.len(),
-                           difat_sector);
+                    self.fat.len(),
+                    difat_sector
+                );
             }
             if self.fat[difat_sector as usize] != consts::DIFAT_SECTOR {
-                malformed!("DIFAT sector {} is not marked as such in the FAT",
-                           difat_sector);
+                malformed!(
+                    "DIFAT sector {} is not marked as such in the FAT",
+                    difat_sector
+                );
             }
         }
         for &fat_sector in self.difat.iter() {
             if fat_sector as usize >= self.fat.len() {
-                malformed!("FAT has {} entries, but DIFAT lists {} as a FAT \
+                malformed!(
+                    "FAT has {} entries, but DIFAT lists {} as a FAT \
                             sector",
-                           self.fat.len(),
-                           fat_sector);
+                    self.fat.len(),
+                    fat_sector
+                );
             }
             if self.fat[fat_sector as usize] != consts::FAT_SECTOR {
-                malformed!("FAT sector {} is not marked as such in the FAT",
-                           fat_sector);
+                malformed!(
+                    "FAT sector {} is not marked as such in the FAT",
+                    fat_sector
+                );
             }
         }
         let mut pointees = HashSet::new();
         for (from_sector, &to_sector) in self.fat.iter().enumerate() {
             if to_sector <= consts::MAX_REGULAR_SECTOR {
                 if to_sector as usize >= self.fat.len() {
-                    malformed!("FAT has {} entries, but sector {} points \
+                    malformed!(
+                        "FAT has {} entries, but sector {} points \
                                 to {}",
-                               self.fat.len(),
-                               from_sector,
-                               to_sector);
+                        self.fat.len(),
+                        from_sector,
+                        to_sector
+                    );
                 }
                 if pointees.contains(&to_sector) {
                     malformed!("sector {} pointed to twice", to_sector);
@@ -103,8 +121,10 @@ impl<F> Allocator<F> {
 }
 
 impl<F: Seek> Allocator<F> {
-    pub fn seek_within_header(&mut self, offset_within_header: u64)
-                              -> io::Result<Sector<F>> {
+    pub fn seek_within_header(
+        &mut self,
+        offset_within_header: u64,
+    ) -> io::Result<Sector<F>> {
         self.sectors.seek_within_header(offset_within_header)
     }
 
@@ -112,9 +132,11 @@ impl<F: Seek> Allocator<F> {
         self.sectors.seek_to_sector(sector_id)
     }
 
-    pub fn seek_within_sector(&mut self, sector_id: u32,
-                              offset_within_sector: u64)
-                              -> io::Result<Sector<F>> {
+    pub fn seek_within_sector(
+        &mut self,
+        sector_id: u32,
+        offset_within_sector: u64,
+    ) -> io::Result<Sector<F>> {
         self.sectors.seek_within_sector(sector_id, offset_within_sector)
     }
 }
@@ -129,8 +151,11 @@ impl<F: Write + Seek> Allocator<F> {
     /// Given the starting sector (or any internal sector) of a chain, extends
     /// the end of that chain by one sector and returns the new sector number,
     /// updating the FAT as necessary.
-    pub fn extend_chain(&mut self, start_sector_id: u32, init: SectorInit)
-                        -> io::Result<u32> {
+    pub fn extend_chain(
+        &mut self,
+        start_sector_id: u32,
+        init: SectorInit,
+    ) -> io::Result<u32> {
         debug_assert_ne!(start_sector_id, consts::END_OF_CHAIN);
         let mut last_sector_id = start_sector_id;
         loop {
@@ -191,9 +216,9 @@ impl<F: Write + Seek> Allocator<F> {
         } else {
             // This DIFAT entry goes in a DIFAT sector.
             let difat_entries_per_sector = (self.sector_len() - 4) / 4;
-            let difat_sector_index =
-                (difat_index - consts::NUM_DIFAT_ENTRIES_IN_HEADER) /
-                    difat_entries_per_sector;
+            let difat_sector_index = (difat_index
+                - consts::NUM_DIFAT_ENTRIES_IN_HEADER)
+                / difat_entries_per_sector;
             if difat_sector_index >= self.difat_sector_ids.len() {
                 // Add a new DIFAT sector to the end of the file.
                 let new_difat_sector_id = self.fat.len() as u32;
@@ -204,28 +229,28 @@ impl<F: Write + Seek> Allocator<F> {
                 // Add this sector to the end of the DIFAT chain.
                 if let Some(&last_sector_id) = self.difat_sector_ids.last() {
                     let offset = self.sector_len() as u64 - 4;
-                    let mut sector =
-                        self.sectors
-                            .seek_within_sector(last_sector_id, offset)?;
+                    let mut sector = self
+                        .sectors
+                        .seek_within_sector(last_sector_id, offset)?;
                     sector.write_u32::<LittleEndian>(new_difat_sector_id)?;
                 }
                 self.difat_sector_ids.push(new_difat_sector_id);
                 // Update DIFAT chain fields in header.
                 let mut header = self.sectors.seek_within_header(68)?;
                 header.write_u32::<LittleEndian>(self.difat_sector_ids[0])?;
-                header
-                    .write_u32::<LittleEndian>(self.difat_sector_ids.len() as
-                                                   u32)?;
+                header.write_u32::<LittleEndian>(
+                    self.difat_sector_ids.len() as u32,
+                )?;
             }
             // Write the new entry into the DIFAT sector.
             let difat_sector_id = self.difat_sector_ids[difat_sector_index];
-            let index_within_difat_sector = difat_index -
-                consts::NUM_DIFAT_ENTRIES_IN_HEADER -
-                difat_sector_index * difat_entries_per_sector;
-            let mut sector =
-                self.sectors
-                    .seek_within_sector(difat_sector_id,
-                                        4 * index_within_difat_sector as u64)?;
+            let index_within_difat_sector = difat_index
+                - consts::NUM_DIFAT_ENTRIES_IN_HEADER
+                - difat_sector_index * difat_entries_per_sector;
+            let mut sector = self.sectors.seek_within_sector(
+                difat_sector_id,
+                4 * index_within_difat_sector as u64,
+            )?;
             sector.write_u32::<LittleEndian>(new_fat_sector_id)?;
         }
 
@@ -270,9 +295,9 @@ impl<F: Write + Seek> Allocator<F> {
         let fat_entries_per_sector = self.sectors.sector_len() / 4;
         let fat_sector_id = self.difat[index / fat_entries_per_sector];
         let offset_within_sector = 4 * (index % fat_entries_per_sector) as u64;
-        let mut sector =
-            self.sectors
-                .seek_within_sector(fat_sector_id, offset_within_sector)?;
+        let mut sector = self
+            .sectors
+            .seek_within_sector(fat_sector_id, offset_within_sector)?;
         sector.write_u32::<LittleEndian>(value)?;
         if index == self.fat.len() {
             self.fat.push(value);
@@ -283,7 +308,9 @@ impl<F: Write + Seek> Allocator<F> {
     }
 
     /// Flushes all changes to the underlying file.
-    pub fn flush(&mut self) -> io::Result<()> { self.sectors.flush() }
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.sectors.flush()
+    }
 }
 
 // ========================================================================= //

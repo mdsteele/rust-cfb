@@ -1,5 +1,5 @@
+use crate::internal::{consts, DirEntry, Version};
 use byteorder::{LittleEndian, WriteBytesExt};
-use internal::{DirEntry, Version, consts};
 use std::cmp;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -17,61 +17,72 @@ impl<F> Sectors<F> {
     pub fn new(version: Version, inner_len: u64, inner: F) -> Sectors<F> {
         let sector_len = version.sector_len() as u64;
         debug_assert!(inner_len >= sector_len);
-        let num_sectors = ((inner_len + sector_len - 1) / sector_len) as
-            u32 - 1;
-        Sectors {
-            inner,
-            version,
-            num_sectors,
-        }
+        let num_sectors =
+            ((inner_len + sector_len - 1) / sector_len) as u32 - 1;
+        Sectors { inner, version, num_sectors }
     }
 
-    pub fn version(&self) -> Version { self.version }
+    pub fn version(&self) -> Version {
+        self.version
+    }
 
-    pub fn sector_len(&self) -> usize { self.version.sector_len() }
+    pub fn sector_len(&self) -> usize {
+        self.version.sector_len()
+    }
 
-    pub fn num_sectors(&self) -> u32 { self.num_sectors }
+    pub fn num_sectors(&self) -> u32 {
+        self.num_sectors
+    }
 
-    pub fn into_inner(self) -> F { self.inner }
+    pub fn into_inner(self) -> F {
+        self.inner
+    }
 }
 
 impl<F: Seek> Sectors<F> {
-    pub fn seek_within_header(&mut self, offset_within_header: u64)
-                              -> io::Result<Sector<F>> {
+    pub fn seek_within_header(
+        &mut self,
+        offset_within_header: u64,
+    ) -> io::Result<Sector<F>> {
         debug_assert!(offset_within_header < consts::HEADER_LEN as u64);
         self.inner.seek(SeekFrom::Start(offset_within_header))?;
         Ok(Sector {
-               inner: &mut self.inner,
-               sector_len: consts::HEADER_LEN,
-               offset_within_sector: offset_within_header as usize,
-           })
+            inner: &mut self.inner,
+            sector_len: consts::HEADER_LEN,
+            offset_within_sector: offset_within_header as usize,
+        })
     }
 
     pub fn seek_to_sector(&mut self, sector_id: u32) -> io::Result<Sector<F>> {
         self.seek_within_sector(sector_id, 0)
     }
 
-    pub fn seek_within_sector(&mut self, sector_id: u32,
-                              offset_within_sector: u64)
-                              -> io::Result<Sector<F>> {
+    pub fn seek_within_sector(
+        &mut self,
+        sector_id: u32,
+        offset_within_sector: u64,
+    ) -> io::Result<Sector<F>> {
         debug_assert!(sector_id < self.num_sectors);
         debug_assert!(offset_within_sector < self.sector_len() as u64);
         let sector_len = self.sector_len();
-        self.inner
-            .seek(SeekFrom::Start((sector_id + 1) as u64 * sector_len as u64 +
-                                      offset_within_sector))?;
+        self.inner.seek(SeekFrom::Start(
+            (sector_id + 1) as u64 * sector_len as u64 + offset_within_sector,
+        ))?;
         Ok(Sector {
-               inner: &mut self.inner,
-               sector_len: sector_len,
-               offset_within_sector: offset_within_sector as usize,
-           })
+            inner: &mut self.inner,
+            sector_len,
+            offset_within_sector: offset_within_sector as usize,
+        })
     }
 }
 
 impl<F: Write + Seek> Sectors<F> {
     /// Creates or resets the specified sector using the given initializer.
-    pub fn init_sector(&mut self, sector_id: u32, init: SectorInit)
-                       -> io::Result<()> {
+    pub fn init_sector(
+        &mut self,
+        sector_id: u32,
+        init: SectorInit,
+    ) -> io::Result<()> {
         debug_assert!(sector_id <= self.num_sectors);
         if sector_id == self.num_sectors {
             self.num_sectors += 1;
@@ -82,7 +93,9 @@ impl<F: Write + Seek> Sectors<F> {
     }
 
     /// Flushes all changes to the underlying file.
-    pub fn flush(&mut self) -> io::Result<()> { self.inner.flush() }
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 // ========================================================================= //
@@ -97,7 +110,9 @@ pub struct Sector<'a, F: 'a> {
 
 impl<'a, F> Sector<'a, F> {
     /// Returns the total length of this sector.
-    pub fn len(&self) -> usize { self.sector_len }
+    pub fn len(&self) -> usize {
+        self.sector_len
+    }
 
     fn remaining(&self) -> usize {
         debug_assert!(self.offset_within_sector <= self.len());
@@ -142,7 +157,9 @@ impl<'a, F: Write> Write for Sector<'a, F> {
         Ok(bytes_written)
     }
 
-    fn flush(&mut self) -> io::Result<()> { self.inner.flush() }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 impl<'a, F: Seek> Seek for Sector<'a, F> {
@@ -179,8 +196,10 @@ impl SectorInit {
         debug_assert_eq!(sector.offset_within_sector, 0);
         match self {
             SectorInit::Zero => {
-                io::copy(&mut io::repeat(0).take(sector.len() as u64),
-                         sector)?;
+                io::copy(
+                    &mut io::repeat(0).take(sector.len() as u64),
+                    sector,
+                )?;
             }
             SectorInit::Fat => {
                 debug_assert_eq!(sector.len() % 4, 0);
@@ -213,8 +232,8 @@ impl SectorInit {
 #[cfg(test)]
 mod tests {
     use super::{SectorInit, Sectors};
+    use crate::internal::{consts, DirEntry, Version};
     use byteorder::{LittleEndian, ReadBytesExt};
-    use internal::{DirEntry, Version, consts};
     use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
     #[test]
@@ -268,7 +287,6 @@ mod tests {
         assert_eq!(actual_data, expected_data);
     }
 
-
     #[test]
     fn sector_seek() {
         let mut data = vec![0u8; 512];
@@ -309,26 +327,32 @@ mod tests {
             sectors.init_sector(1, SectorInit::Fat).unwrap();
             let mut sector = sectors.seek_to_sector(1).unwrap();
             for _ in 0..128 {
-                assert_eq!(sector.read_u32::<LittleEndian>().unwrap(),
-                           consts::FREE_SECTOR);
+                assert_eq!(
+                    sector.read_u32::<LittleEndian>().unwrap(),
+                    consts::FREE_SECTOR
+                );
             }
         }
         {
             sectors.init_sector(2, SectorInit::Difat).unwrap();
             let mut sector = sectors.seek_to_sector(2).unwrap();
             for _ in 0..127 {
-                assert_eq!(sector.read_u32::<LittleEndian>().unwrap(),
-                           consts::FREE_SECTOR);
+                assert_eq!(
+                    sector.read_u32::<LittleEndian>().unwrap(),
+                    consts::FREE_SECTOR
+                );
             }
-            assert_eq!(sector.read_u32::<LittleEndian>().unwrap(),
-                       consts::END_OF_CHAIN);
+            assert_eq!(
+                sector.read_u32::<LittleEndian>().unwrap(),
+                consts::END_OF_CHAIN
+            );
         }
         {
             sectors.init_sector(3, SectorInit::Dir).unwrap();
             let mut sector = sectors.seek_to_sector(3).unwrap();
             for _ in 0..4 {
-                let dir_entry = DirEntry::read_from(&mut sector, Version::V3)
-                    .unwrap();
+                let dir_entry =
+                    DirEntry::read_from(&mut sector, Version::V3).unwrap();
                 assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_UNALLOCATED);
                 assert_eq!(dir_entry.left_sibling, consts::NO_STREAM);
                 assert_eq!(dir_entry.right_sibling, consts::NO_STREAM);

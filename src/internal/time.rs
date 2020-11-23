@@ -15,8 +15,10 @@ pub fn current_timestamp() -> u64 {
 
 /// Converts a CFB file timestamp to a local `SystemTime`.
 pub fn system_time_from_timestamp(timestamp: u64) -> SystemTime {
-    let delta = Duration::new(timestamp / 10_000_000,
-                              (timestamp % 10_000_000) as u32 * 100);
+    let delta = Duration::new(
+        timestamp / 10_000_000,
+        (timestamp % 10_000_000) as u32 * 100,
+    );
     epoch() + delta
 }
 
@@ -35,10 +37,12 @@ mod tests {
 
     #[test]
     fn system_time() {
-        let sat_18_mar_2017_at_18_46_36_gmt = UNIX_EPOCH +
-            Duration::from_secs(1489862796);
-        assert_eq!(system_time_from_timestamp(131343363960000000),
-                   sat_18_mar_2017_at_18_46_36_gmt);
+        let sat_18_mar_2017_at_18_46_36_gmt =
+            UNIX_EPOCH + Duration::from_secs(1489862796);
+        assert_eq!(
+            system_time_from_timestamp(131343363960000000),
+            sat_18_mar_2017_at_18_46_36_gmt
+        );
     }
 }
 

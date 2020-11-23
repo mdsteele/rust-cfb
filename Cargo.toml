@@ -8,6 +8,7 @@ documentation = "http://mdsteele.github.io/rust-cfb/"
 keywords = ["cfb", "storage", "structured"]
 license = "MIT"
 readme = "README.md"
+edition = "2018"
 
 [dependencies]
 byteorder = "1"

@@ -1,4 +1,4 @@
-use internal::consts;
+use crate::internal::consts;
 
 // ========================================================================= //
 
@@ -32,7 +32,7 @@ impl Version {
     /// Returns the sector shift used in this version.
     pub fn sector_shift(self) -> u16 {
         match self {
-            Version::V3 => 9, // 512-byte sectors
+            Version::V3 => 9,  // 512-byte sectors
             Version::V4 => 12, // 4096-byte sectors
         }
     }
@@ -44,7 +44,9 @@ impl Version {
     /// assert_eq!(Version::V3.sector_len(), 512);
     /// assert_eq!(Version::V4.sector_len(), 4096);
     /// ```
-    pub fn sector_len(self) -> usize { 1 << (self.sector_shift() as usize) }
+    pub fn sector_len(self) -> usize {
+        1 << (self.sector_shift() as usize)
+    }
 
     /// Returns the bitmask used for reading stream lengths in this version.
     pub fn stream_len_mask(self) -> u64 {

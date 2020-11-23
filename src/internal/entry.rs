@@ -1,4 +1,4 @@
-use internal::{self, DirEntry, consts};
+use crate::internal::{self, consts, DirEntry};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use uuid::Uuid;
@@ -22,7 +22,7 @@ impl Entry {
     pub(crate) fn new(dir_entry: &DirEntry, path: PathBuf) -> Entry {
         Entry {
             name: dir_entry.name.clone(),
-            path: path,
+            path,
             obj_type: dir_entry.obj_type,
             clsid: dir_entry.clsid,
             state_bits: dir_entry.state_bits,
@@ -33,10 +33,14 @@ impl Entry {
     }
 
     /// Returns the name of the object that this entry represents.
-    pub fn name(&self) -> &str { &self.name }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
     /// Returns the full path to the object that this entry represents.
-    pub fn path(&self) -> &Path { &self.path }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 
     /// Returns whether this entry is for a stream object (i.e. a "file" within
     /// the compound file).
@@ -47,23 +51,31 @@ impl Entry {
     /// Returns whether this entry is for a storage object (i.e. a "directory"
     /// within the compound file), either the root or a nested storage.
     pub fn is_storage(&self) -> bool {
-        self.obj_type == consts::OBJ_TYPE_STORAGE ||
-            self.obj_type == consts::OBJ_TYPE_ROOT
+        self.obj_type == consts::OBJ_TYPE_STORAGE
+            || self.obj_type == consts::OBJ_TYPE_ROOT
     }
 
     /// Returns whether this entry is specifically for the root storage object
     /// of the compound file.
-    pub fn is_root(&self) -> bool { self.obj_type == consts::OBJ_TYPE_ROOT }
+    pub fn is_root(&self) -> bool {
+        self.obj_type == consts::OBJ_TYPE_ROOT
+    }
 
     /// Returns the size, in bytes, of the stream that this metadata is for.
-    pub fn len(&self) -> u64 { self.stream_len }
+    pub fn len(&self) -> u64 {
+        self.stream_len
+    }
 
     /// Returns the CLSID (that is, the object class GUID) for this object.
     /// This will always be all zeros for stream objects.
-    pub fn clsid(&self) -> &Uuid { &self.clsid }
+    pub fn clsid(&self) -> &Uuid {
+        &self.clsid
+    }
 
     /// Returns the user-defined bitflags set for this object.
-    pub fn state_bits(&self) -> u32 { self.state_bits }
+    pub fn state_bits(&self) -> u32 {
+        self.state_bits
+    }
 
     /// Returns the time when the object that this entry represents was
     /// created.
@@ -96,14 +108,13 @@ pub struct Entries<'a> {
 }
 
 impl<'a> Entries<'a> {
-    pub(crate) fn new(order: EntriesOrder, directory: &'a Vec<DirEntry>,
-                      parent_path: PathBuf, start: u32)
-                      -> Entries<'a> {
-        let mut entries = Entries {
-            order: order,
-            directory: directory,
-            stack: Vec::new(),
-        };
+    pub(crate) fn new(
+        order: EntriesOrder,
+        directory: &'a Vec<DirEntry>,
+        parent_path: PathBuf,
+        start: u32,
+    ) -> Entries<'a> {
+        let mut entries = Entries { order, directory, stack: Vec::new() };
         match order {
             EntriesOrder::Nonrecursive => {
                 entries.stack_left_spine(&parent_path, start);
@@ -142,9 +153,9 @@ impl<'a> Iterator for Entries<'a> {
             if visit_siblings {
                 self.stack_left_spine(&parent, dir_entry.right_sibling);
             }
-            if self.order == EntriesOrder::Preorder &&
-                dir_entry.obj_type != consts::OBJ_TYPE_STREAM &&
-                dir_entry.child != consts::NO_STREAM
+            if self.order == EntriesOrder::Preorder
+                && dir_entry.obj_type != consts::OBJ_TYPE_STREAM
+                && dir_entry.child != consts::NO_STREAM
             {
                 self.stack_left_spine(&path, dir_entry.child);
             }
@@ -160,14 +171,20 @@ impl<'a> Iterator for Entries<'a> {
 #[cfg(test)]
 mod tests {
     use super::{Entries, EntriesOrder, Entry};
-    use internal::DirEntry;
-    use internal::consts::{NO_STREAM, OBJ_TYPE_ROOT, OBJ_TYPE_STORAGE,
-                           OBJ_TYPE_STREAM, ROOT_DIR_NAME};
+    use crate::internal::consts::{
+        NO_STREAM, OBJ_TYPE_ROOT, OBJ_TYPE_STORAGE, OBJ_TYPE_STREAM,
+        ROOT_DIR_NAME,
+    };
+    use crate::internal::DirEntry;
     use std::path::PathBuf;
 
-    fn make_entry(name: &str, obj_type: u8, left: u32, child: u32,
-                  right: u32)
-                  -> DirEntry {
+    fn make_entry(
+        name: &str,
+        obj_type: u8,
+        left: u32,
+        child: u32,
+        right: u32,
+    ) -> DirEntry {
         let mut dir_entry = DirEntry::unallocated();
         dir_entry.name = name.to_string();
         dir_entry.obj_type = obj_type;
@@ -207,11 +224,13 @@ mod tests {
     #[test]
     fn nonrecursive_entries_from_root() {
         let directory = make_directory();
-        let entries: Vec<Entry> = Entries::new(EntriesOrder::Nonrecursive,
-                                               &directory,
-                                               PathBuf::from("/"),
-                                               5)
-            .collect();
+        let entries: Vec<Entry> = Entries::new(
+            EntriesOrder::Nonrecursive,
+            &directory,
+            PathBuf::from("/"),
+            5,
+        )
+        .collect();
         let paths = paths_for_entries(&entries);
         assert_eq!(paths, vec!["/1", "/2", "/3", "/4", "/5", "/6"]);
     }
@@ -219,11 +238,13 @@ mod tests {
     #[test]
     fn nonrecursive_entries_from_storage() {
         let directory = make_directory();
-        let entries: Vec<Entry> = Entries::new(EntriesOrder::Nonrecursive,
-                                               &directory,
-                                               PathBuf::from("/3"),
-                                               8)
-            .collect();
+        let entries: Vec<Entry> = Entries::new(
+            EntriesOrder::Nonrecursive,
+            &directory,
+            PathBuf::from("/3"),
+            8,
+        )
+        .collect();
         let paths = paths_for_entries(&entries);
         assert_eq!(paths, vec!["/3/7", "/3/8", "/3/9"]);
     }
@@ -231,24 +252,18 @@ mod tests {
     #[test]
     fn preorder_entries_from_root() {
         let directory = make_directory();
-        let entries: Vec<Entry> = Entries::new(EntriesOrder::Preorder,
-                                               &directory,
-                                               PathBuf::from("/"),
-                                               0)
-            .collect();
+        let entries: Vec<Entry> = Entries::new(
+            EntriesOrder::Preorder,
+            &directory,
+            PathBuf::from("/"),
+            0,
+        )
+        .collect();
         let paths = paths_for_entries(&entries);
         assert_eq!(
             paths,
             vec![
-                "/",
-                "/1",
-                "/2",
-                "/3",
-                "/3/7",
-                "/3/8",
-                "/3/9",
-                "/4",
-                "/5",
+                "/", "/1", "/2", "/3", "/3/7", "/3/8", "/3/9", "/4", "/5",
                 "/6",
             ]
         );
@@ -257,11 +272,13 @@ mod tests {
     #[test]
     fn preorder_entries_from_storage() {
         let directory = make_directory();
-        let entries: Vec<Entry> = Entries::new(EntriesOrder::Preorder,
-                                               &directory,
-                                               PathBuf::from("/"),
-                                               3)
-            .collect();
+        let entries: Vec<Entry> = Entries::new(
+            EntriesOrder::Preorder,
+            &directory,
+            PathBuf::from("/"),
+            3,
+        )
+        .collect();
         let paths = paths_for_entries(&entries);
         assert_eq!(paths, vec!["/3", "/3/7", "/3/8", "/3/9"]);
     }

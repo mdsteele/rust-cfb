@@ -48,12 +48,14 @@ fn list_entry(name: &str, entry: &cfb::Entry, long: bool) {
         let naive = NaiveDateTime::from_timestamp(seconds as i64, 0);
         naive.date().format("%b %d %Y")
     };
-    println!("{}{:08x}   {:>10}   {}   {}",
-             if entry.is_storage() { '+' } else { '-' },
-             entry.state_bits(),
-             length,
-             last_modified,
-             name);
+    println!(
+        "{}{:08x}   {:>10}   {}   {}",
+        if entry.is_storage() { '+' } else { '-' },
+        entry.state_bits(),
+        length,
+        last_modified,
+        name
+    );
     if entry.is_storage() {
         println!(" {}", entry.clsid().to_hyphenated());
     }
@@ -64,22 +66,32 @@ fn main() {
         .version("0.1")
         .author("Matthew D. Steele <mdsteele@alum.mit.edu>")
         .about("Inspects and modifies CFB files")
-        .subcommand(SubCommand::with_name("cat")
-                        .about("Concatenates and prints streams")
-                        .arg(Arg::with_name("path").multiple(true)))
-        .subcommand(SubCommand::with_name("chcls")
-                        .about("Changes storage CLSIDs")
-                        .arg(Arg::with_name("clsid").required(true))
-                        .arg(Arg::with_name("path").multiple(true)))
-        .subcommand(SubCommand::with_name("ls")
-                        .about("Lists storage contents")
-                        .arg(Arg::with_name("all")
-                                 .short("a")
-                                 .help("Includes . in output"))
-                        .arg(Arg::with_name("long")
-                                 .short("l")
-                                 .help("Lists in long format"))
-                        .arg(Arg::with_name("path").multiple(true)))
+        .subcommand(
+            SubCommand::with_name("cat")
+                .about("Concatenates and prints streams")
+                .arg(Arg::with_name("path").multiple(true)),
+        )
+        .subcommand(
+            SubCommand::with_name("chcls")
+                .about("Changes storage CLSIDs")
+                .arg(Arg::with_name("clsid").required(true))
+                .arg(Arg::with_name("path").multiple(true)),
+        )
+        .subcommand(
+            SubCommand::with_name("ls")
+                .about("Lists storage contents")
+                .arg(
+                    Arg::with_name("all")
+                        .short("a")
+                        .help("Includes . in output"),
+                )
+                .arg(
+                    Arg::with_name("long")
+                        .short("l")
+                        .help("Lists in long format"),
+                )
+                .arg(Arg::with_name("path").multiple(true)),
+        )
         .get_matches();
     if let Some(submatches) = matches.subcommand_matches("cat") {
         if let Some(paths) = submatches.values_of("path") {
@@ -91,8 +103,8 @@ fn main() {
             }
         }
     } else if let Some(submatches) = matches.subcommand_matches("chcls") {
-        let clsid = Uuid::parse_str(submatches.value_of("clsid").unwrap())
-            .unwrap();
+        let clsid =
+            Uuid::parse_str(submatches.value_of("clsid").unwrap()).unwrap();
         if let Some(paths) = submatches.values_of("path") {
             for path in paths {
                 let (comp_path, inner_path) = split(path);
