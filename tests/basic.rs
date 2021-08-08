@@ -1,4 +1,4 @@
-use cfb::{self, CompoundFile, Version};
+use cfb::{CompoundFile, Version};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use uuid::Uuid;
 
@@ -63,29 +63,26 @@ fn partial_final_sector() {
     // up a little over two sectors.
     let stream_data = vec![b'x'; 10000];
     comp.create_stream("s").unwrap().write_all(&stream_data).unwrap();
-    // Get the raw CFB data.  Due to the way we constructed the CFB file,
-    // it should consist of exactly eight sectors (header, FAT, directory,
-    // MiniFAT, MiniStream, and three for the stream), and the final sector
-    // of the stream should be the final sector of the file.  However, we
-    // should still pad out the file to the end of that sector, even though
-    // the stream doesn't use the whole last sector, for compatibility with
-    // other tools that don't support partial final sectors.
+    // Get the raw CFB data.  Due to the way we constructed the CFB file, it
+    // should consist of exactly six sectors (header, FAT, directory, and three
+    // for the stream), and the final sector of the stream should be the final
+    // sector of the file.  However, we should still pad out the file to the
+    // end of that sector, even though the stream doesn't use the whole last
+    // sector, for compatibility with other tools that don't support partial
+    // final sectors.
     let mut cfb_data = comp.into_inner().into_inner();
-    assert_eq!(cfb_data.len(), 8 * 4096);
+    assert_eq!(cfb_data.len(), 6 * 4096);
     let mut expected_final_sector = vec![b'\0'; 4096];
     for i in 0..(stream_data.len() % 4096) {
         expected_final_sector[i] = b'x';
     }
-    assert_eq!(
-        &cfb_data[(7 * 4096)..(8 * 4096)],
-        expected_final_sector.as_slice()
-    );
+    assert_eq!(&cfb_data[(5 * 4096)..], expected_final_sector.as_slice());
     // Now, truncate the raw CFB data so that the final sector only
     // contains as much data as is actually needed by the stream, then read
     // it as a CFB file.  For compatibility with other tools that create
     // partial final sectors, we should consider it valid and still be able
     // to read the stream.
-    cfb_data.truncate(7 * 4096 + stream_data.len() % 4096);
+    cfb_data.truncate(5 * 4096 + stream_data.len() % 4096);
     let mut comp = CompoundFile::open(Cursor::new(cfb_data)).unwrap();
     assert_eq!(comp.entry("s").unwrap().len(), stream_data.len() as u64);
     let mut actual_data = Vec::new();

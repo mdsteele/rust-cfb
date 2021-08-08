@@ -51,17 +51,18 @@ use crate::internal::{
 };
 pub use crate::internal::{Entries, Entry, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::cmp::{self, Ordering};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[macro_use]
 mod internal;
 
-// ========================================================================= //
+//===========================================================================//
 
 /// Opens an existing compound file at the given path in read-only mode.
 pub fn open<P: AsRef<Path>>(path: P) -> io::Result<CompoundFile<fs::File>> {
@@ -96,7 +97,7 @@ fn create_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
     CompoundFile::create(file)
 }
 
-// ========================================================================= //
+//===========================================================================//
 
 /// A compound file, backed by an underlying reader/writer (such as a
 /// [`File`](https://doc.rust-lang.org/std/fs/struct.File.html) or
@@ -418,13 +419,6 @@ impl<F> CompoundFile<F> {
 }
 
 impl<F: Seek> CompoundFile<F> {
-    fn seek_to_mini_sector(
-        &mut self,
-        mini_sector: u32,
-    ) -> io::Result<Sector<F>> {
-        self.seek_within_mini_sector(mini_sector, 0)
-    }
-
     fn seek_within_mini_sector(
         &mut self,
         mini_sector: u32,
@@ -495,7 +489,7 @@ impl<F: Seek> CompoundFile<F> {
         if self.dir_entry(stream_id).obj_type != consts::OBJ_TYPE_STREAM {
             invalid_input!("Not a stream: {:?}", path);
         }
-        Stream::new(self, stream_id)
+        Ok(Stream::new(self, stream_id))
     }
 }
 
@@ -655,8 +649,8 @@ impl<F: Read + Seek> CompoundFile<F> {
             );
             if num_minifat_sectors as usize != chain.num_sectors() {
                 invalid_data!(
-                    "Incorrect MiniFAT chain length \
-                               (header says {}, actual is {})",
+                    "Incorrect MiniFAT chain length (header says {}, actual \
+                     is {})",
                     num_minifat_sectors,
                     chain.num_sectors()
                 );
@@ -696,6 +690,62 @@ impl<F: Read + Seek> CompoundFile<F> {
         }
         comp.validate_directory()?;
         Ok(comp)
+    }
+
+    fn read_data_from_stream(
+        &mut self,
+        stream_id: u32,
+        buf_offset_from_start: u64,
+        buf: &mut [u8],
+    ) -> io::Result<usize> {
+        let (start_sector, stream_len) = {
+            let dir_entry = self.dir_entry(stream_id);
+            debug_assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STREAM);
+            (dir_entry.start_sector, dir_entry.stream_len)
+        };
+        let num_bytes = if buf_offset_from_start >= stream_len {
+            0
+        } else {
+            let remaining = stream_len - buf_offset_from_start;
+            if remaining < buf.len() as u64 {
+                remaining as usize
+            } else {
+                buf.len()
+            }
+        };
+        if num_bytes > 0 {
+            if stream_len < consts::MINI_STREAM_CUTOFF as u64 {
+                let mut mini_sector_id = start_sector;
+                let mut skip = buf_offset_from_start;
+                while skip >= consts::MINI_SECTOR_LEN as u64 {
+                    debug_assert_ne!(mini_sector_id, consts::END_OF_CHAIN);
+                    mini_sector_id = self.minifat[mini_sector_id as usize];
+                    skip -= consts::MINI_SECTOR_LEN as u64;
+                }
+                let mut buf_start: usize = 0;
+                while buf_start < num_bytes {
+                    debug_assert_ne!(mini_sector_id, consts::END_OF_CHAIN);
+                    let mut sector =
+                        self.seek_within_mini_sector(mini_sector_id, skip)?;
+                    let buf_end = num_bytes.min(
+                        buf_start + consts::MINI_SECTOR_LEN - skip as usize,
+                    );
+                    sector.read_exact(&mut buf[buf_start..buf_end])?;
+                    mini_sector_id = self.minifat[mini_sector_id as usize];
+                    skip = 0;
+                    buf_start = buf_end;
+                }
+            } else {
+                let mut chain = Chain::new(
+                    &mut self.allocator,
+                    start_sector,
+                    SectorInit::Zero,
+                );
+                chain.seek(SeekFrom::Start(buf_offset_from_start))?;
+                chain.read_exact(&mut buf[..num_bytes])?;
+            }
+        }
+        Ok(num_bytes)
     }
 }
 
@@ -987,7 +1037,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                     internal::path::path_from_name_chain(&names)
                 );
             } else {
-                let mut stream = Stream::new(self, stream_id)?;
+                let mut stream = Stream::new(self, stream_id);
                 stream.set_len(0)?;
                 return Ok(stream);
             }
@@ -1004,14 +1054,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         };
         let new_stream_id =
             self.insert_dir_entry(parent_id, name, consts::OBJ_TYPE_STREAM)?;
-        Ok(Stream {
-            comp: self,
-            stream_id: new_stream_id,
-            offset_from_start: 0,
-            offset_within_sector: 0,
-            current_sector: END_OF_CHAIN,
-            finisher: None,
-        })
+        return Ok(Stream::new(self, new_stream_id));
     }
 
     /// Removes the stream object at the provided path.
@@ -1040,12 +1083,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             )
         };
         if is_in_mini_stream {
-            let mut mini_sector_id = start_sector_id;
-            while mini_sector_id != END_OF_CHAIN {
-                let next = self.minifat[mini_sector_id as usize];
-                self.free_mini_sector(mini_sector_id)?;
-                mini_sector_id = next;
-            }
+            self.free_mini_chain(start_sector_id)?;
         } else {
             self.allocator.free_chain(start_sector_id)?;
         }
@@ -1117,52 +1155,10 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         self.allocator.flush()
     }
 
-    /// Given the starting mini sector of a mini chain, copies the data in that
-    /// chain into a newly-allocated regular sector chain, frees the mini
-    /// chain, and returns the start sector of the new chain.
-    fn migrate_out_of_mini_stream(
-        &mut self,
-        start_mini_sector: u32,
-    ) -> io::Result<u32> {
-        debug_assert_ne!(start_mini_sector, END_OF_CHAIN);
-        let mut mini_sectors = Vec::new();
-        let mut current_mini_sector = start_mini_sector;
-        while current_mini_sector != END_OF_CHAIN {
-            mini_sectors.push(current_mini_sector);
-            current_mini_sector = self.minifat[current_mini_sector as usize];
-        }
-        debug_assert!(!mini_sectors.is_empty());
-        let sector_len = self.allocator.sector_len();
-        let mut new_start_sector = END_OF_CHAIN;
-        let mut data = vec![0u8; sector_len];
-        let mut data_start = 0;
-        let mut index = 0;
-        while index < mini_sectors.len() {
-            let mini_sector = mini_sectors[index];
-            let data_end = data_start + consts::MINI_SECTOR_LEN;
-            {
-                let mut sector = self.seek_to_mini_sector(mini_sector)?;
-                sector.read_exact(&mut data[data_start..data_end])?;
-            }
-            data_start += consts::MINI_SECTOR_LEN;
-            self.free_mini_sector(mini_sector)?;
-            index += 1;
-            if index == mini_sectors.len() || data_start == sector_len {
-                let new_sector = if new_start_sector == END_OF_CHAIN {
-                    new_start_sector =
-                        self.allocator.begin_chain(SectorInit::Zero)?;
-                    new_start_sector
-                } else {
-                    self.allocator
-                        .extend_chain(new_start_sector, SectorInit::Zero)?
-                };
-                let mut sector = self.allocator.seek_to_sector(new_sector)?;
-                sector.write_all(&data[0..data_start])?;
-                data_start = 0;
-            }
-        }
-        debug_assert_ne!(new_start_sector, END_OF_CHAIN);
-        Ok(new_start_sector)
+    /// Allocates a new mini chain with one sector, and returns the starting
+    /// sector number.
+    fn begin_mini_chain(&mut self) -> io::Result<u32> {
+        self.allocate_mini_sector(consts::END_OF_CHAIN)
     }
 
     /// Given the starting mini sector (or any internal mini sector) of a mini
@@ -1449,6 +1445,26 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         Ok(())
     }
 
+    /// Given the start sector of a mini chain, deallocates the entire chain.
+    fn free_mini_chain(&mut self, start_mini_sector: u32) -> io::Result<()> {
+        let mut mini_sector = start_mini_sector;
+        while mini_sector != END_OF_CHAIN {
+            let next = self.minifat[mini_sector as usize];
+            self.free_mini_sector(mini_sector)?;
+            mini_sector = next;
+        }
+        Ok(())
+    }
+
+    /// Sets the given mini sector to point to `END_OF_CHAIN`, and deallocates
+    /// all subsequent mini sectors in the chain.
+    fn free_mini_chain_after(&mut self, mini_sector: u32) -> io::Result<()> {
+        let next = self.minifat[mini_sector as usize];
+        self.set_minifat(mini_sector, consts::END_OF_CHAIN)?;
+        self.free_mini_chain(next)?;
+        Ok(())
+    }
+
     /// Deallocates the specified directory entry.
     fn free_dir_entry(&mut self, stream_id: u32) -> io::Result<()> {
         debug_assert_ne!(stream_id, consts::ROOT_STREAM_ID);
@@ -1469,7 +1485,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             self.minifat_start_sector,
             SectorInit::Fat,
         );
-        chain.seek(SeekFrom::Start((index as u64) * 4))?;
+        chain
+            .seek(SeekFrom::Start((index as u64) * size_of::<u32>() as u64))?;
         chain.write_u32::<LittleEndian>(value)?;
         if (index as usize) == self.minifat.len() {
             self.minifat.push(value);
@@ -1489,88 +1506,265 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         chain.seek(SeekFrom::Start(offset))?;
         self.directory[stream_id as usize].write_to(&mut chain)
     }
+
+    fn write_data_to_stream(
+        &mut self,
+        stream_id: u32,
+        buf_offset_from_start: u64,
+        buf: &[u8],
+    ) -> io::Result<()> {
+        let (old_start_sector, old_stream_len) = {
+            let dir_entry = self.dir_entry(stream_id);
+            debug_assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STREAM);
+            (dir_entry.start_sector, dir_entry.stream_len)
+        };
+        debug_assert!(buf_offset_from_start <= old_stream_len);
+        let new_stream_len =
+            old_stream_len.max(buf_offset_from_start + buf.len() as u64);
+        let new_start_sector = if old_start_sector == consts::END_OF_CHAIN {
+            // Case 1: The stream has no existing chain.  The stream is empty,
+            // and we are writing at the start.
+            debug_assert_eq!(old_stream_len, 0);
+            debug_assert_eq!(buf_offset_from_start, 0);
+            if new_stream_len < consts::MINI_STREAM_CUTOFF as u64 {
+                // Case 1a: The data we're writing is small enough that it
+                // should be placed into a new mini chain.
+                let mut chain = MiniChain::new(self, consts::END_OF_CHAIN);
+                chain.write_all(buf)?;
+                chain.start_sector_id()
+            } else {
+                // Case 1b: The data we're writing is large enough that it
+                // should be placed into a new regular chain.
+                let mut chain = Chain::new(
+                    &mut self.allocator,
+                    consts::END_OF_CHAIN,
+                    SectorInit::Zero,
+                );
+                chain.write_all(buf)?;
+                chain.start_sector_id()
+            }
+        } else if old_stream_len < consts::MINI_STREAM_CUTOFF as u64 {
+            // Case 2: The stream currently exists in a mini chain.
+            if new_stream_len < consts::MINI_STREAM_CUTOFF as u64 {
+                // Case 2a: After the write, the stream will still be small
+                // enough to stay in the mini stream.  Therefore, we should
+                // write into this stream's existing mini chain.
+                let mut chain = MiniChain::new(self, old_start_sector);
+                chain.seek(SeekFrom::Start(buf_offset_from_start))?;
+                chain.write_all(buf)?;
+                debug_assert_eq!(chain.start_sector_id(), old_start_sector);
+                old_start_sector
+            } else {
+                // Case 2b: After the write, the stream will be large enough
+                // that it cannot be in the mini stream.  Therefore, we should
+                // migrate the stream into a new regular chain.
+                debug_assert!(
+                    buf_offset_from_start < consts::MINI_STREAM_CUTOFF as u64
+                );
+                let mut tmp = vec![0u8; buf_offset_from_start as usize];
+                {
+                    let mut chain = MiniChain::new(self, old_start_sector);
+                    chain.read_exact(&mut tmp)?;
+                }
+                self.free_mini_chain(old_start_sector)?;
+                let mut chain = Chain::new(
+                    &mut self.allocator,
+                    consts::END_OF_CHAIN,
+                    SectorInit::Zero,
+                );
+                chain.write_all(&tmp)?;
+                chain.write_all(buf)?;
+                chain.start_sector_id()
+            }
+        } else {
+            // Case 3: The stream currently exists in a regular chain.  After
+            // the write, it will of course still be too big to be in the mini
+            // stream.  Therefore, we should write into this stream's existing
+            // chain.
+            debug_assert!(new_stream_len >= consts::MINI_STREAM_CUTOFF as u64);
+            let mut chain = Chain::new(
+                &mut self.allocator,
+                old_start_sector,
+                SectorInit::Zero,
+            );
+            chain.seek(SeekFrom::Start(buf_offset_from_start))?;
+            chain.write_all(buf)?;
+            debug_assert_eq!(chain.start_sector_id(), old_start_sector);
+            old_start_sector
+        };
+        // Update the directory entry for this stream.
+        let dir_entry = self.dir_entry_mut(stream_id);
+        dir_entry.start_sector = new_start_sector;
+        dir_entry.stream_len = new_stream_len;
+        dir_entry.modified_time = internal::time::current_timestamp();
+        self.write_dir_entry(stream_id)?;
+        Ok(())
+    }
+
+    /// If `new_stream_len` is less than the stream's current length, then the
+    /// stream will be truncated.  If it is greater than the stream's current
+    /// size, then the stream will be padded with zero bytes.
+    fn resize_stream(
+        &mut self,
+        stream_id: u32,
+        new_stream_len: u64,
+    ) -> io::Result<()> {
+        let (old_start_sector, old_stream_len) = {
+            let dir_entry = self.dir_entry(stream_id);
+            debug_assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STREAM);
+            (dir_entry.start_sector, dir_entry.stream_len)
+        };
+        let new_start_sector = if old_start_sector == consts::END_OF_CHAIN {
+            // Case 1: The stream has no existing chain.  We will allocate a
+            // new chain that is all zeroes.
+            debug_assert_eq!(old_stream_len, 0);
+            if new_stream_len < consts::MINI_STREAM_CUTOFF as u64 {
+                // Case 1a: The new length is small enough that it should be
+                // placed into a new mini chain.
+                let mut chain = MiniChain::new(self, consts::END_OF_CHAIN);
+                chain.set_len(new_stream_len)?;
+                chain.start_sector_id()
+            } else {
+                // Case 1b: The new length is large enough that it should be
+                // placed into a new regular chain.
+                let mut chain = Chain::new(
+                    &mut self.allocator,
+                    consts::END_OF_CHAIN,
+                    SectorInit::Zero,
+                );
+                chain.set_len(new_stream_len)?;
+                chain.start_sector_id()
+            }
+        } else if old_stream_len < consts::MINI_STREAM_CUTOFF as u64 {
+            // Case 2: The stream currently exists in a mini chain.
+            if new_stream_len == 0 {
+                // Case 2a: The new length is zero.  Free the existing mini
+                // chain.
+                self.free_mini_chain(old_start_sector)?;
+                consts::END_OF_CHAIN
+            } else if new_stream_len < consts::MINI_STREAM_CUTOFF as u64 {
+                // Case 2b: The new length is still small enough to fit in a
+                // mini chain.  Therefore, we just need to adjust the length of
+                // the existing chain.
+                let mut chain = MiniChain::new(self, old_start_sector);
+                chain.set_len(new_stream_len)?;
+                debug_assert_eq!(chain.start_sector_id(), old_start_sector);
+                old_start_sector
+            } else {
+                // Case 2c: The new length is too large to fit in a mini chain.
+                // Therefore, we should migrate the stream into a new regular
+                // chain.
+                let mut tmp = vec![0u8; old_stream_len as usize];
+                {
+                    let mut chain = MiniChain::new(self, old_start_sector);
+                    chain.read_exact(&mut tmp)?;
+                }
+                self.free_mini_chain(old_start_sector)?;
+                let mut chain = Chain::new(
+                    &mut self.allocator,
+                    consts::END_OF_CHAIN,
+                    SectorInit::Zero,
+                );
+                chain.write_all(&tmp)?;
+                chain.set_len(new_stream_len)?;
+                chain.start_sector_id()
+            }
+        } else {
+            // Case 3: The stream currently exists in a regular chain.
+            if new_stream_len == 0 {
+                // Case 3a: The new length is zero.  Free the existing chain.
+                self.allocator.free_chain(old_start_sector)?;
+                consts::END_OF_CHAIN
+            } else if new_stream_len < consts::MINI_STREAM_CUTOFF as u64 {
+                // Case 3b: The new length is small enough to fit in a mini
+                // chain.  Therefore, we should migrate the stream into a new
+                // mini chain.
+                debug_assert!(new_stream_len < old_stream_len);
+                let mut tmp = vec![0u8; new_stream_len as usize];
+                {
+                    let mut chain = Chain::new(
+                        &mut self.allocator,
+                        old_start_sector,
+                        SectorInit::Zero,
+                    );
+                    chain.read_exact(&mut tmp)?;
+                }
+                self.allocator.free_chain(old_start_sector)?;
+                let mut chain = MiniChain::new(self, consts::END_OF_CHAIN);
+                chain.write_all(&tmp)?;
+                chain.start_sector_id()
+            } else {
+                // Case 3c: The new length is still too large to fit in a mini
+                // chain.  Therefore, we just need to adjust the length of the
+                // existing chain.
+                let mut chain = Chain::new(
+                    &mut self.allocator,
+                    old_start_sector,
+                    SectorInit::Zero,
+                );
+                chain.set_len(new_stream_len)?;
+                debug_assert_eq!(chain.start_sector_id(), old_start_sector);
+                old_start_sector
+            }
+        };
+        // Update the directory entry for this stream.
+        let dir_entry = self.dir_entry_mut(stream_id);
+        dir_entry.start_sector = new_start_sector;
+        dir_entry.stream_len = new_stream_len;
+        dir_entry.modified_time = internal::time::current_timestamp();
+        self.write_dir_entry(stream_id)?;
+        Ok(())
+    }
 }
 
-// ========================================================================= //
+//===========================================================================//
+
+const BUFFER_SIZE: usize = 8192;
 
 /// A stream entry in a compound file, much like a filesystem file.
 pub struct Stream<'a, F: 'a> {
     comp: &'a mut CompoundFile<F>,
     stream_id: u32,
-    offset_from_start: u64,
-    offset_within_sector: usize,
-    current_sector: u32,
-    finisher: Option<Box<dyn Finish<F>>>,
+    total_len: u64,
+    buffer: Box<[u8; BUFFER_SIZE]>,
+    buf_pos: usize,
+    buf_cap: usize,
+    buf_offset_from_start: u64,
+    flusher: Option<Box<dyn Flusher<F>>>,
 }
 
 impl<'a, F> Stream<'a, F> {
-    fn dir_entry(&self) -> &DirEntry {
-        self.comp.dir_entry(self.stream_id)
-    }
-
-    fn dir_entry_mut(&mut self) -> &mut DirEntry {
-        self.comp.dir_entry_mut(self.stream_id)
+    pub(crate) fn new(
+        comp: &'a mut CompoundFile<F>,
+        stream_id: u32,
+    ) -> Stream<'a, F> {
+        let total_len = comp.dir_entry(stream_id).stream_len;
+        Stream {
+            comp,
+            stream_id,
+            total_len,
+            buffer: Box::new([0; BUFFER_SIZE]),
+            buf_pos: 0,
+            buf_cap: 0,
+            buf_offset_from_start: 0,
+            flusher: None,
+        }
     }
 
     /// Returns the current length of the stream, in bytes.
     pub fn len(&self) -> u64 {
-        self.dir_entry().stream_len
+        self.total_len
     }
 
-    fn is_in_mini_stream(&self) -> bool {
-        self.len() < consts::MINI_STREAM_CUTOFF as u64
+    fn current_position(&self) -> u64 {
+        self.buf_offset_from_start + (self.buf_pos as u64)
     }
 
-    fn sector_len(&self) -> usize {
-        if self.is_in_mini_stream() {
-            consts::MINI_SECTOR_LEN
-        } else {
-            self.comp.allocator.sector_len()
+    fn flush_changes(&mut self) -> io::Result<()> {
+        if let Some(flusher) = self.flusher.take() {
+            flusher.flush_changes(self)?;
         }
-    }
-}
-
-impl<'a, F: Seek> Stream<'a, F> {
-    fn new(
-        comp: &'a mut CompoundFile<F>,
-        stream_id: u32,
-    ) -> io::Result<Stream<'a, F>> {
-        let start_sector = comp.dir_entry(stream_id).start_sector;
-        Ok(Stream {
-            comp,
-            stream_id,
-            offset_from_start: 0,
-            offset_within_sector: 0,
-            current_sector: start_sector,
-            finisher: None,
-        })
-    }
-
-    fn seek_to_current_position(&mut self) -> io::Result<Sector<F>> {
-        debug_assert_ne!(self.current_sector, END_OF_CHAIN);
-        if self.is_in_mini_stream() {
-            self.comp.seek_within_mini_sector(
-                self.current_sector,
-                self.offset_within_sector as u64,
-            )
-        } else {
-            self.comp.allocator.seek_within_sector(
-                self.current_sector,
-                self.offset_within_sector as u64,
-            )
-        }
-    }
-
-    fn advance_to_next_sector(&mut self) {
-        debug_assert_ne!(self.current_sector, END_OF_CHAIN);
-        debug_assert_eq!(self.offset_within_sector, self.sector_len());
-        self.offset_within_sector = 0;
-        let is_mini = self.is_in_mini_stream();
-        self.current_sector = if is_mini {
-            self.comp.minifat[self.current_sector as usize]
-        } else {
-            self.comp.allocator.next(self.current_sector)
-        };
+        Ok(())
     }
 }
 
@@ -1586,228 +1780,337 @@ impl<'a, F: Read + Write + Seek> Stream<'a, F> {
     /// unless the stream is truncated to before the current position, in which
     /// case the position becomes the new end of the stream.
     pub fn set_len(&mut self, size: u64) -> io::Result<()> {
-        let current_size = self.len();
-        if size == current_size {
-            Ok(()) // Do nothing.
-        } else if size > current_size {
-            let current_pos = self.seek(SeekFrom::Current(0))?;
-            self.seek(SeekFrom::End(0))?;
-            io::copy(&mut io::repeat(0).take(size - current_size), self)?;
-            self.seek(SeekFrom::Start(current_pos))?;
-            Ok(())
-        } else {
-            debug_assert!(current_size > 0);
-            self.mark_modified();
-            let offset_from_start = cmp::min(self.offset_from_start, size);
-            self.seek(SeekFrom::Start(size))?;
-            let mut sector = self.current_sector;
-            debug_assert_ne!(sector, END_OF_CHAIN);
-            if self.is_in_mini_stream() {
-                if size == 0 {
-                    self.dir_entry_mut().start_sector = END_OF_CHAIN;
-                    self.current_sector = END_OF_CHAIN;
-                } else {
-                    if size % self.sector_len() as u64 == 0 {
-                        self.current_sector = END_OF_CHAIN;
-                    }
-                    let next = self.comp.minifat[sector as usize];
-                    self.comp.set_minifat(sector, END_OF_CHAIN)?;
-                    sector = next;
-                }
-                while sector != END_OF_CHAIN {
-                    let next = self.comp.minifat[sector as usize];
-                    self.comp.free_mini_sector(sector)?;
-                    sector = next;
-                }
-            } else {
-                if size == 0 {
-                    debug_assert_eq!(sector, self.dir_entry().start_sector);
-                    self.dir_entry_mut().start_sector = END_OF_CHAIN;
-                    self.current_sector = END_OF_CHAIN;
-                    self.comp.allocator.free_chain(sector)?;
-                } else {
-                    if size % self.sector_len() as u64 == 0 {
-                        self.current_sector = END_OF_CHAIN;
-                    }
-                    self.comp.allocator.free_chain_after(sector)?;
-                }
-            }
-            self.dir_entry_mut().stream_len = size;
-            self.seek(SeekFrom::Start(offset_from_start))?;
-            Ok(())
+        if size != self.total_len {
+            let new_position = self.current_position().min(size);
+            self.flush_changes()?;
+            self.comp.resize_stream(self.stream_id, size)?;
+            self.total_len = size;
+            self.buf_offset_from_start = new_position;
+            self.buf_pos = 0;
+            self.buf_cap = 0;
         }
+        Ok(())
     }
 
     fn mark_modified(&mut self) {
-        if self.finisher.is_none() {
-            let finisher: Box<dyn Finish<F>> =
-                Box::new(UpdateDirEntry::new(self.stream_id));
-            self.finisher = Some(finisher);
+        if self.flusher.is_none() {
+            let flusher: Box<dyn Flusher<F>> = Box::new(FlushBuffer);
+            self.flusher = Some(flusher);
         }
     }
 }
 
-impl<'a, F: Read + Seek> Seek for Stream<'a, F> {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let total_len = self.len();
-        let new_pos = match pos {
-            SeekFrom::Start(delta) => delta as i64,
-            SeekFrom::End(delta) => delta + total_len as i64,
-            SeekFrom::Current(delta) => delta + self.offset_from_start as i64,
-        };
-        if new_pos < 0 || (new_pos as u64) > total_len {
-            invalid_input!(
-                "Cannot seek to {}, stream length is {}",
-                new_pos,
-                total_len
-            );
+impl<'a, F: Read + Seek> BufRead for Stream<'a, F> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if self.buf_pos >= self.buf_cap
+            && self.current_position() < self.total_len
+        {
+            self.flush_changes()?;
+            self.buf_offset_from_start += self.buf_pos as u64;
+            self.buf_pos = 0;
+            self.buf_cap = self.comp.read_data_from_stream(
+                self.stream_id,
+                self.buf_offset_from_start,
+                &mut self.buffer[..],
+            )?;
         }
-        let new_pos = new_pos as u64;
-        if new_pos != self.offset_from_start {
-            let is_mini = self.is_in_mini_stream();
-            let sector_len = self.sector_len() as u64;
-            let mut offset = new_pos;
-            let mut sector = self.dir_entry().start_sector;
-            while offset >= sector_len {
-                sector = if is_mini {
-                    self.comp.minifat[sector as usize]
-                } else {
-                    self.comp.allocator.next(sector)
-                };
-                offset -= sector_len;
-            }
-            self.current_sector = sector;
-            self.offset_within_sector = offset as usize;
-            self.offset_from_start = new_pos;
-        }
-        Ok(new_pos)
+        Ok(&self.buffer[self.buf_pos..self.buf_cap])
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.buf_pos = self.buf_cap.min(self.buf_pos + amt);
     }
 }
 
 impl<'a, F: Read + Seek> Read for Stream<'a, F> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let total_len = self.len();
-        debug_assert!(self.offset_from_start <= total_len);
-        let remaining_in_file = total_len - self.offset_from_start;
-        let sector_len = self.sector_len();
-        debug_assert!(self.offset_within_sector <= sector_len);
-        if self.offset_within_sector == sector_len {
-            self.advance_to_next_sector();
+        let num_bytes = {
+            let mut buffered_data = self.fill_buf()?;
+            buffered_data.read(buf)?
+        };
+        self.consume(num_bytes);
+        Ok(num_bytes)
+    }
+}
+
+impl<'a, F: Read + Seek> Seek for Stream<'a, F> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let new_pos: u64 =
+            match pos {
+                SeekFrom::Start(delta) => {
+                    if delta > self.total_len {
+                        invalid_input!(
+                        "Cannot seek to {} bytes from start, because stream \
+                         length is only {} bytes",
+                        delta, self.total_len,
+                    );
+                    }
+                    delta
+                }
+                SeekFrom::End(delta) => {
+                    if delta > 0 {
+                        invalid_input!(
+                        "Cannot seek to {} bytes past the end of the stream",
+                        delta,
+                    );
+                    } else {
+                        let delta = (-delta) as u64;
+                        if delta > self.total_len {
+                            invalid_input!(
+                                "Cannot seek to {} bytes before end, because \
+                             stream length is only {} bytes",
+                                delta,
+                                self.total_len,
+                            );
+                        }
+                        self.total_len - delta
+                    }
+                }
+                SeekFrom::Current(delta) => {
+                    let old_pos = self.current_position();
+                    debug_assert!(old_pos <= self.total_len);
+                    if delta < 0 {
+                        let delta = (-delta) as u64;
+                        if delta > old_pos {
+                            invalid_input!(
+                            "Cannot seek to {} bytes before current position, \
+                             which is only {}",
+                            delta, old_pos,
+                        );
+                        }
+                        old_pos - delta
+                    } else {
+                        let delta = delta as u64;
+                        let remaining = self.total_len - old_pos;
+                        if delta > remaining {
+                            invalid_input!(
+                            "Cannot seek to {} bytes after current position, \
+                             because there are only {} bytes remaining in the \
+                             stream",
+                            delta, remaining,
+                        );
+                        }
+                        old_pos + delta
+                    }
+                }
+            };
+        if new_pos < self.buf_offset_from_start
+            || new_pos > self.buf_offset_from_start + self.buf_cap as u64
+        {
+            self.flush_changes()?;
+            self.buf_offset_from_start = new_pos;
+            self.buf_pos = 0;
+            self.buf_cap = 0;
+        } else {
+            self.buf_pos = (new_pos - self.buf_offset_from_start) as usize;
         }
-        debug_assert!(self.offset_within_sector < sector_len);
-        let max_len = cmp::min(buf.len() as u64, remaining_in_file) as usize;
-        if max_len == 0 {
-            return Ok(0);
-        }
-        let bytes_read =
-            self.seek_to_current_position()?.read(&mut buf[0..max_len])?;
-        self.offset_within_sector += bytes_read;
-        debug_assert!(self.offset_within_sector <= sector_len);
-        self.offset_from_start += bytes_read as u64;
-        debug_assert!(self.offset_from_start <= total_len);
-        Ok(bytes_read)
+        Ok(new_pos)
     }
 }
 
 impl<'a, F: Read + Write + Seek> Write for Stream<'a, F> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
+        debug_assert!(self.buf_pos <= self.buffer.len());
+        if self.buf_pos >= self.buffer.len() {
+            self.flush_changes()?;
+            self.buf_offset_from_start += self.buf_pos as u64;
+            self.buf_pos = 0;
+            self.buf_cap = 0;
         }
+        let num_bytes_written =
+            (&mut self.buffer[self.buf_pos..]).write(buf)?;
         self.mark_modified();
-        let sector_len = self.sector_len();
-        debug_assert!(self.offset_within_sector <= sector_len);
-        if self.offset_within_sector == sector_len {
-            self.advance_to_next_sector();
-        }
-        if self.current_sector == END_OF_CHAIN {
-            debug_assert_eq!(self.offset_from_start, self.len());
-            debug_assert_eq!(self.offset_within_sector, 0);
-            let start_sector = self.dir_entry().start_sector;
-            self.current_sector = if start_sector == END_OF_CHAIN {
-                debug_assert!(self.is_in_mini_stream());
-                let sector_id =
-                    self.comp.allocate_mini_sector(END_OF_CHAIN)?;
-                self.dir_entry_mut().start_sector = sector_id;
-                sector_id
-            } else if self.is_in_mini_stream() {
-                self.comp.extend_mini_chain(start_sector)?
-            } else {
-                self.comp
-                    .allocator
-                    .extend_chain(start_sector, SectorInit::Zero)?
-            };
-        }
-        debug_assert_ne!(self.current_sector, END_OF_CHAIN);
-        debug_assert!(self.offset_within_sector < sector_len);
-        let bytes_written = self.seek_to_current_position()?.write(buf)?;
-        self.offset_within_sector += bytes_written;
-        debug_assert!(self.offset_within_sector <= sector_len);
-        self.offset_from_start += bytes_written as u64;
-        if self.offset_from_start > self.len() {
-            let was_mini = self.is_in_mini_stream();
-            self.dir_entry_mut().stream_len = self.offset_from_start;
-            if was_mini && !self.is_in_mini_stream() {
-                debug_assert_eq!(
-                    self.dir_entry().stream_len,
-                    consts::MINI_STREAM_CUTOFF as u64
-                );
-                let old_start_sector = self.dir_entry().start_sector;
-                let new_start_sector =
-                    self.comp.migrate_out_of_mini_stream(old_start_sector)?;
-                self.dir_entry_mut().start_sector = new_start_sector;
-                let sector_len = self.sector_len();
-                debug_assert_eq!(
-                    self.offset_from_start % sector_len as u64,
-                    0
-                );
-                self.offset_within_sector = 0;
-                self.current_sector = END_OF_CHAIN;
-            }
-        }
-        debug_assert!(self.offset_from_start <= self.len());
-        Ok(bytes_written)
+        self.buf_pos += num_bytes_written;
+        debug_assert!(self.buf_pos <= self.buffer.len());
+        self.buf_cap = self.buf_cap.max(self.buf_pos);
+        self.total_len = self
+            .total_len
+            .max(self.buf_offset_from_start + self.buf_cap as u64);
+        Ok(num_bytes_written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if let Some(finisher) = self.finisher.take() {
-            finisher.finish(self.comp)?;
-        }
+        self.flush_changes()?;
         self.comp.allocator.flush()
     }
 }
 
 impl<'a, F> Drop for Stream<'a, F> {
     fn drop(&mut self) {
-        if let Some(finisher) = self.finisher.take() {
-            let _ = finisher.finish(self.comp);
-        }
+        let _ = self.flush_changes();
     }
 }
 
-// ========================================================================= //
+//===========================================================================//
 
-trait Finish<F> {
-    fn finish(&self, comp: &mut CompoundFile<F>) -> io::Result<()>;
+trait Flusher<F> {
+    fn flush_changes(&self, stream: &mut Stream<F>) -> io::Result<()>;
 }
 
-struct UpdateDirEntry {
-    stream_id: u32,
-}
+struct FlushBuffer;
 
-impl UpdateDirEntry {
-    fn new(stream_id: u32) -> UpdateDirEntry {
-        UpdateDirEntry { stream_id }
-    }
-}
-
-impl<F: Read + Write + Seek> Finish<F> for UpdateDirEntry {
-    fn finish(&self, comp: &mut CompoundFile<F>) -> io::Result<()> {
-        comp.directory[self.stream_id as usize].modified_time =
-            internal::time::current_timestamp();
-        comp.write_dir_entry(self.stream_id)?;
+impl<F: Read + Write + Seek> Flusher<F> for FlushBuffer {
+    fn flush_changes(&self, stream: &mut Stream<F>) -> io::Result<()> {
+        stream.comp.write_data_to_stream(
+            stream.stream_id,
+            stream.buf_offset_from_start,
+            &stream.buffer[..stream.buf_cap],
+        )?;
+        debug_assert_eq!(
+            stream.comp.dir_entry(stream.stream_id).stream_len,
+            stream.total_len
+        );
         Ok(())
     }
 }
 
-// ========================================================================= //
+//===========================================================================//
+
+pub(crate) struct MiniChain<'a, F: 'a> {
+    comp: &'a mut CompoundFile<F>,
+    sector_ids: Vec<u32>,
+    offset_from_start: u64,
+}
+
+impl<'a, F> MiniChain<'a, F> {
+    pub fn new(
+        comp: &'a mut CompoundFile<F>,
+        start_sector_id: u32,
+    ) -> MiniChain<'a, F> {
+        let mut sector_ids = Vec::<u32>::new();
+        let mut current_sector_id = start_sector_id;
+        while current_sector_id != consts::END_OF_CHAIN {
+            sector_ids.push(current_sector_id);
+            current_sector_id = comp.minifat[current_sector_id as usize];
+        }
+        MiniChain { comp, sector_ids, offset_from_start: 0 }
+    }
+
+    pub fn start_sector_id(&self) -> u32 {
+        self.sector_ids.first().copied().unwrap_or(consts::END_OF_CHAIN)
+    }
+
+    pub fn len(&self) -> u64 {
+        (consts::MINI_SECTOR_LEN as u64) * (self.sector_ids.len() as u64)
+    }
+}
+
+impl<'a, F: Read + Write + Seek> MiniChain<'a, F> {
+    /// Resizes the chain to the minimum number of sectors large enough to old
+    /// `new_len` bytes, allocating or freeing sectors as needed.
+    pub fn set_len(&mut self, new_len: u64) -> io::Result<()> {
+        debug_assert!(new_len < consts::MINI_STREAM_CUTOFF as u64);
+        let sector_len = consts::MINI_SECTOR_LEN as u64;
+        let new_num_sectors =
+            ((sector_len + new_len - 1) / sector_len) as usize;
+        if new_num_sectors == 0 {
+            if let Some(&start_sector) = self.sector_ids.first() {
+                self.comp.free_mini_chain(start_sector)?;
+            }
+        } else if new_num_sectors <= self.sector_ids.len() {
+            if new_num_sectors < self.sector_ids.len() {
+                self.comp.free_mini_chain_after(
+                    self.sector_ids[new_num_sectors - 1],
+                )?;
+            }
+            // TODO: zero remainder of final sector
+        } else {
+            for _ in self.sector_ids.len()..new_num_sectors {
+                let new_sector_id =
+                    if let Some(&last_sector_id) = self.sector_ids.last() {
+                        self.comp.extend_mini_chain(last_sector_id)?
+                    } else {
+                        self.comp.begin_mini_chain()?
+                    };
+                self.sector_ids.push(new_sector_id);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a, F> Seek for MiniChain<'a, F> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let length = self.len();
+        let new_offset = match pos {
+            SeekFrom::Start(delta) => delta as i64,
+            SeekFrom::End(delta) => delta + length as i64,
+            SeekFrom::Current(delta) => delta + self.offset_from_start as i64,
+        };
+        if new_offset < 0 || (new_offset as u64) > length {
+            invalid_input!(
+                "Cannot seek to {}, chain length is {} bytes",
+                new_offset,
+                length
+            );
+        }
+        self.offset_from_start = new_offset as u64;
+        Ok(self.offset_from_start)
+    }
+}
+
+impl<'a, F: Read + Seek> Read for MiniChain<'a, F> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let total_len = self.len();
+        debug_assert!(self.offset_from_start <= total_len);
+        let remaining_in_chain = total_len - self.offset_from_start;
+        let max_len = remaining_in_chain.min(buf.len() as u64) as usize;
+        if max_len == 0 {
+            return Ok(0);
+        }
+        let sector_len = consts::MINI_SECTOR_LEN as u64;
+        let current_sector_index =
+            (self.offset_from_start / sector_len) as usize;
+        debug_assert!(current_sector_index < self.sector_ids.len());
+        let current_sector_id = self.sector_ids[current_sector_index];
+        let offset_within_sector = self.offset_from_start % sector_len;
+        let mut sector = self.comp.seek_within_mini_sector(
+            current_sector_id,
+            offset_within_sector,
+        )?;
+        let bytes_read = sector.read(&mut buf[0..max_len])?;
+        self.offset_from_start += bytes_read as u64;
+        debug_assert!(self.offset_from_start <= total_len);
+        Ok(bytes_read)
+    }
+}
+
+impl<'a, F: Read + Write + Seek> Write for MiniChain<'a, F> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let mut total_len = self.len();
+        let sector_len = consts::MINI_SECTOR_LEN as u64;
+        if self.offset_from_start == total_len {
+            let new_sector_id =
+                if let Some(&last_sector_id) = self.sector_ids.last() {
+                    self.comp.extend_mini_chain(last_sector_id)?
+                } else {
+                    self.comp.begin_mini_chain()?
+                };
+            self.sector_ids.push(new_sector_id);
+            total_len += sector_len;
+            debug_assert_eq!(total_len, self.len());
+        }
+        let current_sector_index =
+            (self.offset_from_start / sector_len) as usize;
+        debug_assert!(current_sector_index < self.sector_ids.len());
+        let current_sector_id = self.sector_ids[current_sector_index];
+        let offset_within_sector = self.offset_from_start % sector_len;
+        let mut sector = self.comp.seek_within_mini_sector(
+            current_sector_id,
+            offset_within_sector,
+        )?;
+        let bytes_written = sector.write(buf)?;
+        self.offset_from_start += bytes_written as u64;
+        debug_assert!(self.offset_from_start <= total_len);
+        Ok(bytes_written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.comp.flush()
+    }
+}
+
+//===========================================================================//

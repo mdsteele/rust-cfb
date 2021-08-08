@@ -2,7 +2,7 @@ use crate::internal::{consts, Allocator, SectorInit};
 use std::cmp;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-// ========================================================================= //
+//===========================================================================//
 
 pub struct Chain<'a, F: 'a> {
     allocator: &'a mut Allocator<F>,
@@ -26,12 +26,49 @@ impl<'a, F> Chain<'a, F> {
         Chain { allocator, init, sector_ids, offset_from_start: 0 }
     }
 
+    pub fn start_sector_id(&self) -> u32 {
+        self.sector_ids.first().copied().unwrap_or(consts::END_OF_CHAIN)
+    }
+
     pub fn num_sectors(&self) -> usize {
         self.sector_ids.len()
     }
 
     pub fn len(&self) -> u64 {
         (self.allocator.sector_len() as u64) * (self.sector_ids.len() as u64)
+    }
+}
+
+impl<'a, F: Write + Seek> Chain<'a, F> {
+    /// Resizes the chain to the minimum number of sectors large enough to old
+    /// `new_len` bytes, allocating or freeing sectors as needed.
+    pub fn set_len(&mut self, new_len: u64) -> io::Result<()> {
+        let sector_len = self.allocator.sector_len() as u64;
+        let new_num_sectors =
+            ((sector_len + new_len - 1) / sector_len) as usize;
+        if new_num_sectors == 0 {
+            if let Some(&start_sector) = self.sector_ids.first() {
+                self.allocator.free_chain(start_sector)?;
+            }
+        } else if new_num_sectors <= self.sector_ids.len() {
+            if new_num_sectors < self.sector_ids.len() {
+                self.allocator
+                    .free_chain_after(self.sector_ids[new_num_sectors - 1])?;
+            }
+            // TODO: init remainder of final sector
+        } else {
+            for _ in self.sector_ids.len()..new_num_sectors {
+                let new_sector_id = if let Some(&last_sector_id) =
+                    self.sector_ids.last()
+                {
+                    self.allocator.extend_chain(last_sector_id, self.init)?
+                } else {
+                    self.allocator.begin_chain(self.init)?
+                };
+                self.sector_ids.push(new_sector_id);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -117,4 +154,4 @@ impl<'a, F: Write + Seek> Write for Chain<'a, F> {
     }
 }
 
-// ========================================================================= //
+//===========================================================================//

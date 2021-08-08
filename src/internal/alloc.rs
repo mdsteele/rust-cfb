@@ -178,6 +178,7 @@ impl<F: Write + Seek> Allocator<F> {
             if self.fat[sector_id] == consts::FREE_SECTOR {
                 let sector_id = sector_id as u32;
                 self.set_fat(sector_id, consts::END_OF_CHAIN)?;
+                self.sectors.init_sector(sector_id, init)?;
                 return Ok(sector_id);
             }
         }
