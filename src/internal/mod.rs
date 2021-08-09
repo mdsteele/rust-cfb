@@ -4,6 +4,7 @@ mod macros;
 mod alloc;
 mod chain;
 pub mod consts;
+mod directory;
 mod direntry;
 mod entry;
 pub mod path;
@@ -13,6 +14,7 @@ mod version;
 
 pub use self::alloc::Allocator;
 pub use self::chain::Chain;
+pub use self::directory::Directory;
 pub use self::direntry::DirEntry;
 pub use self::entry::{Entries, EntriesOrder, Entry};
 pub use self::sector::{Sector, SectorInit, Sectors};

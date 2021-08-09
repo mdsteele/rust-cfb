@@ -225,6 +225,8 @@ fn storage_clsids() {
     comp.create_storage("/foo").unwrap();
     comp.set_storage_clsid("/", uuid1).unwrap();
     comp.set_storage_clsid("/foo", uuid2).unwrap();
+    assert_eq!(comp.root_entry().clsid(), &uuid1);
+    assert_eq!(comp.entry("/foo").unwrap().clsid(), &uuid2);
 
     let cursor = comp.into_inner();
     let comp = CompoundFile::open(cursor).expect("open");
@@ -262,6 +264,8 @@ fn state_bits() {
     comp.create_storage("bar").unwrap();
     comp.set_state_bits("foo", 0x12345678).unwrap();
     comp.set_state_bits("bar", 0x0ABCDEF0).unwrap();
+    assert_eq!(comp.entry("foo").unwrap().state_bits(), 0x12345678);
+    assert_eq!(comp.entry("bar").unwrap().state_bits(), 0x0ABCDEF0);
 
     let cursor = comp.into_inner();
     let comp = CompoundFile::open(cursor).expect("open");
@@ -327,7 +331,7 @@ fn create_storages_all() {
 
 #[test]
 #[should_panic(expected = "Cannot create storage at \\\"/foo/bar\\\" \
-                               because a stream already exists there")]
+                           because a stream already exists there")]
 fn create_storage_all_with_stream_in_the_way() {
     let cursor = Cursor::new(Vec::new());
     let mut comp = CompoundFile::create(cursor).expect("create");

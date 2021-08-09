@@ -139,6 +139,23 @@ impl<F: Seek> Allocator<F> {
     ) -> io::Result<Sector<F>> {
         self.sectors.seek_within_sector(sector_id, offset_within_sector)
     }
+
+    pub fn seek_within_subsector(
+        &mut self,
+        sector_id: u32,
+        subsector_index_within_sector: u32,
+        subsector_len: usize,
+        offset_within_subsector: u64,
+    ) -> io::Result<Sector<F>> {
+        let subsector_start =
+            subsector_index_within_sector as usize * subsector_len;
+        let offset_within_sector =
+            subsector_start as u64 + offset_within_subsector;
+        let sector = self
+            .sectors
+            .seek_within_sector(sector_id, offset_within_sector)?;
+        Ok(sector.subsector(subsector_start, subsector_len))
+    }
 }
 
 impl<F: Write + Seek> Allocator<F> {

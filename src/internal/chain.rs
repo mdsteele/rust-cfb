@@ -1,4 +1,4 @@
-use crate::internal::{consts, Allocator, SectorInit};
+use crate::internal::{consts, Allocator, Sector, SectorInit};
 use std::cmp;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -39,6 +39,31 @@ impl<'a, F> Chain<'a, F> {
     }
 }
 
+impl<'a, F: Seek> Chain<'a, F> {
+    pub fn into_subsector(
+        self,
+        subsector_index: u32,
+        subsector_len: usize,
+        offset_within_subsector: u64,
+    ) -> io::Result<Sector<'a, F>> {
+        debug_assert!(offset_within_subsector <= subsector_len as u64);
+        debug_assert_eq!(self.allocator.sector_len() % subsector_len, 0);
+        let subsectors_per_sector =
+            self.allocator.sector_len() / subsector_len;
+        let sector_index_within_chain =
+            subsector_index as usize / subsectors_per_sector;
+        let subsector_index_within_sector =
+            subsector_index % (subsectors_per_sector as u32);
+        let sector_id = self.sector_ids[sector_index_within_chain];
+        self.allocator.seek_within_subsector(
+            sector_id,
+            subsector_index_within_sector,
+            subsector_len,
+            offset_within_subsector,
+        )
+    }
+}
+
 impl<'a, F: Write + Seek> Chain<'a, F> {
     /// Resizes the chain to the minimum number of sectors large enough to old
     /// `new_len` bytes, allocating or freeing sectors as needed.
@@ -69,6 +94,10 @@ impl<'a, F: Write + Seek> Chain<'a, F> {
             }
         }
         Ok(())
+    }
+
+    pub fn free(self) -> io::Result<()> {
+        self.allocator.free_chain(self.start_sector_id())
     }
 }
 
