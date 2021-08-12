@@ -325,6 +325,16 @@ impl<F> CompoundFile<F> {
         if root_entry.name != consts::ROOT_DIR_NAME {
             invalid_data!("Malformed directory (root name)");
         }
+        let expected_root_stream_len =
+            consts::MINI_SECTOR_LEN as u64 * self.minifat.len() as u64;
+        if root_entry.stream_len < expected_root_stream_len {
+            invalid_data!(
+                "Malformed directory (root stream len is {}, but \
+                        should be >= {})",
+                root_entry.stream_len,
+                expected_root_stream_len
+            );
+        }
         if root_entry.stream_len % consts::MINI_SECTOR_LEN as u64 != 0 {
             invalid_data!(
                 "Malformed directory (root stream len is {}, but \
