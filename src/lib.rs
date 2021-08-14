@@ -324,10 +324,10 @@ impl<F> CompoundFile<F> {
         }
         let expected_root_stream_len =
             consts::MINI_SECTOR_LEN as u64 * self.minifat.len() as u64;
-        if root_entry.stream_len != expected_root_stream_len {
+        if root_entry.stream_len < expected_root_stream_len {
             invalid_data!(
                 "Malformed directory (root stream len is {}, but \
-                           should be {})",
+                        should be >= {})",
                 root_entry.stream_len,
                 expected_root_stream_len
             );
