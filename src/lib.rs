@@ -584,14 +584,28 @@ impl<F: Read + Seek> CompoundFile<F> {
             if next == consts::FREE_SECTOR {
                 break;
             } else if next > consts::MAX_REGULAR_SECTOR {
-                invalid_data!("Invalid sector index ({}) in DIFAT", next);
+                invalid_data!("DIFAT refers to invalid sector index {}", next);
             }
             difat.push(next);
         }
         let mut sectors = Sectors::new(version, inner_len, inner);
+        let num_sectors = sectors.num_sectors();
         let mut difat_sector_ids = Vec::new();
         let mut current_difat_sector = first_difat_sector;
         while current_difat_sector != END_OF_CHAIN {
+            if current_difat_sector > consts::MAX_REGULAR_SECTOR {
+                invalid_data!(
+                    "DIFAT chain includes invalid sector index {}",
+                    current_difat_sector
+                );
+            } else if current_difat_sector >= num_sectors {
+                invalid_data!(
+                    "DIFAT chain includes sector index {}, but sector count \
+                     is only {}",
+                    current_difat_sector,
+                    num_sectors
+                );
+            }
             difat_sector_ids.push(current_difat_sector);
             let mut sector = sectors.seek_to_sector(current_difat_sector)?;
             for _ in 0..(sector_len / 4 - 1) {
@@ -599,7 +613,10 @@ impl<F: Read + Seek> CompoundFile<F> {
                 if next != consts::FREE_SECTOR
                     && next > consts::MAX_REGULAR_SECTOR
                 {
-                    invalid_data!("Invalid sector index ({}) in DIFAT", next);
+                    invalid_data!(
+                        "DIFAT refers to invalid sector index {}",
+                        next
+                    );
                 }
                 difat.push(next);
             }
@@ -607,8 +624,7 @@ impl<F: Read + Seek> CompoundFile<F> {
         }
         if num_difat_sectors as usize != difat_sector_ids.len() {
             invalid_data!(
-                "Incorrect DIFAT chain length \
-                           (header says {}, actual is {})",
+                "Incorrect DIFAT chain length (header says {}, actual is {})",
                 num_difat_sectors,
                 difat_sector_ids.len()
             );
@@ -618,8 +634,8 @@ impl<F: Read + Seek> CompoundFile<F> {
         }
         if num_fat_sectors as usize != difat.len() {
             invalid_data!(
-                "Incorrect number of FAT sectors \
-                           (header says {}, DIFAT says {})",
+                "Incorrect number of FAT sectors (header says {}, DIFAT says \
+                 {})",
                 num_fat_sectors,
                 difat.len()
             );
@@ -627,8 +643,15 @@ impl<F: Read + Seek> CompoundFile<F> {
 
         // Read in FAT.
         let mut fat = Vec::<u32>::new();
-        for index in 0..difat.len() {
-            let mut sector = sectors.seek_to_sector(difat[index])?;
+        for &sector_index in difat.iter() {
+            if sector_index >= num_sectors {
+                invalid_data!(
+                    "DIFAT refers to sector {}, but sector count is only {}",
+                    sector_index,
+                    num_sectors
+                );
+            }
+            let mut sector = sectors.seek_to_sector(sector_index)?;
             for _ in 0..(sector_len / 4) {
                 fat.push(sector.read_u32::<LittleEndian>()?);
             }
@@ -678,6 +701,19 @@ impl<F: Read + Seek> CompoundFile<F> {
         // Read in directory.
         let mut current_dir_sector = first_dir_sector;
         while current_dir_sector != END_OF_CHAIN {
+            if current_dir_sector > consts::MAX_REGULAR_SECTOR {
+                invalid_data!(
+                    "Directory chain includes invalid sector index {}",
+                    current_dir_sector
+                );
+            } else if current_dir_sector >= num_sectors {
+                invalid_data!(
+                    "Directory chain includes sector index {}, but sector \
+                     count is only {}",
+                    current_dir_sector,
+                    num_sectors
+                );
+            }
             {
                 let mut sector =
                     comp.allocator.seek_to_sector(current_dir_sector)?;

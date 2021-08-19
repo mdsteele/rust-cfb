@@ -62,8 +62,14 @@ impl<F: Seek> Sectors<F> {
         sector_id: u32,
         offset_within_sector: u64,
     ) -> io::Result<Sector<F>> {
-        debug_assert!(sector_id < self.num_sectors);
-        debug_assert!(offset_within_sector < self.sector_len() as u64);
+        debug_assert!(offset_within_sector <= self.sector_len() as u64);
+        if sector_id >= self.num_sectors {
+            invalid_data!(
+                "Tried to seek to sector {}, but sector count is only {}",
+                sector_id,
+                self.num_sectors
+            );
+        }
         let sector_len = self.sector_len();
         self.inner.seek(SeekFrom::Start(
             (sector_id + 1) as u64 * sector_len as u64 + offset_within_sector,
@@ -83,8 +89,13 @@ impl<F: Write + Seek> Sectors<F> {
         sector_id: u32,
         init: SectorInit,
     ) -> io::Result<()> {
-        debug_assert!(sector_id <= self.num_sectors);
-        if sector_id == self.num_sectors {
+        if sector_id > self.num_sectors {
+            invalid_data!(
+                "Tried to initialize sector {}, but sector count is only {}",
+                sector_id,
+                self.num_sectors
+            );
+        } else if sector_id == self.num_sectors {
             self.num_sectors += 1;
         }
         let mut sector = self.seek_to_sector(sector_id)?;
