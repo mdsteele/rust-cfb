@@ -3,7 +3,7 @@ use crate::internal::consts;
 // ========================================================================= //
 
 /// The CFB format version to use.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Version {
     /// Version 3, which uses 512-byte sectors.
     V3,

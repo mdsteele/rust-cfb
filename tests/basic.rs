@@ -19,8 +19,8 @@ fn walk_storage_to_vec<F>(comp: &CompoundFile<F>, path: &str) -> Vec<String> {
 // Tests for creating compound files:
 
 #[test]
-#[should_panic(expected = "Invalid CFB file (wrong magic number)")]
-fn wrong_magic_number() {
+#[should_panic(expected = "Invalid CFB file (12 bytes is too small)")]
+fn file_too_small() {
     let cursor = Cursor::new([1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     CompoundFile::open(cursor).unwrap();
 }
