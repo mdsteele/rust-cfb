@@ -50,6 +50,23 @@ impl DirEntry {
         }
     }
 
+    pub fn empty_root_entry() -> DirEntry {
+        DirEntry {
+            name: consts::ROOT_DIR_NAME.to_string(),
+            obj_type: consts::OBJ_TYPE_ROOT,
+            color: consts::COLOR_BLACK,
+            left_sibling: NO_STREAM,
+            right_sibling: NO_STREAM,
+            child: NO_STREAM,
+            clsid: Uuid::nil(),
+            state_bits: 0,
+            creation_time: 0,
+            modified_time: 0,
+            start_sector: consts::END_OF_CHAIN,
+            stream_len: 0,
+        }
+    }
+
     pub fn read_clsid<R: Read>(reader: &mut R) -> io::Result<Uuid> {
         let d1 = reader.read_u32::<LittleEndian>()?;
         let d2 = reader.read_u16::<LittleEndian>()?;

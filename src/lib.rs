@@ -387,6 +387,21 @@ impl<F: Read + Seek> CompoundFile<F> {
                 fat.push(sector.read_u32::<LittleEndian>()?);
             }
         }
+        // If the number of sectors in the file is not a multiple of the number
+        // of FAT entries per sector, then the last FAT sector must be padded
+        // with FREE_SECTOR entries (see MS-CFB section 2.3).  However, some
+        // CFB implementations incorrectly pad the last FAT sector with zeros
+        // (see https://github.com/mdsteele/rust-cfb/issues/8).  Since zero is
+        // normally a meaningful FAT entry (referring to sector 0), we only
+        // want to strip zeros from the end of the FAT if they are beyond the
+        // number of sectors in the file.
+        while fat.len() > num_sectors as usize && fat.last() == Some(&0) {
+            fat.pop();
+        }
+        // Strip FREE_SECTOR entries from the end of the FAT.  Unlike the zero
+        // case above, we can remove these even if it makes the number of FAT
+        // entries less than the number of sectors in the file; the allocator
+        // will implicitly treat these extra sectors as free.
         while fat.last() == Some(&consts::FREE_SECTOR) {
             fat.pop();
         }
@@ -536,27 +551,14 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         for &entry in fat.iter() {
             inner.write_u32::<LittleEndian>(entry)?;
         }
-        for _ in fat.len()..(sector_len / 4) {
+        for _ in fat.len()..(sector_len / size_of::<u32>()) {
             inner.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
         }
         let difat: Vec<u32> = vec![0];
         let difat_sector_ids: Vec<u32> = vec![];
 
         // Write directory sector:
-        let root_dir_entry = DirEntry {
-            name: consts::ROOT_DIR_NAME.to_string(),
-            obj_type: consts::OBJ_TYPE_ROOT,
-            color: consts::COLOR_BLACK,
-            left_sibling: NO_STREAM,
-            right_sibling: NO_STREAM,
-            child: NO_STREAM,
-            clsid: Uuid::nil(),
-            state_bits: 0,
-            creation_time: 0,
-            modified_time: 0,
-            start_sector: consts::END_OF_CHAIN,
-            stream_len: 0,
-        };
+        let root_dir_entry = DirEntry::empty_root_entry();
         root_dir_entry.write_to(&mut inner)?;
         for _ in 1..version.dir_entries_per_sector() {
             DirEntry::unallocated().write_to(&mut inner)?;
@@ -1638,6 +1640,60 @@ impl<'a, F: Read + Write + Seek> Write for MiniChain<'a, F> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.comp.flush()
+    }
+}
+
+//===========================================================================//
+
+#[cfg(test)]
+mod tests {
+    use super::CompoundFile;
+    use crate::internal::{consts, DirEntry, Header, Version};
+    use byteorder::{LittleEndian, WriteBytesExt};
+    use std::io::{self, Cursor};
+    use std::mem::size_of;
+
+    /// Regression test for https://github.com/mdsteele/rust-cfb/issues/8.
+    #[test]
+    fn zero_padded_fat() -> io::Result<()> {
+        let version = Version::V3;
+        let mut data = Vec::<u8>::new();
+        let mut header = Header {
+            version,
+            num_dir_sectors: 1,
+            num_fat_sectors: 1,
+            first_dir_sector: 1,
+            first_minifat_sector: consts::END_OF_CHAIN,
+            num_minifat_sectors: 0,
+            first_difat_sector: consts::END_OF_CHAIN,
+            num_difat_sectors: 0,
+            initial_difat_entries: [consts::FREE_SECTOR;
+                consts::NUM_DIFAT_ENTRIES_IN_HEADER],
+        };
+        header.initial_difat_entries[0] = 0;
+        header.write_to(&mut data)?;
+
+        // Write FAT sector:
+        let fat: Vec<u32> = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
+        for &entry in fat.iter() {
+            data.write_u32::<LittleEndian>(entry)?;
+        }
+        // Pad the FAT sector with zeros instead of FREE_SECTOR.  Technically
+        // this violates the MS-CFB spec (section 2.3), but apparently some CFB
+        // implementations do this.
+        for _ in fat.len()..(version.sector_len() / size_of::<u32>()) {
+            data.write_u32::<LittleEndian>(0)?;
+        }
+
+        // Write directory sector:
+        DirEntry::empty_root_entry().write_to(&mut data)?;
+        for _ in 1..version.dir_entries_per_sector() {
+            DirEntry::unallocated().write_to(&mut data)?;
+        }
+
+        // Despite the zero-padded FAT, we should be able to read this file.
+        CompoundFile::open(Cursor::new(data)).expect("open");
+        Ok(())
     }
 }
 
