@@ -2,8 +2,9 @@ use crate::internal::{consts, Sector, SectorInit, Sectors, Version};
 use byteorder::{LittleEndian, WriteBytesExt};
 use std::collections::HashSet;
 use std::io::{self, Seek, Write};
+use std::mem::size_of;
 
-// ========================================================================= //
+//===========================================================================//
 
 macro_rules! malformed {
     ($e:expr) => { invalid_data!("Malformed FAT ({})", $e) };
@@ -12,7 +13,7 @@ macro_rules! malformed {
     };
 }
 
-// ========================================================================= //
+//===========================================================================//
 
 /// A wrapper around the sectors of a compound file, providing sector
 /// allocation via the FAT and DIFAT.
@@ -67,8 +68,7 @@ impl<F> Allocator<F> {
         for &difat_sector in self.difat_sector_ids.iter() {
             if difat_sector as usize >= self.fat.len() {
                 malformed!(
-                    "FAT has {} entries, but DIFAT lists {} as a \
-                            DIFAT sector",
+                    "FAT has {} entries, but DIFAT lists {} as a DIFAT sector",
                     self.fat.len(),
                     difat_sector
                 );
@@ -83,8 +83,7 @@ impl<F> Allocator<F> {
         for &fat_sector in self.difat.iter() {
             if fat_sector as usize >= self.fat.len() {
                 malformed!(
-                    "FAT has {} entries, but DIFAT lists {} as a FAT \
-                            sector",
+                    "FAT has {} entries, but DIFAT lists {} as a FAT sector",
                     self.fat.len(),
                     fat_sector
                 );
@@ -101,8 +100,7 @@ impl<F> Allocator<F> {
             if to_sector <= consts::MAX_REGULAR_SECTOR {
                 if to_sector as usize >= self.fat.len() {
                     malformed!(
-                        "FAT has {} entries, but sector {} points \
-                                to {}",
+                        "FAT has {} entries, but sector {} points to {}",
                         self.fat.len(),
                         from_sector,
                         to_sector
@@ -113,7 +111,7 @@ impl<F> Allocator<F> {
                 }
                 pointees.insert(to_sector);
             } else if to_sector == consts::INVALID_SECTOR {
-                malformed!("{} is not a valid FAT entry", to_sector);
+                malformed!("0x{:08X} is not a valid FAT entry", to_sector);
             }
         }
         Ok(())
@@ -201,8 +199,9 @@ impl<F: Write + Seek> Allocator<F> {
         }
         // Otherwise, we need a new sector; if there's not room in the FAT to
         // add it, then first we need to allocate a new FAT sector.
-        let sector_len = self.sectors.sector_len();
-        if self.fat.len() % (sector_len / 4) == 0 {
+        let fat_entries_per_sector =
+            self.sectors.sector_len() / size_of::<u32>();
+        if self.fat.len() % fat_entries_per_sector == 0 {
             self.append_fat_sector()?;
         }
         // Add a new sector to the end of the file and return it.
@@ -310,7 +309,8 @@ impl<F: Write + Seek> Allocator<F> {
     fn set_fat(&mut self, index: u32, value: u32) -> io::Result<()> {
         let index = index as usize;
         debug_assert!(index <= self.fat.len());
-        let fat_entries_per_sector = self.sectors.sector_len() / 4;
+        let fat_entries_per_sector =
+            self.sectors.sector_len() / size_of::<u32>();
         let fat_sector_id = self.difat[index / fat_entries_per_sector];
         let offset_within_sector = 4 * (index % fat_entries_per_sector) as u64;
         let mut sector = self
@@ -331,4 +331,123 @@ impl<F: Write + Seek> Allocator<F> {
     }
 }
 
-// ========================================================================= //
+//===========================================================================//
+
+#[cfg(test)]
+mod tests {
+    use super::Allocator;
+    use crate::internal::{consts, Sectors, Version};
+    use std::io::Cursor;
+
+    fn make_sectors(
+        version: Version,
+        num_sectors: usize,
+    ) -> Sectors<Cursor<Vec<u8>>> {
+        let data_len = (num_sectors + 1) * version.sector_len();
+        Sectors::new(version, data_len as u64, Cursor::new(vec![0; data_len]))
+    }
+
+    fn make_allocator(
+        difat: Vec<u32>,
+        fat: Vec<u32>,
+    ) -> Allocator<Cursor<Vec<u8>>> {
+        Allocator::new(
+            make_sectors(Version::V3, fat.len()),
+            vec![],
+            difat,
+            fat,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed FAT (FAT has 3 entries, but file has only 2 \
+                    sectors)"
+    )]
+    fn fat_longer_than_file() {
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, 2, consts::END_OF_CHAIN];
+        let sectors = make_sectors(Version::V3, 2);
+        Allocator::new(sectors, vec![], difat, fat).unwrap();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed FAT (FAT has 2 entries, but DIFAT lists 3 as \
+                    a DIFAT sector)"
+    )]
+    fn difat_sector_out_of_range() {
+        let difat_sectors = vec![3];
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
+        let sectors = make_sectors(Version::V3, fat.len());
+        Allocator::new(sectors, difat_sectors, difat, fat).unwrap();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed FAT (DIFAT sector 1 is not marked as such in \
+                    the FAT)"
+    )]
+    fn difat_sector_not_marked_in_fat() {
+        let difat_sectors = vec![1];
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
+        let sectors = make_sectors(Version::V3, fat.len());
+        Allocator::new(sectors, difat_sectors, difat, fat).unwrap();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed FAT (FAT has 2 entries, but DIFAT lists 3 as a \
+                    FAT sector)"
+    )]
+    fn fat_sector_out_of_range() {
+        let difat = vec![0, 3];
+        let fat = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
+        make_allocator(difat, fat);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed FAT (FAT sector 1 is not marked as such in the \
+                    FAT)"
+    )]
+    fn fat_sector_not_marked_in_fat() {
+        let difat = vec![0, 1];
+        let fat = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
+        make_allocator(difat, fat);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed FAT (FAT has 2 entries, but sector 1 points to \
+                    2)"
+    )]
+    fn pointee_out_of_range() {
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, 2];
+        make_allocator(difat, fat);
+    }
+
+    #[test]
+    #[should_panic(expected = "Malformed FAT (sector 3 pointed to twice)")]
+    fn double_pointee() {
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, 3, 3, consts::END_OF_CHAIN];
+        make_allocator(difat, fat);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed FAT (0xFFFFFFFB is not a valid FAT entry)"
+    )]
+    fn invalid_pointee() {
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, consts::INVALID_SECTOR];
+        make_allocator(difat, fat);
+    }
+}
+
+//===========================================================================//
