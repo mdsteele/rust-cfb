@@ -1,6 +1,6 @@
 use crate::internal::{
     self, consts, Allocator, Chain, Color, DirEntry, Entries, EntriesOrder,
-    Sector, SectorInit, Version,
+    ObjType, Sector, SectorInit, Version,
 };
 use byteorder::{LittleEndian, WriteBytesExt};
 use std::cmp::Ordering;
@@ -79,12 +79,12 @@ impl<F> Directory<F> {
         };
         let start = {
             let dir_entry = self.dir_entry(stream_id);
-            if dir_entry.obj_type == consts::OBJ_TYPE_STREAM {
+            if dir_entry.obj_type == ObjType::Stream {
                 invalid_input!("Not a storage: {:?}", path);
             }
             debug_assert!(
-                dir_entry.obj_type == consts::OBJ_TYPE_STORAGE
-                    || dir_entry.obj_type == consts::OBJ_TYPE_ROOT
+                dir_entry.obj_type == ObjType::Storage
+                    || dir_entry.obj_type == ObjType::Root
             );
             dir_entry.child
         };
@@ -165,17 +165,17 @@ impl<F> Directory<F> {
             visited.insert(stream_id);
             let dir_entry = self.dir_entry(stream_id);
             if stream_id == consts::ROOT_STREAM_ID {
-                if dir_entry.obj_type != consts::OBJ_TYPE_ROOT {
+                if dir_entry.obj_type != ObjType::Root {
                     malformed!(
-                        "wrong object type for root entry: {}",
+                        "root entry has object type {:?}",
                         dir_entry.obj_type
                     );
                 }
-            } else if dir_entry.obj_type != consts::OBJ_TYPE_STORAGE
-                && dir_entry.obj_type != consts::OBJ_TYPE_STREAM
+            } else if dir_entry.obj_type != ObjType::Storage
+                && dir_entry.obj_type != ObjType::Stream
             {
                 malformed!(
-                    "wrong object type for non-root entry: {}",
+                    "non-root entry with object type {:?}",
                     dir_entry.obj_type
                 );
             }
@@ -304,11 +304,10 @@ impl<F: Write + Seek> Directory<F> {
         &mut self,
         parent_id: u32,
         name: &str,
-        obj_type: u8,
+        obj_type: ObjType,
     ) -> io::Result<u32> {
         debug_assert!(
-            obj_type == consts::OBJ_TYPE_STORAGE
-                || obj_type == consts::OBJ_TYPE_STREAM
+            obj_type == ObjType::Storage || obj_type == ObjType::Stream
         );
         // Create a new directory entry.
         let stream_id = self.allocate_dir_entry()?;
@@ -444,7 +443,7 @@ impl<F: Write + Seek> Directory<F> {
     fn allocate_dir_entry(&mut self) -> io::Result<u32> {
         // If there's an existing unalloated directory entry, use that.
         for (stream_id, entry) in self.dir_entries.iter().enumerate() {
-            if entry.obj_type == consts::OBJ_TYPE_UNALLOCATED {
+            if entry.obj_type == ObjType::Unallocated {
                 return Ok(stream_id as u32);
             }
         }
@@ -521,7 +520,7 @@ impl<F: Write + Seek> Directory<F> {
 mod tests {
     use super::Directory;
     use crate::internal::{
-        consts, Allocator, Color, DirEntry, Sectors, Version,
+        consts, Allocator, Color, DirEntry, ObjType, Sectors, Version,
     };
     use std::io::Cursor;
 
@@ -565,30 +564,29 @@ mod tests {
     fn storage_is_child_of_itself() {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
-        let mut storage = DirEntry::new("foo", consts::OBJ_TYPE_STORAGE, 0);
+        let mut storage = DirEntry::new("foo", ObjType::Storage, 0);
         storage.child = 1;
         make_directory(vec![root_entry, storage]);
     }
 
     #[test]
     #[should_panic(
-        expected = "Malformed directory (wrong object type for root entry: 1)"
+        expected = "Malformed directory (root entry has object type Storage)"
     )]
     fn root_has_wrong_type() {
         let mut root_entry = DirEntry::empty_root_entry();
-        root_entry.obj_type = consts::OBJ_TYPE_STORAGE;
+        root_entry.obj_type = ObjType::Storage;
         make_directory(vec![root_entry]);
     }
 
     #[test]
     #[should_panic(
-        expected = "Malformed directory (wrong object type for non-root \
-                    entry: 5)"
+        expected = "Malformed directory (non-root entry with object type Root)"
     )]
     fn nonroot_has_wrong_type() {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
-        let storage = DirEntry::new("foo", consts::OBJ_TYPE_ROOT, 0);
+        let storage = DirEntry::new("foo", ObjType::Root, 0);
         make_directory(vec![root_entry, storage]);
     }
 
@@ -609,10 +607,10 @@ mod tests {
     fn two_red_nodes_in_a_row() {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
-        let mut storage1 = DirEntry::new("foo", consts::OBJ_TYPE_STORAGE, 0);
+        let mut storage1 = DirEntry::new("foo", ObjType::Storage, 0);
         storage1.color = Color::Red;
         storage1.left_sibling = 2;
-        let mut storage2 = DirEntry::new("bar", consts::OBJ_TYPE_STORAGE, 0);
+        let mut storage2 = DirEntry::new("bar", ObjType::Storage, 0);
         storage2.color = Color::Red;
         make_directory(vec![root_entry, storage1, storage2]);
     }

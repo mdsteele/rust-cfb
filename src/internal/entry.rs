@@ -1,4 +1,4 @@
-use crate::internal::{self, consts, DirEntry};
+use crate::internal::{self, consts, DirEntry, ObjType};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use uuid::Uuid;
@@ -10,7 +10,7 @@ use uuid::Uuid;
 pub struct Entry {
     name: String,
     path: PathBuf,
-    obj_type: u8,
+    obj_type: ObjType,
     clsid: Uuid,
     state_bits: u32,
     creation_time: u64,
@@ -45,20 +45,19 @@ impl Entry {
     /// Returns whether this entry is for a stream object (i.e. a "file" within
     /// the compound file).
     pub fn is_stream(&self) -> bool {
-        self.obj_type == consts::OBJ_TYPE_STREAM
+        self.obj_type == ObjType::Stream
     }
 
     /// Returns whether this entry is for a storage object (i.e. a "directory"
     /// within the compound file), either the root or a nested storage.
     pub fn is_storage(&self) -> bool {
-        self.obj_type == consts::OBJ_TYPE_STORAGE
-            || self.obj_type == consts::OBJ_TYPE_ROOT
+        self.obj_type == ObjType::Storage || self.obj_type == ObjType::Root
     }
 
     /// Returns whether this entry is specifically for the root storage object
     /// of the compound file.
     pub fn is_root(&self) -> bool {
-        self.obj_type == consts::OBJ_TYPE_ROOT
+        self.obj_type == ObjType::Root
     }
 
     /// Returns the size, in bytes, of the stream that this metadata is for.
@@ -127,7 +126,7 @@ impl<'a> Entries<'a> {
     }
 
     fn join_path(parent_path: &Path, dir_entry: &DirEntry) -> PathBuf {
-        if dir_entry.obj_type == consts::OBJ_TYPE_ROOT {
+        if dir_entry.obj_type == ObjType::Root {
             parent_path.to_path_buf()
         } else {
             parent_path.join(&dir_entry.name)
@@ -154,7 +153,7 @@ impl<'a> Iterator for Entries<'a> {
                 self.stack_left_spine(&parent, dir_entry.right_sibling);
             }
             if self.order == EntriesOrder::Preorder
-                && dir_entry.obj_type != consts::OBJ_TYPE_STREAM
+                && dir_entry.obj_type != ObjType::Stream
                 && dir_entry.child != consts::NO_STREAM
             {
                 self.stack_left_spine(&path, dir_entry.child);
@@ -171,23 +170,18 @@ impl<'a> Iterator for Entries<'a> {
 #[cfg(test)]
 mod tests {
     use super::{Entries, EntriesOrder, Entry};
-    use crate::internal::consts::{
-        NO_STREAM, OBJ_TYPE_ROOT, OBJ_TYPE_STORAGE, OBJ_TYPE_STREAM,
-        ROOT_DIR_NAME,
-    };
-    use crate::internal::DirEntry;
+    use crate::internal::consts::{NO_STREAM, ROOT_DIR_NAME};
+    use crate::internal::{DirEntry, ObjType};
     use std::path::PathBuf;
 
     fn make_entry(
         name: &str,
-        obj_type: u8,
+        obj_type: ObjType,
         left: u32,
         child: u32,
         right: u32,
     ) -> DirEntry {
-        let mut dir_entry = DirEntry::unallocated();
-        dir_entry.name = name.to_string();
-        dir_entry.obj_type = obj_type;
+        let mut dir_entry = DirEntry::new(name, obj_type, 0);
         dir_entry.left_sibling = left;
         dir_entry.child = child;
         dir_entry.right_sibling = right;
@@ -204,16 +198,16 @@ mod tests {
         //   \
         //    2
         vec![
-            make_entry(ROOT_DIR_NAME, OBJ_TYPE_ROOT, NO_STREAM, 5, NO_STREAM),
-            make_entry("1", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, 2),
-            make_entry("2", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, NO_STREAM),
-            make_entry("3", OBJ_TYPE_STORAGE, 1, 8, 4),
-            make_entry("4", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, NO_STREAM),
-            make_entry("5", OBJ_TYPE_STREAM, 3, NO_STREAM, 6),
-            make_entry("6", OBJ_TYPE_STORAGE, NO_STREAM, NO_STREAM, NO_STREAM),
-            make_entry("7", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, NO_STREAM),
-            make_entry("8", OBJ_TYPE_STREAM, 7, NO_STREAM, 9),
-            make_entry("9", OBJ_TYPE_STREAM, NO_STREAM, NO_STREAM, NO_STREAM),
+            make_entry(ROOT_DIR_NAME, ObjType::Root, NO_STREAM, 5, NO_STREAM),
+            make_entry("1", ObjType::Stream, NO_STREAM, NO_STREAM, 2),
+            make_entry("2", ObjType::Stream, NO_STREAM, NO_STREAM, NO_STREAM),
+            make_entry("3", ObjType::Storage, 1, 8, 4),
+            make_entry("4", ObjType::Stream, NO_STREAM, NO_STREAM, NO_STREAM),
+            make_entry("5", ObjType::Stream, 3, NO_STREAM, 6),
+            make_entry("6", ObjType::Storage, NO_STREAM, NO_STREAM, NO_STREAM),
+            make_entry("7", ObjType::Stream, NO_STREAM, NO_STREAM, NO_STREAM),
+            make_entry("8", ObjType::Stream, 7, NO_STREAM, 9),
+            make_entry("9", ObjType::Stream, NO_STREAM, NO_STREAM, NO_STREAM),
         ]
     }
 

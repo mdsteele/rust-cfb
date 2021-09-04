@@ -1,5 +1,5 @@
 use crate::internal::consts::{self, MAX_REGULAR_STREAM_ID, NO_STREAM};
-use crate::internal::{self, Color, Version};
+use crate::internal::{self, Color, ObjType, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Write};
 use uuid::Uuid;
@@ -19,7 +19,7 @@ macro_rules! malformed {
 #[derive(Clone)]
 pub struct DirEntry {
     pub name: String,
-    pub obj_type: u8,
+    pub obj_type: ObjType,
     pub color: Color,
     pub left_sibling: u32,
     pub right_sibling: u32,
@@ -33,12 +33,8 @@ pub struct DirEntry {
 }
 
 impl DirEntry {
-    pub fn new(name: &str, obj_type: u8, timestamp: u64) -> DirEntry {
-        debug_assert!(
-            obj_type == consts::OBJ_TYPE_STORAGE
-                || obj_type == consts::OBJ_TYPE_STREAM
-                || obj_type == consts::OBJ_TYPE_ROOT
-        );
+    pub fn new(name: &str, obj_type: ObjType, timestamp: u64) -> DirEntry {
+        debug_assert_ne!(obj_type, ObjType::Unallocated);
         DirEntry {
             name: name.to_string(),
             obj_type,
@@ -50,7 +46,7 @@ impl DirEntry {
             state_bits: 0,
             creation_time: timestamp,
             modified_time: timestamp,
-            start_sector: if obj_type == consts::OBJ_TYPE_STORAGE {
+            start_sector: if obj_type == ObjType::Storage {
                 // According to the MS-CFB spec section 2.6.3, the starting
                 // sector should be set to zero for storage entries.
                 0
@@ -67,7 +63,7 @@ impl DirEntry {
         // fields, which must be NO_STREAM.
         DirEntry {
             name: String::new(),
-            obj_type: consts::OBJ_TYPE_UNALLOCATED,
+            obj_type: ObjType::Unallocated,
             color: Color::Red,
             left_sibling: NO_STREAM,
             right_sibling: NO_STREAM,
@@ -82,7 +78,7 @@ impl DirEntry {
     }
 
     pub fn empty_root_entry() -> DirEntry {
-        DirEntry::new(consts::ROOT_DIR_NAME, consts::OBJ_TYPE_ROOT, 0)
+        DirEntry::new(consts::ROOT_DIR_NAME, ObjType::Root, 0)
     }
 
     pub fn read_clsid<R: Read>(reader: &mut R) -> io::Result<Uuid> {
@@ -136,14 +132,13 @@ impl DirEntry {
             }
         };
         internal::path::validate_name(&name)?;
-        let obj_type = reader.read_u8()?;
-        if obj_type != consts::OBJ_TYPE_UNALLOCATED
-            && obj_type != consts::OBJ_TYPE_STORAGE
-            && obj_type != consts::OBJ_TYPE_STREAM
-            && obj_type != consts::OBJ_TYPE_ROOT
-        {
-            malformed!("invalid object type: {}", obj_type);
-        }
+        let obj_type = {
+            let obj_type_byte = reader.read_u8()?;
+            match ObjType::from_byte(obj_type_byte) {
+                Some(obj_type) => obj_type,
+                None => malformed!("invalid object type: {}", obj_type_byte),
+            }
+        };
         let color = {
             let color_byte = reader.read_u8()?;
             match Color::from_byte(color_byte) {
@@ -162,14 +157,14 @@ impl DirEntry {
         }
         let child = reader.read_u32::<LittleEndian>()?;
         if child != NO_STREAM {
-            if obj_type == consts::OBJ_TYPE_STREAM {
+            if obj_type == ObjType::Stream {
                 malformed!("non-empty stream child: {}", child);
             } else if child > MAX_REGULAR_STREAM_ID {
                 malformed!("invalid child: {}", child);
             }
         }
         let clsid = DirEntry::read_clsid(reader)?;
-        if obj_type == consts::OBJ_TYPE_STREAM && !clsid.is_nil() {
+        if obj_type == ObjType::Stream && !clsid.is_nil() {
             malformed!("non-null stream CLSID: {:?}", clsid);
         }
         let state_bits = reader.read_u32::<LittleEndian>()?;
@@ -180,16 +175,16 @@ impl DirEntry {
         // According to the MS-CFB spec section 2.6.3, the starting sector
         // should be set to zero for storage entries.  However, some CFB
         // implementations use FREE_SECTOR or END_OF_CHAIN instead.
-        if obj_type == consts::OBJ_TYPE_STORAGE
+        if obj_type == ObjType::Storage
             && !(start_sector == 0
                 || start_sector == consts::FREE_SECTOR
                 || start_sector == consts::END_OF_CHAIN)
         {
-            malformed!("invalid start sector: {:x}", start_sector);
+            malformed!("invalid storage start sector: 0x{:x}", start_sector);
         }
         let stream_len =
             reader.read_u64::<LittleEndian>()? & version.stream_len_mask();
-        if obj_type == consts::OBJ_TYPE_STORAGE && stream_len != 0 {
+        if obj_type == ObjType::Storage && stream_len != 0 {
             malformed!("non-zero storage stream length: {}", stream_len);
         }
         Ok(DirEntry {
@@ -219,7 +214,7 @@ impl DirEntry {
             writer.write_u16::<LittleEndian>(0)?;
         }
         writer.write_u16::<LittleEndian>((name_utf16.len() as u16 + 1) * 2)?;
-        writer.write_u8(self.obj_type)?;
+        writer.write_u8(self.obj_type.as_byte())?;
         writer.write_u8(self.color.as_byte())?;
         writer.write_u32::<LittleEndian>(self.left_sibling)?;
         writer.write_u32::<LittleEndian>(self.right_sibling)?;
@@ -239,7 +234,7 @@ impl DirEntry {
 #[cfg(test)]
 mod tests {
     use super::DirEntry;
-    use crate::internal::{consts, Color, Version};
+    use crate::internal::{consts, Color, ObjType, Version};
     use uuid::Uuid;
 
     #[test]
@@ -266,7 +261,7 @@ mod tests {
         let dir_entry =
             DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
         assert_eq!(&dir_entry.name, "Foobar");
-        assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STORAGE);
+        assert_eq!(dir_entry.obj_type, ObjType::Storage);
         assert_eq!(dir_entry.color, Color::Black);
         assert_eq!(dir_entry.left_sibling, 12);
         assert_eq!(dir_entry.right_sibling, 34);
@@ -306,7 +301,7 @@ mod tests {
         let dir_entry =
             DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
         assert_eq!(&dir_entry.name, "Foobar");
-        assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STORAGE);
+        assert_eq!(dir_entry.obj_type, ObjType::Storage);
         assert_eq!(dir_entry.color, Color::Black);
         assert_eq!(dir_entry.left_sibling, 12);
         assert_eq!(dir_entry.right_sibling, 34);

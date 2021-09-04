@@ -47,7 +47,8 @@
 
 use crate::internal::consts::{self, NO_STREAM};
 use crate::internal::{
-    Allocator, DirEntry, Directory, Header, Sector, SectorInit, Sectors,
+    Allocator, DirEntry, Directory, Header, ObjType, Sector, SectorInit,
+    Sectors,
 };
 pub use crate::internal::{Entries, Entry, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -173,7 +174,7 @@ impl<F> CompoundFile<F> {
             Ok(names) => match self.stream_id_for_name_chain(&names) {
                 Some(stream_id) => {
                     self.directory.dir_entry(stream_id).obj_type
-                        == consts::OBJ_TYPE_STREAM
+                        == ObjType::Stream
                 }
                 None => false,
             },
@@ -188,7 +189,7 @@ impl<F> CompoundFile<F> {
             Ok(names) => match self.stream_id_for_name_chain(&names) {
                 Some(stream_id) => {
                     self.directory.dir_entry(stream_id).obj_type
-                        != consts::OBJ_TYPE_STREAM
+                        != ObjType::Stream
                 }
                 None => false,
             },
@@ -281,9 +282,7 @@ impl<F: Seek> CompoundFile<F> {
             Some(stream_id) => stream_id,
             None => not_found!("No such stream: {:?}", path),
         };
-        if self.directory.dir_entry(stream_id).obj_type
-            != consts::OBJ_TYPE_STREAM
-        {
+        if self.directory.dir_entry(stream_id).obj_type != ObjType::Stream {
             invalid_input!("Not a stream: {:?}", path);
         }
         Ok(Stream::new(self, stream_id))
@@ -482,7 +481,7 @@ impl<F: Read + Seek> CompoundFile<F> {
     ) -> io::Result<usize> {
         let (start_sector, stream_len) = {
             let dir_entry = self.directory.dir_entry(stream_id);
-            debug_assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STREAM);
+            debug_assert_eq!(dir_entry.obj_type, ObjType::Stream);
             (dir_entry.start_sector, dir_entry.stream_len)
         };
         let num_bytes = if buf_offset_from_start >= stream_len {
@@ -589,8 +588,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
             let path = internal::path::path_from_name_chain(&names);
-            if self.directory.dir_entry(stream_id).obj_type
-                != consts::OBJ_TYPE_STREAM
+            if self.directory.dir_entry(stream_id).obj_type != ObjType::Stream
             {
                 already_exists!(
                     "Cannot create storage at {:?} because a \
@@ -615,11 +613,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 not_found!("Parent storage doesn't exist");
             }
         };
-        self.directory.insert_dir_entry(
-            parent_id,
-            name,
-            consts::OBJ_TYPE_STORAGE,
-        )?;
+        self.directory.insert_dir_entry(parent_id, name, ObjType::Storage)?;
         Ok(())
     }
 
@@ -662,13 +656,13 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         };
         {
             let dir_entry = self.directory.dir_entry(stream_id);
-            if dir_entry.obj_type == consts::OBJ_TYPE_ROOT {
+            if dir_entry.obj_type == ObjType::Root {
                 invalid_input!("Cannot remove the root storage object");
             }
-            if dir_entry.obj_type == consts::OBJ_TYPE_STREAM {
+            if dir_entry.obj_type == ObjType::Stream {
                 invalid_input!("Not a storage: {:?}", path);
             }
-            debug_assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STORAGE);
+            debug_assert_eq!(dir_entry.obj_type, ObjType::Storage);
             if dir_entry.child != NO_STREAM {
                 invalid_input!("Storage is not empty: {:?}", path);
             }
@@ -729,9 +723,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 internal::path::path_from_name_chain(&names)
             ),
         };
-        if self.directory.dir_entry(stream_id).obj_type
-            == consts::OBJ_TYPE_STREAM
-        {
+        if self.directory.dir_entry(stream_id).obj_type == ObjType::Stream {
             invalid_input!(
                 "Not a storage: {:?}",
                 internal::path::path_from_name_chain(&names)
@@ -769,8 +761,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     ) -> io::Result<Stream<F>> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
-            if self.directory.dir_entry(stream_id).obj_type
-                != consts::OBJ_TYPE_STREAM
+            if self.directory.dir_entry(stream_id).obj_type != ObjType::Stream
             {
                 already_exists!(
                     "Cannot create stream at {:?} because a \
@@ -802,7 +793,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         let new_stream_id = self.directory.insert_dir_entry(
             parent_id,
             name,
-            consts::OBJ_TYPE_STREAM,
+            ObjType::Stream,
         )?;
         return Ok(Stream::new(self, new_stream_id));
     }
@@ -823,7 +814,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         };
         let (start_sector_id, is_in_mini_stream) = {
             let dir_entry = self.directory.dir_entry(stream_id);
-            if dir_entry.obj_type != consts::OBJ_TYPE_STREAM {
+            if dir_entry.obj_type != ObjType::Stream {
                 invalid_input!("Not a stream: {:?}", path);
             }
             debug_assert_eq!(dir_entry.child, NO_STREAM);
@@ -889,7 +880,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         if stream_id != consts::ROOT_STREAM_ID {
             debug_assert_ne!(
                 self.directory.dir_entry(stream_id).obj_type,
-                consts::OBJ_TYPE_ROOT
+                ObjType::Root
             );
             self.directory.with_dir_entry_mut(stream_id, |dir_entry| {
                 dir_entry.modified_time = internal::time::current_timestamp();
@@ -1064,7 +1055,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     ) -> io::Result<()> {
         let (old_start_sector, old_stream_len) = {
             let dir_entry = self.directory.dir_entry(stream_id);
-            debug_assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STREAM);
+            debug_assert_eq!(dir_entry.obj_type, ObjType::Stream);
             (dir_entry.start_sector, dir_entry.stream_len)
         };
         debug_assert!(buf_offset_from_start <= old_stream_len);
@@ -1152,7 +1143,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     ) -> io::Result<()> {
         let (old_start_sector, old_stream_len) = {
             let dir_entry = self.directory.dir_entry(stream_id);
-            debug_assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STREAM);
+            debug_assert_eq!(dir_entry.obj_type, ObjType::Stream);
             (dir_entry.start_sector, dir_entry.stream_len)
         };
         let new_start_sector = if old_start_sector == consts::END_OF_CHAIN {
