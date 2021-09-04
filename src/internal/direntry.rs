@@ -33,6 +33,34 @@ pub struct DirEntry {
 }
 
 impl DirEntry {
+    pub fn new(name: &str, obj_type: u8, timestamp: u64) -> DirEntry {
+        debug_assert!(
+            obj_type == consts::OBJ_TYPE_STORAGE
+                || obj_type == consts::OBJ_TYPE_STREAM
+                || obj_type == consts::OBJ_TYPE_ROOT
+        );
+        DirEntry {
+            name: name.to_string(),
+            obj_type,
+            color: consts::COLOR_BLACK,
+            left_sibling: consts::NO_STREAM,
+            right_sibling: consts::NO_STREAM,
+            child: consts::NO_STREAM,
+            clsid: Uuid::nil(),
+            state_bits: 0,
+            creation_time: timestamp,
+            modified_time: timestamp,
+            start_sector: if obj_type == consts::OBJ_TYPE_STORAGE {
+                // According to the MS-CFB spec section 2.6.3, the starting
+                // sector should be set to zero for storage entries.
+                0
+            } else {
+                consts::END_OF_CHAIN
+            },
+            stream_len: 0,
+        }
+    }
+
     pub fn unallocated() -> DirEntry {
         DirEntry {
             name: String::new(),
@@ -51,20 +79,7 @@ impl DirEntry {
     }
 
     pub fn empty_root_entry() -> DirEntry {
-        DirEntry {
-            name: consts::ROOT_DIR_NAME.to_string(),
-            obj_type: consts::OBJ_TYPE_ROOT,
-            color: consts::COLOR_BLACK,
-            left_sibling: NO_STREAM,
-            right_sibling: NO_STREAM,
-            child: NO_STREAM,
-            clsid: Uuid::nil(),
-            state_bits: 0,
-            creation_time: 0,
-            modified_time: 0,
-            start_sector: consts::END_OF_CHAIN,
-            stream_len: 0,
-        }
+        DirEntry::new(consts::ROOT_DIR_NAME, consts::OBJ_TYPE_ROOT, 0)
     }
 
     pub fn read_clsid<R: Read>(reader: &mut R) -> io::Result<Uuid> {
@@ -156,12 +171,13 @@ impl DirEntry {
         let modified_time = reader.read_u64::<LittleEndian>()?;
         let start_sector = reader.read_u32::<LittleEndian>()?;
 
-        // Spec say this is suppose to be zero for DirEntries
-        // but some cfb implementations set start_sector to FREE_SECTOR instead
-        // and other cfb implementation set start_sector to END_OF_CHAIN
+        // According to the MS-CFB spec section 2.6.3, the starting sector
+        // should be set to zero for storage entries.  However, some CFB
+        // implementations use FREE_SECTOR or END_OF_CHAIN instead.
         if obj_type == consts::OBJ_TYPE_STORAGE
-            && !(start_sector == 0 || start_sector == consts::FREE_SECTOR
-            || start_sector == consts::END_OF_CHAIN)
+            && !(start_sector == 0
+                || start_sector == consts::FREE_SECTOR
+                || start_sector == consts::END_OF_CHAIN)
         {
             malformed!("invalid start sector: {:x}", start_sector);
         }
@@ -259,7 +275,6 @@ mod tests {
         assert_eq!(dir_entry.modified_time, 0);
         assert_eq!(dir_entry.start_sector, consts::END_OF_CHAIN);
         assert_eq!(dir_entry.stream_len, 0);
-
     }
 
     #[test]

@@ -7,7 +7,6 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
-use uuid::Uuid;
 
 //===========================================================================//
 
@@ -142,11 +141,6 @@ impl<F> Directory<F> {
     }
 
     fn validate(&self) -> io::Result<()> {
-        // Note: The MS-CFB spec says that root entries MUST be colored black,
-        // but apparently some implementations don't actually do this (see
-        // https://social.msdn.microsoft.com/Forums/sqlserver/en-US/
-        // 9290d877-d91f-4509-ace9-cb4575c48514/red-black-tree-in-mscfb).  So
-        // we don't complain if the root is red.
         let root_entry = self.root_dir_entry();
         if root_entry.name != consts::ROOT_DIR_NAME {
             malformed!(
@@ -312,28 +306,14 @@ impl<F: Write + Seek> Directory<F> {
         name: &str,
         obj_type: u8,
     ) -> io::Result<u32> {
-        debug_assert_ne!(obj_type, consts::OBJ_TYPE_UNALLOCATED);
+        debug_assert!(
+            obj_type == consts::OBJ_TYPE_STORAGE
+                || obj_type == consts::OBJ_TYPE_STREAM
+        );
         // Create a new directory entry.
         let stream_id = self.allocate_dir_entry()?;
         let now = internal::time::current_timestamp();
-        *self.dir_entry_mut(stream_id) = DirEntry {
-            name: name.to_string(),
-            obj_type,
-            color: consts::COLOR_BLACK,
-            left_sibling: consts::NO_STREAM,
-            right_sibling: consts::NO_STREAM,
-            child: consts::NO_STREAM,
-            clsid: Uuid::nil(),
-            state_bits: 0,
-            creation_time: now,
-            modified_time: now,
-            start_sector: if obj_type == consts::OBJ_TYPE_STREAM {
-                consts::END_OF_CHAIN
-            } else {
-                0
-            },
-            stream_len: 0,
-        };
+        *self.dir_entry_mut(stream_id) = DirEntry::new(name, obj_type, now);
 
         // Insert the new entry into the tree.
         let mut sibling_id = self.dir_entry(parent_id).child;
@@ -532,6 +512,107 @@ impl<F: Write + Seek> Directory<F> {
     /// Flushes all changes to the underlying file.
     pub fn flush(&mut self) -> io::Result<()> {
         self.allocator.flush()
+    }
+}
+
+//===========================================================================//
+
+#[cfg(test)]
+mod tests {
+    use super::Directory;
+    use crate::internal::{consts, Allocator, DirEntry, Sectors, Version};
+    use std::io::Cursor;
+
+    fn make_directory(entries: Vec<DirEntry>) -> Directory<Cursor<Vec<u8>>> {
+        let version = Version::V3;
+        let num_sectors = 3;
+        let data_len = (1 + num_sectors) * version.sector_len();
+        let cursor = Cursor::new(vec![0; data_len]);
+        let sectors = Sectors::new(version, data_len as u64, cursor);
+        let mut fat = vec![consts::END_OF_CHAIN; num_sectors];
+        fat[0] = consts::FAT_SECTOR;
+        let allocator = Allocator::new(sectors, vec![], vec![0], fat).unwrap();
+        Directory::new(allocator, entries, 1).unwrap()
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory (root entry name is \\\"foo\\\", but \
+                    should be \\\"Root Entry\\\")"
+    )]
+    fn incorrect_root_entry_name() {
+        let mut root_entry = DirEntry::empty_root_entry();
+        root_entry.name = "foo".to_string();
+        make_directory(vec![root_entry]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory (root stream len is 147, but should \
+                    be multiple of 64)"
+    )]
+    fn invalid_mini_stream_len() {
+        let mut root_entry = DirEntry::empty_root_entry();
+        root_entry.start_sector = 2;
+        root_entry.stream_len = 147;
+        make_directory(vec![root_entry]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Malformed directory (loop in tree)")]
+    fn storage_is_child_of_itself() {
+        let mut root_entry = DirEntry::empty_root_entry();
+        root_entry.child = 1;
+        let mut storage = DirEntry::new("foo", consts::OBJ_TYPE_STORAGE, 0);
+        storage.child = 1;
+        make_directory(vec![root_entry, storage]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory (wrong object type for root entry: 1)"
+    )]
+    fn root_has_wrong_type() {
+        let mut root_entry = DirEntry::empty_root_entry();
+        root_entry.obj_type = consts::OBJ_TYPE_STORAGE;
+        make_directory(vec![root_entry]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory (wrong object type for non-root \
+                    entry: 5)"
+    )]
+    fn nonroot_has_wrong_type() {
+        let mut root_entry = DirEntry::empty_root_entry();
+        root_entry.child = 1;
+        let storage = DirEntry::new("foo", consts::OBJ_TYPE_ROOT, 0);
+        make_directory(vec![root_entry, storage]);
+    }
+
+    #[test]
+    fn tolerate_red_root() {
+        // The MS-CFB spec section 2.6.4 says the root entry MUST be colored
+        // black, but apparently some implementations don't do this (see
+        // https://social.msdn.microsoft.com/Forums/sqlserver/en-US/
+        // 9290d877-d91f-4509-ace9-cb4575c48514/red-black-tree-in-mscfb).  So
+        // we shouldn't complain if the root is red.
+        let mut root_entry = DirEntry::empty_root_entry();
+        root_entry.color = consts::COLOR_RED;
+        make_directory(vec![root_entry]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Malformed directory (two red nodes in a row)")]
+    fn two_red_nodes_in_a_row() {
+        let mut root_entry = DirEntry::empty_root_entry();
+        root_entry.child = 1;
+        let mut storage1 = DirEntry::new("foo", consts::OBJ_TYPE_STORAGE, 0);
+        storage1.color = consts::COLOR_RED;
+        storage1.left_sibling = 2;
+        let mut storage2 = DirEntry::new("bar", consts::OBJ_TYPE_STORAGE, 0);
+        storage2.color = consts::COLOR_RED;
+        make_directory(vec![root_entry, storage1, storage2]);
     }
 }
 
