@@ -140,12 +140,27 @@ impl<F> CompoundFile<F> {
         Ok(Entry::new(self.directory.dir_entry(stream_id), path))
     }
 
+    /// Returns an iterator over the entries within the root storage object.
+    /// This is equivalent to `self.read_storage("/").unwrap()` (but always
+    /// succeeds).
+    pub fn read_root_storage(&self) -> Entries {
+        self.directory.root_storage_entries()
+    }
+
     /// Returns an iterator over the entries within a storage object.
     pub fn read_storage<P: AsRef<Path>>(
         &self,
         path: P,
     ) -> io::Result<Entries> {
         self.directory.storage_entries(path.as_ref())
+    }
+
+    /// Returns an iterator over all entries within the compound file, starting
+    /// from and including the root entry.  The iterator walks the storage tree
+    /// in a preorder traversal.  This is equivalent to
+    /// `self.walk_storage("/").unwrap()` (but always succeeds).
+    pub fn walk(&self) -> Entries {
+        self.directory.walk()
     }
 
     /// Returns an iterator over all entries under a storage subtree, including

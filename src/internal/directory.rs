@@ -69,6 +69,17 @@ impl<F> Directory<F> {
         Some(stream_id)
     }
 
+    /// Returns an iterator over the entries within the root storage object.
+    pub fn root_storage_entries(&self) -> Entries {
+        let start = self.root_dir_entry().child;
+        Entries::new(
+            EntriesOrder::Nonrecursive,
+            &self.dir_entries,
+            internal::path::path_from_name_chain(&[]),
+            start,
+        )
+    }
+
     /// Returns an iterator over the entries within a storage object.
     pub fn storage_entries(&self, path: &Path) -> io::Result<Entries> {
         let names = internal::path::name_chain_from_path(path)?;
@@ -94,6 +105,18 @@ impl<F> Directory<F> {
             path,
             start,
         ))
+    }
+
+    /// Returns an iterator over all entries within the compound file, starting
+    /// from and including the root entry.  The iterator walks the storage tree
+    /// in a preorder traversal.
+    pub fn walk(&self) -> Entries {
+        Entries::new(
+            EntriesOrder::Preorder,
+            &self.dir_entries,
+            internal::path::path_from_name_chain(&[]),
+            consts::ROOT_STREAM_ID,
+        )
     }
 
     /// Returns an iterator over all entries under a storage subtree, including

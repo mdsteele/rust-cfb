@@ -4,8 +4,16 @@ use uuid::Uuid;
 
 //===========================================================================//
 
+fn read_root_storage_to_vec<F>(comp: &CompoundFile<F>) -> Vec<String> {
+    comp.read_root_storage().map(|e| e.name().to_string()).collect()
+}
+
 fn read_storage_to_vec<F>(comp: &CompoundFile<F>, path: &str) -> Vec<String> {
     comp.read_storage(path).unwrap().map(|e| e.name().to_string()).collect()
+}
+
+fn walk_to_vec<F>(comp: &CompoundFile<F>) -> Vec<String> {
+    comp.walk().map(|e| e.path().to_string_lossy().to_string()).collect()
 }
 
 fn walk_storage_to_vec<F>(comp: &CompoundFile<F>, path: &str) -> Vec<String> {
@@ -49,6 +57,7 @@ fn empty_compound_file_has_no_children() {
         .expect("create");
     assert!(comp.entry("/").unwrap().is_root());
     assert_eq!(comp.read_storage("/").unwrap().count(), 0);
+    assert_eq!(comp.read_root_storage().count(), 0);
 }
 
 #[test]
@@ -112,6 +121,7 @@ fn create_directory_tree() {
 
     let cursor = comp.into_inner();
     let comp = CompoundFile::open(cursor).expect("open");
+    assert_eq!(read_root_storage_to_vec(&comp), vec!["baz", "foo"]);
     assert_eq!(read_storage_to_vec(&comp, "/"), vec!["baz", "foo"]);
     assert_eq!(read_storage_to_vec(&comp, "/foo"), vec!["bar"]);
     assert!(read_storage_to_vec(&comp, "/baz").is_empty());
@@ -126,6 +136,10 @@ fn walk_directory_tree() {
     comp.create_stream("/baz").unwrap();
     comp.create_storage("/quux").unwrap();
     comp.create_stream("/foo/bar").unwrap();
+    assert_eq!(
+        walk_to_vec(&comp),
+        vec!["/", "/baz", "/foo", "/foo/bar", "/quux"]
+    );
     assert_eq!(
         walk_storage_to_vec(&comp, "/"),
         vec!["/", "/baz", "/foo", "/foo/bar", "/quux"]
