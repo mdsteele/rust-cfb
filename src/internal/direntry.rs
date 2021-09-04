@@ -158,10 +158,12 @@ impl DirEntry {
 
         // Spec say this is suppose to be zero for DirEntries
         // but some cfb implementations set start_sector to FREE_SECTOR instead
+        // and other cfb implementation set start_sector to END_OF_CHAIN
         if obj_type == consts::OBJ_TYPE_STORAGE
-            && !(start_sector == 0 || start_sector == consts::FREE_SECTOR)
+            && !(start_sector == 0 || start_sector == consts::FREE_SECTOR
+            || start_sector == consts::END_OF_CHAIN)
         {
-            malformed!("non-zero storage start sector: {}", start_sector);
+            malformed!("invalid start sector: {:x}", start_sector);
         }
         let stream_len =
             reader.read_u64::<LittleEndian>()? & version.stream_len_mask();
@@ -218,6 +220,47 @@ mod tests {
     use crate::internal::consts;
     use crate::internal::Version;
     use uuid::Uuid;
+
+    #[test]
+    fn parse_valid_storage_entry_with_end_of_chain_start() {
+        let input: [u8; consts::DIR_ENTRY_LEN] = [
+            // Name:
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14, 0, // name length
+            1, // obj type
+            1, // color,
+            12, 0, 0, 0, // left sibling
+            34, 0, 0, 0, // right sibling
+            56, 0, 0, 0, // child
+            0xe0, 0x85, 0x9f, 0xf2, 0xf9, 0x4f, 0x68, 0x10, // CLSID
+            0xab, 0x91, 0x08, 0x00, 0x2b, 0x27, 0xb3, 0xd9, // CLSID
+            239, 190, 173, 222, // state bits
+            0, 0, 0, 0, 0, 0, 0, 0, // created
+            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            0xfe, 0xff, 0xff, 0xff, // start sector
+            0, 0, 0, 0, 0, 0, 0, 0, // stream length
+        ];
+        let dir_entry =
+            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        assert_eq!(&dir_entry.name, "Foobar");
+        assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STORAGE);
+        assert_eq!(dir_entry.color, consts::COLOR_BLACK);
+        assert_eq!(dir_entry.left_sibling, 12);
+        assert_eq!(dir_entry.right_sibling, 34);
+        assert_eq!(dir_entry.child, 56);
+        assert_eq!(
+            dir_entry.clsid,
+            Uuid::parse_str("F29F85E0-4FF9-1068-AB91-08002B27B3D9").unwrap()
+        );
+        assert_eq!(dir_entry.state_bits, 0xdeadbeef);
+        assert_eq!(dir_entry.creation_time, 0);
+        assert_eq!(dir_entry.modified_time, 0);
+        assert_eq!(dir_entry.start_sector, consts::END_OF_CHAIN);
+        assert_eq!(dir_entry.stream_len, 0);
+
+    }
 
     #[test]
     fn parse_valid_storage_entry() {
