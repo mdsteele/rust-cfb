@@ -1,6 +1,6 @@
 use crate::internal::{
-    self, consts, Allocator, Chain, DirEntry, Entries, EntriesOrder, Sector,
-    SectorInit, Version,
+    self, consts, Allocator, Chain, Color, DirEntry, Entries, EntriesOrder,
+    Sector, SectorInit, Version,
 };
 use byteorder::{LittleEndian, WriteBytesExt};
 use std::cmp::Ordering;
@@ -179,7 +179,7 @@ impl<F> Directory<F> {
                     dir_entry.obj_type
                 );
             }
-            let node_is_red = dir_entry.color == consts::COLOR_RED;
+            let node_is_red = dir_entry.color == Color::Red;
             if parent_is_red && node_is_red {
                 malformed!("two red nodes in a row");
             }
@@ -520,7 +520,9 @@ impl<F: Write + Seek> Directory<F> {
 #[cfg(test)]
 mod tests {
     use super::Directory;
-    use crate::internal::{consts, Allocator, DirEntry, Sectors, Version};
+    use crate::internal::{
+        consts, Allocator, Color, DirEntry, Sectors, Version,
+    };
     use std::io::Cursor;
 
     fn make_directory(entries: Vec<DirEntry>) -> Directory<Cursor<Vec<u8>>> {
@@ -598,7 +600,7 @@ mod tests {
         // 9290d877-d91f-4509-ace9-cb4575c48514/red-black-tree-in-mscfb).  So
         // we shouldn't complain if the root is red.
         let mut root_entry = DirEntry::empty_root_entry();
-        root_entry.color = consts::COLOR_RED;
+        root_entry.color = Color::Red;
         make_directory(vec![root_entry]);
     }
 
@@ -608,10 +610,10 @@ mod tests {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
         let mut storage1 = DirEntry::new("foo", consts::OBJ_TYPE_STORAGE, 0);
-        storage1.color = consts::COLOR_RED;
+        storage1.color = Color::Red;
         storage1.left_sibling = 2;
         let mut storage2 = DirEntry::new("bar", consts::OBJ_TYPE_STORAGE, 0);
-        storage2.color = consts::COLOR_RED;
+        storage2.color = Color::Red;
         make_directory(vec![root_entry, storage1, storage2]);
     }
 }

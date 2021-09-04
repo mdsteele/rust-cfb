@@ -1,10 +1,10 @@
 use crate::internal::consts::{self, MAX_REGULAR_STREAM_ID, NO_STREAM};
-use crate::internal::{self, Version};
+use crate::internal::{self, Color, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Write};
 use uuid::Uuid;
 
-// ========================================================================= //
+//===========================================================================//
 
 macro_rules! malformed {
     ($e:expr) => { invalid_data!("Malformed directory entry ({})", $e) };
@@ -14,13 +14,13 @@ macro_rules! malformed {
     };
 }
 
-// ========================================================================= //
+//===========================================================================//
 
 #[derive(Clone)]
 pub struct DirEntry {
     pub name: String,
     pub obj_type: u8,
-    pub color: u8,
+    pub color: Color,
     pub left_sibling: u32,
     pub right_sibling: u32,
     pub child: u32,
@@ -42,7 +42,7 @@ impl DirEntry {
         DirEntry {
             name: name.to_string(),
             obj_type,
-            color: consts::COLOR_BLACK,
+            color: Color::Black,
             left_sibling: consts::NO_STREAM,
             right_sibling: consts::NO_STREAM,
             child: consts::NO_STREAM,
@@ -62,10 +62,13 @@ impl DirEntry {
     }
 
     pub fn unallocated() -> DirEntry {
+        // According to the MS-CFB spec section 2.6.3, unallocated directory
+        // entries must consist of all zeros except for the sibling and child
+        // fields, which must be NO_STREAM.
         DirEntry {
             name: String::new(),
             obj_type: consts::OBJ_TYPE_UNALLOCATED,
-            color: 0,
+            color: Color::Red,
             left_sibling: NO_STREAM,
             right_sibling: NO_STREAM,
             child: NO_STREAM,
@@ -141,10 +144,13 @@ impl DirEntry {
         {
             malformed!("invalid object type: {}", obj_type);
         }
-        let color = reader.read_u8()?;
-        if color != consts::COLOR_RED && color != consts::COLOR_BLACK {
-            malformed!("invalid color: {}", color);
-        }
+        let color = {
+            let color_byte = reader.read_u8()?;
+            match Color::from_byte(color_byte) {
+                Some(color) => color,
+                None => malformed!("invalid color: {}", color_byte),
+            }
+        };
         let left_sibling = reader.read_u32::<LittleEndian>()?;
         if left_sibling != NO_STREAM && left_sibling > MAX_REGULAR_STREAM_ID {
             malformed!("invalid left sibling: {}", left_sibling);
@@ -214,7 +220,7 @@ impl DirEntry {
         }
         writer.write_u16::<LittleEndian>((name_utf16.len() as u16 + 1) * 2)?;
         writer.write_u8(self.obj_type)?;
-        writer.write_u8(self.color)?;
+        writer.write_u8(self.color.as_byte())?;
         writer.write_u32::<LittleEndian>(self.left_sibling)?;
         writer.write_u32::<LittleEndian>(self.right_sibling)?;
         writer.write_u32::<LittleEndian>(self.child)?;
@@ -228,13 +234,12 @@ impl DirEntry {
     }
 }
 
-// ========================================================================= //
+//===========================================================================//
 
 #[cfg(test)]
 mod tests {
     use super::DirEntry;
-    use crate::internal::consts;
-    use crate::internal::Version;
+    use crate::internal::{consts, Color, Version};
     use uuid::Uuid;
 
     #[test]
@@ -262,7 +267,7 @@ mod tests {
             DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
         assert_eq!(&dir_entry.name, "Foobar");
         assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STORAGE);
-        assert_eq!(dir_entry.color, consts::COLOR_BLACK);
+        assert_eq!(dir_entry.color, Color::Black);
         assert_eq!(dir_entry.left_sibling, 12);
         assert_eq!(dir_entry.right_sibling, 34);
         assert_eq!(dir_entry.child, 56);
@@ -302,7 +307,7 @@ mod tests {
             DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
         assert_eq!(&dir_entry.name, "Foobar");
         assert_eq!(dir_entry.obj_type, consts::OBJ_TYPE_STORAGE);
-        assert_eq!(dir_entry.color, consts::COLOR_BLACK);
+        assert_eq!(dir_entry.color, Color::Black);
         assert_eq!(dir_entry.left_sibling, 12);
         assert_eq!(dir_entry.right_sibling, 34);
         assert_eq!(dir_entry.child, 56);
@@ -367,4 +372,4 @@ mod tests {
     }
 }
 
-// ========================================================================= //
+//===========================================================================//

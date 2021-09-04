@@ -3,6 +3,7 @@ mod macros;
 
 mod alloc;
 mod chain;
+mod color;
 pub mod consts;
 mod directory;
 mod direntry;
@@ -15,6 +16,7 @@ mod version;
 
 pub use self::alloc::Allocator;
 pub use self::chain::Chain;
+pub use self::color::Color;
 pub use self::directory::Directory;
 pub use self::direntry::DirEntry;
 pub use self::entry::{Entries, EntriesOrder, Entry};
