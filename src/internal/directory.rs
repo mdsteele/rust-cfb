@@ -148,7 +148,7 @@ impl<F> Directory<F> {
         start_sector_id: u32,
         init: SectorInit,
     ) -> Chain<F> {
-        Chain::new(&mut self.allocator, start_sector_id, init)
+        self.allocator.open_chain(start_sector_id, init)
     }
 
     pub fn root_dir_entry(&self) -> &DirEntry {
@@ -521,11 +521,8 @@ impl<F: Write + Seek> Directory<F> {
     }
 
     fn write_dir_entry(&mut self, stream_id: u32) -> io::Result<()> {
-        let mut chain = Chain::new(
-            &mut self.allocator,
-            self.dir_start_sector,
-            SectorInit::Dir,
-        );
+        let mut chain =
+            self.allocator.open_chain(self.dir_start_sector, SectorInit::Dir);
         let offset = (consts::DIR_ENTRY_LEN as u64) * (stream_id as u64);
         chain.seek(SeekFrom::Start(offset))?;
         self.dir_entries[stream_id as usize].write_to(&mut chain)

@@ -1,4 +1,4 @@
-use crate::internal::{consts, Sector, SectorInit, Sectors, Version};
+use crate::internal::{consts, Chain, Sector, SectorInit, Sectors, Version};
 use byteorder::{LittleEndian, WriteBytesExt};
 use std::collections::HashSet;
 use std::io::{self, Seek, Write};
@@ -55,6 +55,14 @@ impl<F> Allocator<F> {
 
     pub fn into_inner(self) -> F {
         self.sectors.into_inner()
+    }
+
+    pub fn open_chain(
+        &mut self,
+        start_sector_id: u32,
+        init: SectorInit,
+    ) -> Chain<F> {
+        Chain::new(self, start_sector_id, init)
     }
 
     fn validate(&self) -> io::Result<()> {
