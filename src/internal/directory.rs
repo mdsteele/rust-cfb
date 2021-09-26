@@ -1,6 +1,6 @@
 use crate::internal::{
-    self, consts, Allocator, Chain, Color, DirEntry, Entries, EntriesOrder,
-    ObjType, Sector, SectorInit, Version,
+    self, consts, Allocator, Chain, DirEntry, Entries, EntriesOrder, ObjType,
+    Sector, SectorInit, Version,
 };
 use byteorder::{LittleEndian, WriteBytesExt};
 use std::cmp::Ordering;
@@ -180,8 +180,8 @@ impl<F> Directory<F> {
             );
         }
         let mut visited = HashSet::new();
-        let mut stack = vec![(consts::ROOT_STREAM_ID, false)];
-        while let Some((stream_id, parent_is_red)) = stack.pop() {
+        let mut stack = vec![consts::ROOT_STREAM_ID];
+        while let Some(stream_id) = stack.pop() {
             if visited.contains(&stream_id) {
                 malformed!("loop in tree");
             }
@@ -201,10 +201,6 @@ impl<F> Directory<F> {
                     "non-root entry with object type {:?}",
                     dir_entry.obj_type
                 );
-            }
-            let node_is_red = dir_entry.color == Color::Red;
-            if parent_is_red && node_is_red {
-                malformed!("two red nodes in a row");
             }
             let left_sibling = dir_entry.left_sibling;
             if left_sibling != consts::NO_STREAM {
@@ -226,7 +222,7 @@ impl<F> Directory<F> {
                         entry.name
                     );
                 }
-                stack.push((left_sibling, node_is_red));
+                stack.push(left_sibling);
             }
             let right_sibling = dir_entry.right_sibling;
             if right_sibling != consts::NO_STREAM {
@@ -246,7 +242,7 @@ impl<F> Directory<F> {
                         entry.name
                     );
                 }
-                stack.push((right_sibling, node_is_red));
+                stack.push(right_sibling);
             }
             let child = dir_entry.child;
             if child != consts::NO_STREAM {
@@ -257,7 +253,7 @@ impl<F> Directory<F> {
                         self.dir_entries.len()
                     );
                 }
-                stack.push((child, false));
+                stack.push(child);
             }
         }
         Ok(())
@@ -623,8 +619,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Malformed directory (two red nodes in a row)")]
-    fn two_red_nodes_in_a_row() {
+    fn tolerate_two_red_nodes_in_a_row() {
+        // The MS-CFB spec section 2.6.4 says that two consecutive nodes in the
+        // tree MUST NOT both be red, but apparently some implementations don't
+        // obey this (see https://github.com/mdsteele/rust-cfb/issues/10).  We
+        // still want to be able to read these files, so we shouldn't complain
+        // if there are two red nodes in a row.
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
         let mut storage1 = DirEntry::new("foo", ObjType::Storage, 0);
