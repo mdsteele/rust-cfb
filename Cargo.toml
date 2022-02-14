@@ -17,3 +17,5 @@ uuid = "0.8.1"
 [dev-dependencies]
 chrono = "0.4"
 clap = "2.27"
+rand = "0.8"
+rand_pcg = "0.3"

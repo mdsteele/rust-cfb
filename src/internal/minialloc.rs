@@ -248,21 +248,22 @@ impl<F: Write + Seek> MiniAllocator<F> {
         // MiniFAT to add it, then first we need to allocate a new MiniFAT
         // sector.
         let minifat_entries_per_sector = self.directory.sector_len() / 4;
-        let num_minifat_sectors =
-            (self.minifat.len() / minifat_entries_per_sector) as u32;
         if self.minifat_start_sector == consts::END_OF_CHAIN {
             debug_assert!(self.minifat.is_empty());
-            debug_assert_eq!(num_minifat_sectors, 0);
             self.minifat_start_sector =
                 self.directory.begin_chain(SectorInit::Fat)?;
             let mut header = self.directory.seek_within_header(60)?;
             header.write_u32::<LittleEndian>(self.minifat_start_sector)?;
-            header.write_u32::<LittleEndian>(num_minifat_sectors + 1)?;
+            header.write_u32::<LittleEndian>(1)?;
         } else if self.minifat.len() % minifat_entries_per_sector == 0 {
             let start = self.minifat_start_sector;
             self.directory.extend_chain(start, SectorInit::Fat)?;
+            let num_minifat_sectors = self
+                .directory
+                .open_chain(start, SectorInit::Fat)
+                .num_sectors() as u32;
             let mut header = self.directory.seek_within_header(64)?;
-            header.write_u32::<LittleEndian>(num_minifat_sectors + 1)?;
+            header.write_u32::<LittleEndian>(num_minifat_sectors)?;
         }
         // Add a new mini sector to the end of the mini stream and return it.
         let new_mini_sector = self.minifat.len() as u32;
@@ -312,6 +313,7 @@ impl<F: Write + Seek> MiniAllocator<F> {
             self.minifat.pop();
             // TODO: Truncate MiniFAT if last MiniFAT sector is now all free.
         }
+
         if mini_stream_len != self.directory.root_dir_entry().stream_len {
             self.directory.with_root_dir_entry_mut(|dir_entry| {
                 dir_entry.stream_len = mini_stream_len;
@@ -353,8 +355,9 @@ impl<F: Write + Seek> MiniAllocator<F> {
         let mut chain = self
             .directory
             .open_chain(self.minifat_start_sector, SectorInit::Fat);
-        chain
-            .seek(SeekFrom::Start((index as u64) * size_of::<u32>() as u64))?;
+        let offset = (index as u64) * size_of::<u32>() as u64;
+        debug_assert!(chain.len() >= offset + size_of::<u32>() as u64);
+        chain.seek(SeekFrom::Start(offset))?;
         chain.write_u32::<LittleEndian>(value)?;
         if (index as usize) == self.minifat.len() {
             self.minifat.push(value);
