@@ -1,5 +1,8 @@
 use crate::internal::{consts, MiniAllocator};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::{
+    collections::HashSet,
+    io::{self, Read, Seek, SeekFrom, Write},
+};
 
 //===========================================================================//
 
@@ -15,8 +18,16 @@ impl<'a, F> MiniChain<'a, F> {
         start_sector_id: u32,
     ) -> io::Result<MiniChain<'a, F>> {
         let mut sector_ids = Vec::<u32>::new();
+        let mut seen_sector_ids = HashSet::new();
         let mut current_sector_id = start_sector_id;
         while current_sector_id != consts::END_OF_CHAIN {
+            if seen_sector_ids.contains(&current_sector_id) {
+                invalid_data!(
+                    "Minichain contained duplicate sector id {}",
+                    current_sector_id
+                );
+            }
+            seen_sector_ids.insert(current_sector_id);
             sector_ids.push(current_sector_id);
             current_sector_id =
                 minialloc.next_mini_sector(current_sector_id)?;
