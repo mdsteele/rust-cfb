@@ -390,7 +390,7 @@ impl<F: Read + Seek> CompoundFile<F> {
                     )?);
                 }
             }
-            if current_difat_sector >= fat_len as u32 {
+            if current_difat_sector as usize >= fat_len {
                 invalid_data!(
                     "DIFAT chain includes invalid fat index {}",
                     current_difat_sector
