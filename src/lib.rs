@@ -389,7 +389,7 @@ impl<F: Read + Seek> CompoundFile<F> {
                     )?);
                 }
             }
-            current_dir_sector = allocator.next(current_dir_sector);
+            current_dir_sector = allocator.next(current_dir_sector)?;
         }
 
         let mut directory =
@@ -398,7 +398,7 @@ impl<F: Read + Seek> CompoundFile<F> {
         // Read in MiniFAT.
         let minifat = {
             let mut chain = directory
-                .open_chain(header.first_minifat_sector, SectorInit::Fat);
+                .open_chain(header.first_minifat_sector, SectorInit::Fat)?;
             if header.num_minifat_sectors as usize != chain.num_sectors() {
                 invalid_data!(
                     "Incorrect MiniFAT chain length (header says {}, actual \
@@ -450,12 +450,14 @@ impl<F: Read + Seek> CompoundFile<F> {
         };
         if num_bytes > 0 {
             if stream_len < consts::MINI_STREAM_CUTOFF as u64 {
-                let mut chain = self.minialloc.open_mini_chain(start_sector);
+                let mut chain =
+                    self.minialloc.open_mini_chain(start_sector)?;
                 chain.seek(SeekFrom::Start(buf_offset_from_start))?;
                 chain.read_exact(&mut buf[..num_bytes])?;
             } else {
-                let mut chain =
-                    self.minialloc.open_chain(start_sector, SectorInit::Zero);
+                let mut chain = self
+                    .minialloc
+                    .open_chain(start_sector, SectorInit::Zero)?;
                 chain.seek(SeekFrom::Start(buf_offset_from_start))?;
                 chain.read_exact(&mut buf[..num_bytes])?;
             }
@@ -870,7 +872,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 // Case 1a: The data we're writing is small enough that it
                 // should be placed into a new mini chain.
                 let mut chain =
-                    self.minialloc.open_mini_chain(consts::END_OF_CHAIN);
+                    self.minialloc.open_mini_chain(consts::END_OF_CHAIN)?;
                 chain.write_all(buf)?;
                 chain.start_sector_id()
             } else {
@@ -878,7 +880,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 // should be placed into a new regular chain.
                 let mut chain = self
                     .minialloc
-                    .open_chain(consts::END_OF_CHAIN, SectorInit::Zero);
+                    .open_chain(consts::END_OF_CHAIN, SectorInit::Zero)?;
                 chain.write_all(buf)?;
                 chain.start_sector_id()
             }
@@ -889,7 +891,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 // enough to stay in the mini stream.  Therefore, we should
                 // write into this stream's existing mini chain.
                 let mut chain =
-                    self.minialloc.open_mini_chain(old_start_sector);
+                    self.minialloc.open_mini_chain(old_start_sector)?;
                 chain.seek(SeekFrom::Start(buf_offset_from_start))?;
                 chain.write_all(buf)?;
                 debug_assert_eq!(chain.start_sector_id(), old_start_sector);
@@ -903,12 +905,12 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 );
                 let mut tmp = vec![0u8; buf_offset_from_start as usize];
                 let mut chain =
-                    self.minialloc.open_mini_chain(old_start_sector);
+                    self.minialloc.open_mini_chain(old_start_sector)?;
                 chain.read_exact(&mut tmp)?;
                 chain.free()?;
                 let mut chain = self
                     .minialloc
-                    .open_chain(consts::END_OF_CHAIN, SectorInit::Zero);
+                    .open_chain(consts::END_OF_CHAIN, SectorInit::Zero)?;
                 chain.write_all(&tmp)?;
                 chain.write_all(buf)?;
                 chain.start_sector_id()
@@ -919,8 +921,9 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             // stream.  Therefore, we should write into this stream's existing
             // chain.
             debug_assert!(new_stream_len >= consts::MINI_STREAM_CUTOFF as u64);
-            let mut chain =
-                self.minialloc.open_chain(old_start_sector, SectorInit::Zero);
+            let mut chain = self
+                .minialloc
+                .open_chain(old_start_sector, SectorInit::Zero)?;
             chain.seek(SeekFrom::Start(buf_offset_from_start))?;
             chain.write_all(buf)?;
             debug_assert_eq!(chain.start_sector_id(), old_start_sector);
@@ -955,7 +958,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 // Case 1a: The new length is small enough that it should be
                 // placed into a new mini chain.
                 let mut chain =
-                    self.minialloc.open_mini_chain(consts::END_OF_CHAIN);
+                    self.minialloc.open_mini_chain(consts::END_OF_CHAIN)?;
                 chain.set_len(new_stream_len)?;
                 chain.start_sector_id()
             } else {
@@ -963,7 +966,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 // placed into a new regular chain.
                 let mut chain = self
                     .minialloc
-                    .open_chain(consts::END_OF_CHAIN, SectorInit::Zero);
+                    .open_chain(consts::END_OF_CHAIN, SectorInit::Zero)?;
                 chain.set_len(new_stream_len)?;
                 chain.start_sector_id()
             }
@@ -979,7 +982,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 // mini chain.  Therefore, we just need to adjust the length of
                 // the existing chain.
                 let mut chain =
-                    self.minialloc.open_mini_chain(old_start_sector);
+                    self.minialloc.open_mini_chain(old_start_sector)?;
                 chain.set_len(new_stream_len)?;
                 debug_assert_eq!(chain.start_sector_id(), old_start_sector);
                 old_start_sector
@@ -989,12 +992,12 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 // chain.
                 let mut tmp = vec![0u8; old_stream_len as usize];
                 let mut chain =
-                    self.minialloc.open_mini_chain(old_start_sector);
+                    self.minialloc.open_mini_chain(old_start_sector)?;
                 chain.read_exact(&mut tmp)?;
                 chain.free()?;
                 let mut chain = self
                     .minialloc
-                    .open_chain(consts::END_OF_CHAIN, SectorInit::Zero);
+                    .open_chain(consts::END_OF_CHAIN, SectorInit::Zero)?;
                 chain.write_all(&tmp)?;
                 chain.set_len(new_stream_len)?;
                 chain.start_sector_id()
@@ -1013,11 +1016,11 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 let mut tmp = vec![0u8; new_stream_len as usize];
                 let mut chain = self
                     .minialloc
-                    .open_chain(old_start_sector, SectorInit::Zero);
+                    .open_chain(old_start_sector, SectorInit::Zero)?;
                 chain.read_exact(&mut tmp)?;
                 chain.free()?;
                 let mut chain =
-                    self.minialloc.open_mini_chain(consts::END_OF_CHAIN);
+                    self.minialloc.open_mini_chain(consts::END_OF_CHAIN)?;
                 chain.write_all(&tmp)?;
                 chain.start_sector_id()
             } else {
@@ -1026,7 +1029,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 // existing chain.
                 let mut chain = self
                     .minialloc
-                    .open_chain(old_start_sector, SectorInit::Zero);
+                    .open_chain(old_start_sector, SectorInit::Zero)?;
                 chain.set_len(new_stream_len)?;
                 debug_assert_eq!(chain.start_sector_id(), old_start_sector);
                 old_start_sector

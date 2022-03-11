@@ -16,14 +16,14 @@ impl<'a, F> Chain<'a, F> {
         allocator: &'a mut Allocator<F>,
         start_sector_id: u32,
         init: SectorInit,
-    ) -> Chain<'a, F> {
+    ) -> io::Result<Chain<'a, F>> {
         let mut sector_ids = Vec::<u32>::new();
         let mut current_sector_id = start_sector_id;
         while current_sector_id != consts::END_OF_CHAIN {
             sector_ids.push(current_sector_id);
-            current_sector_id = allocator.next(current_sector_id);
+            current_sector_id = allocator.next(current_sector_id)?;
         }
-        Chain { allocator, init, sector_ids, offset_from_start: 0 }
+        Ok(Chain { allocator, init, sector_ids, offset_from_start: 0 })
     }
 
     pub fn start_sector_id(&self) -> u32 {

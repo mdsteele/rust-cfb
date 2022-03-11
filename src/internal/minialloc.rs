@@ -43,13 +43,23 @@ impl<F> MiniAllocator<F> {
         self.directory.version()
     }
 
-    pub fn next_mini_sector(&self, sector_id: u32) -> u32 {
-        let next_id = self.minifat[sector_id as usize];
+    pub fn next_mini_sector(&self, sector_id: u32) -> io::Result<u32> {
+        let index = sector_id as usize;
+        if index >= self.minifat.len() {
+            invalid_data!(
+                "Found reference to mini sector {}, but MiniFAT has only {} \
+                 entries",
+                index,
+                self.minifat.len()
+            );
+        }
+        let next_id = self.minifat[index];
         debug_assert!(
-            next_id <= consts::MAX_REGULAR_SECTOR
-                || next_id == consts::END_OF_CHAIN
+            next_id == consts::END_OF_CHAIN
+                || (next_id <= consts::MAX_REGULAR_SECTOR
+                    && (next_id as usize) < self.minifat.len())
         );
-        next_id
+        Ok(next_id)
     }
 
     pub fn into_inner(self) -> F {
@@ -88,11 +98,14 @@ impl<F> MiniAllocator<F> {
         &mut self,
         start_sector_id: u32,
         init: SectorInit,
-    ) -> Chain<F> {
+    ) -> io::Result<Chain<F>> {
         self.directory.open_chain(start_sector_id, init)
     }
 
-    pub fn open_mini_chain(&mut self, start_sector_id: u32) -> MiniChain<F> {
+    pub fn open_mini_chain(
+        &mut self,
+        start_sector_id: u32,
+    ) -> io::Result<MiniChain<F>> {
         MiniChain::new(self, start_sector_id)
     }
 
@@ -156,7 +169,7 @@ impl<F: Seek> MiniAllocator<F> {
             self.directory.root_dir_entry().start_sector;
         let chain = self
             .directory
-            .open_chain(mini_stream_start_sector, SectorInit::Fat);
+            .open_chain(mini_stream_start_sector, SectorInit::Fat)?;
         chain.into_subsector(
             mini_sector,
             consts::MINI_SECTOR_LEN,
@@ -260,7 +273,7 @@ impl<F: Write + Seek> MiniAllocator<F> {
             self.directory.extend_chain(start, SectorInit::Fat)?;
             let num_minifat_sectors = self
                 .directory
-                .open_chain(start, SectorInit::Fat)
+                .open_chain(start, SectorInit::Fat)?
                 .num_sectors() as u32;
             let mut header = self.directory.seek_within_header(64)?;
             header.write_u32::<LittleEndian>(num_minifat_sectors)?;
@@ -354,7 +367,7 @@ impl<F: Write + Seek> MiniAllocator<F> {
         debug_assert!(index as usize <= self.minifat.len());
         let mut chain = self
             .directory
-            .open_chain(self.minifat_start_sector, SectorInit::Fat);
+            .open_chain(self.minifat_start_sector, SectorInit::Fat)?;
         let offset = (index as u64) * size_of::<u32>() as u64;
         debug_assert!(chain.len() >= offset + size_of::<u32>() as u64);
         chain.seek(SeekFrom::Start(offset))?;

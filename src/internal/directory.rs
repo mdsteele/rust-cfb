@@ -147,7 +147,7 @@ impl<F> Directory<F> {
         &mut self,
         start_sector_id: u32,
         init: SectorInit,
-    ) -> Chain<F> {
+    ) -> io::Result<Chain<F>> {
         self.allocator.open_chain(start_sector_id, init)
     }
 
@@ -283,7 +283,7 @@ impl<F: Seek> Directory<F> {
         let mut directory_sector = self.dir_start_sector;
         for _ in 0..(stream_id / dir_entries_per_sector) {
             debug_assert_ne!(directory_sector, consts::END_OF_CHAIN);
-            directory_sector = self.allocator.next(directory_sector);
+            directory_sector = self.allocator.next(directory_sector)?;
         }
         self.allocator.seek_within_subsector(
             directory_sector,
@@ -517,8 +517,9 @@ impl<F: Write + Seek> Directory<F> {
     }
 
     fn write_dir_entry(&mut self, stream_id: u32) -> io::Result<()> {
-        let mut chain =
-            self.allocator.open_chain(self.dir_start_sector, SectorInit::Dir);
+        let mut chain = self
+            .allocator
+            .open_chain(self.dir_start_sector, SectorInit::Dir)?;
         let offset = (consts::DIR_ENTRY_LEN as u64) * (stream_id as u64);
         chain.seek(SeekFrom::Start(offset))?;
         self.dir_entries[stream_id as usize].write_to(&mut chain)

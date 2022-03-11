@@ -44,13 +44,22 @@ impl<F> Allocator<F> {
         self.sectors.sector_len()
     }
 
-    pub fn next(&self, sector_id: u32) -> u32 {
-        let next_id = self.fat[sector_id as usize];
+    pub fn next(&self, sector_id: u32) -> io::Result<u32> {
+        let index = sector_id as usize;
+        if index >= self.fat.len() {
+            invalid_data!(
+                "Found reference to sector {}, but FAT has only {} entries",
+                index,
+                self.fat.len()
+            );
+        }
+        let next_id = self.fat[index];
         debug_assert!(
-            next_id <= consts::MAX_REGULAR_SECTOR
-                || next_id == consts::END_OF_CHAIN
+            next_id == consts::END_OF_CHAIN
+                || (next_id <= consts::MAX_REGULAR_SECTOR
+                    && (next_id as usize) < self.fat.len())
         );
-        next_id
+        Ok(next_id)
     }
 
     pub fn into_inner(self) -> F {
@@ -61,7 +70,7 @@ impl<F> Allocator<F> {
         &mut self,
         start_sector_id: u32,
         init: SectorInit,
-    ) -> Chain<F> {
+    ) -> io::Result<Chain<F>> {
         Chain::new(self, start_sector_id, init)
     }
 
@@ -288,7 +297,7 @@ impl<F: Write + Seek> Allocator<F> {
     /// Sets the given sector to point to `END_OF_CHAIN`, and deallocates all
     /// subsequent sectors in the chain.
     pub fn free_chain_after(&mut self, sector_id: u32) -> io::Result<()> {
-        let next = self.next(sector_id);
+        let next = self.next(sector_id)?;
         self.set_fat(sector_id, consts::END_OF_CHAIN)?;
         self.free_chain(next)?;
         Ok(())
@@ -298,7 +307,7 @@ impl<F: Write + Seek> Allocator<F> {
     pub fn free_chain(&mut self, start_sector_id: u32) -> io::Result<()> {
         let mut sector_id = start_sector_id;
         while sector_id != consts::END_OF_CHAIN {
-            let next = self.next(sector_id);
+            let next = self.next(sector_id)?;
             self.free_sector(sector_id)?;
             sector_id = next;
         }

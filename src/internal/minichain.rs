@@ -13,14 +13,15 @@ impl<'a, F> MiniChain<'a, F> {
     pub fn new(
         minialloc: &'a mut MiniAllocator<F>,
         start_sector_id: u32,
-    ) -> MiniChain<'a, F> {
+    ) -> io::Result<MiniChain<'a, F>> {
         let mut sector_ids = Vec::<u32>::new();
         let mut current_sector_id = start_sector_id;
         while current_sector_id != consts::END_OF_CHAIN {
             sector_ids.push(current_sector_id);
-            current_sector_id = minialloc.next_mini_sector(current_sector_id);
+            current_sector_id =
+                minialloc.next_mini_sector(current_sector_id)?;
         }
-        MiniChain { minialloc, sector_ids, offset_from_start: 0 }
+        Ok(MiniChain { minialloc, sector_ids, offset_from_start: 0 })
     }
 
     pub fn start_sector_id(&self) -> u32 {
