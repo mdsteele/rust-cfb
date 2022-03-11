@@ -15,12 +15,12 @@ fuzz_target!(|data: &[u8]| {
         .map(|e| e.path().to_path_buf())
         .collect::<Vec<_>>();
 
-    let data = stream_paths
+    let _unused = stream_paths
         .into_iter()
-        .map(|s| {
+        .map(|s| -> Result<Vec<u8>, std::io::Error> {
             let mut data = Vec::new();
             cfb.open_stream(&s)?.read_to_end(&mut data)?;
             Ok(data)
         })
-        .collect::<Result<Vec<_>, std::io::Error>>();
+        .collect::<Vec<_>>();
 });
