@@ -164,6 +164,9 @@ impl<F> Directory<F> {
     }
 
     fn validate(&self) -> io::Result<()> {
+        if self.dir_entries.is_empty() {
+            malformed!("no entries exist");
+        }
         let root_entry = self.root_dir_entry();
         if root_entry.name != consts::ROOT_DIR_NAME {
             malformed!(
