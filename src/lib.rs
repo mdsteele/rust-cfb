@@ -373,6 +373,7 @@ impl<F: Read + Seek> CompoundFile<F> {
 
         // Read in directory.
         let mut dir_entries = Vec::<DirEntry>::new();
+        let mut seen_dir_sectors = HashSet::new();
         let mut current_dir_sector = header.first_dir_sector;
         while current_dir_sector != consts::END_OF_CHAIN {
             if current_dir_sector > consts::MAX_REGULAR_SECTOR {
@@ -388,6 +389,13 @@ impl<F: Read + Seek> CompoundFile<F> {
                     num_sectors
                 );
             }
+            if seen_dir_sectors.contains(&current_dir_sector) {
+                invalid_data!(
+                    "Directory chain includes duplicate sector index {}",
+                    current_dir_sector,
+                );
+            }
+            seen_dir_sectors.insert(current_dir_sector);
             {
                 let mut sector =
                     allocator.seek_to_sector(current_dir_sector)?;
