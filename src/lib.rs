@@ -359,6 +359,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             fat.pop();
         }
 
+        let fat_len = fat.len();
         let mut allocator =
             Allocator::new(sectors, difat_sector_ids, difat, fat)?;
 
@@ -388,6 +389,12 @@ impl<F: Read + Seek> CompoundFile<F> {
                         header.version,
                     )?);
                 }
+            }
+            if current_difat_sector >= fat_len as u32 {
+                invalid_data!(
+                    "DIFAT chain includes invalid fat index {}",
+                    current_difat_sector
+                );
             }
             current_dir_sector = allocator.next(current_dir_sector);
         }
