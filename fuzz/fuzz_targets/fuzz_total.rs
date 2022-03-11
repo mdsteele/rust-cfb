@@ -22,6 +22,5 @@ fuzz_target!(|data: &[u8]| {
             cfb.open_stream(&s)?.read_to_end(&mut data)?;
             Ok((s, data))
         })
-        .collect::<Result<std::collections::HashMap<_, _>, std::io::Error>>()
-        .unwrap();
+        .collect::<Result<std::collections::HashMap<_, _>, std::io::Error>>();
 });
