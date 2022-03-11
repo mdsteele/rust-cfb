@@ -164,6 +164,9 @@ impl<F> Directory<F> {
     }
 
     fn validate(&self) -> io::Result<()> {
+        if self.dir_entries.is_empty() {
+            malformed!("root entry is missing");
+        }
         let root_entry = self.root_dir_entry();
         if root_entry.name != consts::ROOT_DIR_NAME {
             malformed!(
@@ -551,6 +554,12 @@ mod tests {
         fat[0] = consts::FAT_SECTOR;
         let allocator = Allocator::new(sectors, vec![], vec![0], fat).unwrap();
         Directory::new(allocator, entries, 1).unwrap()
+    }
+
+    #[test]
+    #[should_panic(expected = "Malformed directory (root entry is missing)")]
+    fn no_root_entry() {
+        make_directory(vec![]);
     }
 
     #[test]
