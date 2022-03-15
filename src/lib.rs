@@ -1083,6 +1083,11 @@ impl<'a, F> Stream<'a, F> {
         self.total_len
     }
 
+    /// Returns the current length of the stream is empty
+    pub fn is_empty(&self) -> bool {
+        self.total_len == 0
+    }
+
     fn current_position(&self) -> u64 {
         self.buf_offset_from_start + (self.buf_pos as u64)
     }

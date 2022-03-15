@@ -49,7 +49,7 @@ pub fn validate_name(name: &str) -> io::Result<Vec<u16>> {
 
 /// Given a path within a compound file, turns it into a list of child names
 /// descending from the root.  Returns an error if the name is invalid.
-pub fn name_chain_from_path<'a>(path: &'a Path) -> io::Result<Vec<&'a str>> {
+pub fn name_chain_from_path(path: &Path) -> io::Result<Vec<&str>> {
     let mut names: Vec<&str> = Vec::new();
     for component in path.components() {
         match component {
