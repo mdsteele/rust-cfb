@@ -3,8 +3,8 @@ use crate::internal::{
     Sector, SectorInit, Version,
 };
 use byteorder::{LittleEndian, WriteBytesExt};
+use fnv::FnvHashSet;
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -182,7 +182,7 @@ impl<F> Directory<F> {
                 consts::MINI_SECTOR_LEN
             );
         }
-        let mut visited = HashSet::new();
+        let mut visited = FnvHashSet::default();
         let mut stack = vec![consts::ROOT_STREAM_ID];
         while let Some(stream_id) = stack.pop() {
             if visited.contains(&stream_id) {

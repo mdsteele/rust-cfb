@@ -1,6 +1,6 @@
 use crate::internal::{consts, Chain, Sector, SectorInit, Sectors, Version};
 use byteorder::{LittleEndian, WriteBytesExt};
-use std::collections::HashSet;
+use fnv::FnvHashSet;
 use std::io::{self, Seek, Write};
 use std::mem::size_of;
 
@@ -112,7 +112,7 @@ impl<F> Allocator<F> {
                 );
             }
         }
-        let mut pointees = HashSet::new();
+        let mut pointees = FnvHashSet::default();
         for (from_sector, &to_sector) in self.fat.iter().enumerate() {
             if to_sector <= consts::MAX_REGULAR_SECTOR {
                 if to_sector as usize >= self.fat.len() {

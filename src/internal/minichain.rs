@@ -1,8 +1,6 @@
 use crate::internal::{consts, MiniAllocator};
-use std::{
-    collections::HashSet,
-    io::{self, Read, Seek, SeekFrom, Write},
-};
+use fnv::FnvHashSet;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 //===========================================================================//
 
@@ -18,7 +16,7 @@ impl<'a, F> MiniChain<'a, F> {
         start_sector_id: u32,
     ) -> io::Result<MiniChain<'a, F>> {
         let mut sector_ids = Vec::<u32>::new();
-        let mut seen_sector_ids = HashSet::new();
+        let mut seen_sector_ids = FnvHashSet::default();
         let mut current_sector_id = start_sector_id;
         while current_sector_id != consts::END_OF_CHAIN {
             if seen_sector_ids.contains(&current_sector_id) {

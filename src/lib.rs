@@ -52,7 +52,7 @@ use crate::internal::{
 };
 pub use crate::internal::{Entries, Entry, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::collections::HashSet;
+use fnv::FnvHashSet;
 use std::fs;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -275,7 +275,7 @@ impl<F: Read + Seek> CompoundFile<F> {
         // Read in DIFAT.
         let mut difat = Vec::<u32>::new();
         difat.extend_from_slice(&header.initial_difat_entries);
-        let mut seen_sector_ids = HashSet::new();
+        let mut seen_sector_ids = FnvHashSet::default();
         let mut difat_sector_ids = Vec::new();
         let mut current_difat_sector = header.first_difat_sector;
         while current_difat_sector != consts::END_OF_CHAIN {
@@ -373,7 +373,7 @@ impl<F: Read + Seek> CompoundFile<F> {
 
         // Read in directory.
         let mut dir_entries = Vec::<DirEntry>::new();
-        let mut seen_dir_sectors = HashSet::new();
+        let mut seen_dir_sectors = FnvHashSet::default();
         let mut current_dir_sector = header.first_dir_sector;
         while current_dir_sector != consts::END_OF_CHAIN {
             if current_dir_sector > consts::MAX_REGULAR_SECTOR {
