@@ -83,7 +83,7 @@ fn invalid_mini_sector_issue_16() {
     comp.open_stream("foo").unwrap().read_to_end(&mut data).unwrap();
 }
 
-/// Regression test for https://github.com/mdsteele/rust-cfb/issues/16.
+/// Regression test for https://github.com/mdsteele/rust-cfb/issues/17.
 #[test]
 #[should_panic(expected = "DIFAT chain includes duplicate sector index 0")]
 fn infinite_loop_difat_issue_17() {
