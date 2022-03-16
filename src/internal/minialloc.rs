@@ -3,7 +3,7 @@ use crate::internal::{
     SectorInit, Version,
 };
 use byteorder::{LittleEndian, WriteBytesExt};
-use std::collections::HashSet;
+use fnv::FnvHashSet;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::Path;
@@ -129,7 +129,7 @@ impl<F> MiniAllocator<F> {
                 root_stream_mini_sectors
             );
         }
-        let mut pointees = HashSet::new();
+        let mut pointees = FnvHashSet::default();
         for (from_mini_sector, &to_mini_sector) in
             self.minifat.iter().enumerate()
         {

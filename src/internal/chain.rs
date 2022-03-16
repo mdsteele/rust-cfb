@@ -54,7 +54,12 @@ impl<'a, F: Seek> Chain<'a, F> {
             subsector_index as usize / subsectors_per_sector;
         let subsector_index_within_sector =
             subsector_index % (subsectors_per_sector as u32);
-        let sector_id = self.sector_ids[sector_index_within_chain];
+        let sector_id = *self
+            .sector_ids
+            .get(sector_index_within_chain)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid sector id")
+            })?;
         self.allocator.seek_within_subsector(
             sector_id,
             subsector_index_within_sector,

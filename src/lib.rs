@@ -52,6 +52,7 @@ use crate::internal::{
 };
 pub use crate::internal::{Entries, Entry, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use fnv::FnvHashSet;
 use std::fs;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -274,6 +275,7 @@ impl<F: Read + Seek> CompoundFile<F> {
         // Read in DIFAT.
         let mut difat = Vec::<u32>::new();
         difat.extend_from_slice(&header.initial_difat_entries);
+        let mut seen_sector_ids = FnvHashSet::default();
         let mut difat_sector_ids = Vec::new();
         let mut current_difat_sector = header.first_difat_sector;
         while current_difat_sector != consts::END_OF_CHAIN {
@@ -290,6 +292,13 @@ impl<F: Read + Seek> CompoundFile<F> {
                     num_sectors
                 );
             }
+            if seen_sector_ids.contains(&current_difat_sector) {
+                invalid_data!(
+                    "DIFAT chain includes duplicate sector index {}",
+                    current_difat_sector,
+                );
+            }
+            seen_sector_ids.insert(current_difat_sector);
             difat_sector_ids.push(current_difat_sector);
             let mut sector = sectors.seek_to_sector(current_difat_sector)?;
             for _ in 0..(sector_len / size_of::<u32>() - 1) {
@@ -364,6 +373,7 @@ impl<F: Read + Seek> CompoundFile<F> {
 
         // Read in directory.
         let mut dir_entries = Vec::<DirEntry>::new();
+        let mut seen_dir_sectors = FnvHashSet::default();
         let mut current_dir_sector = header.first_dir_sector;
         while current_dir_sector != consts::END_OF_CHAIN {
             if current_dir_sector > consts::MAX_REGULAR_SECTOR {
@@ -379,6 +389,13 @@ impl<F: Read + Seek> CompoundFile<F> {
                     num_sectors
                 );
             }
+            if seen_dir_sectors.contains(&current_dir_sector) {
+                invalid_data!(
+                    "Directory chain includes duplicate sector index {}",
+                    current_dir_sector,
+                );
+            }
+            seen_dir_sectors.insert(current_dir_sector);
             {
                 let mut sector =
                     allocator.seek_to_sector(current_dir_sector)?;
