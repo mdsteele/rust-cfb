@@ -1,5 +1,6 @@
-use cfb::{CompoundFile, Version};
+use cfb::{CompoundFile, Version, Entry};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::path::Path;
 use uuid::Uuid;
 
 //===========================================================================//
@@ -12,15 +13,8 @@ fn read_storage_to_vec<F>(comp: &CompoundFile<F>, path: &str) -> Vec<String> {
     comp.read_storage(path).unwrap().map(|e| e.name().to_string()).collect()
 }
 
-fn walk_to_vec<F>(comp: &CompoundFile<F>) -> Vec<String> {
-    comp.walk().map(|e| e.path().to_string_lossy().to_string()).collect()
-}
-
-fn walk_storage_to_vec<F>(comp: &CompoundFile<F>, path: &str) -> Vec<String> {
-    comp.walk_storage(path)
-        .unwrap()
-        .map(|e| e.path().to_string_lossy().to_string())
-        .collect()
+fn walk_to_vec(entries: &[Entry]) -> Vec<&Path> {
+    entries.iter().map(|e| e.path()).collect()
 }
 
 //===========================================================================//
@@ -136,16 +130,20 @@ fn walk_directory_tree() {
     comp.create_stream("/baz").unwrap();
     comp.create_storage("/quux").unwrap();
     comp.create_stream("/foo/bar").unwrap();
+    let entries: Vec<Entry> = comp.walk().collect();
     assert_eq!(
-        walk_to_vec(&comp),
-        vec!["/", "/baz", "/foo", "/foo/bar", "/quux"]
+        walk_to_vec(&entries),
+        vec![Path::new("/"), Path::new("/baz"), Path::new("/foo"), Path::new("/foo/bar"), Path::new("/quux")]
     );
+    let entries: Vec<Entry> = comp.walk_storage("/").unwrap().collect();
     assert_eq!(
-        walk_storage_to_vec(&comp, "/"),
-        vec!["/", "/baz", "/foo", "/foo/bar", "/quux"]
+        walk_to_vec(&entries),
+        vec![Path::new("/"), Path::new("/baz"), Path::new("/foo"), Path::new("/foo/bar"), Path::new("/quux")]
     );
-    assert_eq!(walk_storage_to_vec(&comp, "/foo"), vec!["/foo", "/foo/bar"]);
-    assert_eq!(walk_storage_to_vec(&comp, "/baz"), vec!["/baz"]);
+    let entries: Vec<Entry> = comp.walk_storage("/foo").unwrap().collect();
+    assert_eq!(walk_to_vec(&entries), vec![Path::new("/foo"), Path::new("/foo/bar")]);
+    let entries: Vec<Entry> = comp.walk_storage("/baz").unwrap().collect();
+    assert_eq!(walk_to_vec(&entries), vec![Path::new("/baz")]);
 }
 
 #[test]
