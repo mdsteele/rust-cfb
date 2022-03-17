@@ -1,4 +1,4 @@
-use cfb::{CompoundFile, Version, Entry};
+use cfb::{CompoundFile, Entry, Version};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use uuid::Uuid;
@@ -133,15 +133,30 @@ fn walk_directory_tree() {
     let entries: Vec<Entry> = comp.walk().collect();
     assert_eq!(
         walk_to_vec(&entries),
-        vec![Path::new("/"), Path::new("/baz"), Path::new("/foo"), Path::new("/foo/bar"), Path::new("/quux")]
+        vec![
+            Path::new("/"),
+            Path::new("/baz"),
+            Path::new("/foo"),
+            Path::new("/foo/bar"),
+            Path::new("/quux")
+        ]
     );
     let entries: Vec<Entry> = comp.walk_storage("/").unwrap().collect();
     assert_eq!(
         walk_to_vec(&entries),
-        vec![Path::new("/"), Path::new("/baz"), Path::new("/foo"), Path::new("/foo/bar"), Path::new("/quux")]
+        vec![
+            Path::new("/"),
+            Path::new("/baz"),
+            Path::new("/foo"),
+            Path::new("/foo/bar"),
+            Path::new("/quux")
+        ]
     );
     let entries: Vec<Entry> = comp.walk_storage("/foo").unwrap().collect();
-    assert_eq!(walk_to_vec(&entries), vec![Path::new("/foo"), Path::new("/foo/bar")]);
+    assert_eq!(
+        walk_to_vec(&entries),
+        vec![Path::new("/foo"), Path::new("/foo/bar")]
+    );
     let entries: Vec<Entry> = comp.walk_storage("/baz").unwrap().collect();
     assert_eq!(walk_to_vec(&entries), vec![Path::new("/baz")]);
 }
