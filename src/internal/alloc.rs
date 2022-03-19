@@ -54,11 +54,16 @@ impl<F> Allocator<F> {
             );
         }
         let next_id = self.fat[index];
-        debug_assert!(
-            next_id == consts::END_OF_CHAIN
-                || (next_id <= consts::MAX_REGULAR_SECTOR
-                    && (next_id as usize) < self.fat.len())
-        );
+        if next_id != consts::END_OF_CHAIN
+            && (next_id > consts::MAX_REGULAR_SECTOR
+                || next_id as usize >= self.fat.len())
+        {
+            invalid_data!(
+                "next_id is {}, but should be {}",
+                next_id,
+                consts::END_OF_CHAIN
+            );
+        }
         Ok(next_id)
     }
 
