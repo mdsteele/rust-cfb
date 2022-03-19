@@ -54,11 +54,16 @@ impl<F> MiniAllocator<F> {
             );
         }
         let next_id = self.minifat[index];
-        debug_assert!(
-            next_id == consts::END_OF_CHAIN
-                || (next_id <= consts::MAX_REGULAR_SECTOR
-                    && (next_id as usize) < self.minifat.len())
-        );
+        if next_id != consts::END_OF_CHAIN
+            && (next_id > consts::MAX_REGULAR_SECTOR
+                || next_id as usize >= self.minifat.len())
+        {
+            invalid_data!(
+                "next_id is {}, but should be {}",
+                next_id,
+                consts::END_OF_CHAIN
+            );
+        }
         Ok(next_id)
     }
 
