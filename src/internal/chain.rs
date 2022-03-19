@@ -19,9 +19,16 @@ impl<'a, F> Chain<'a, F> {
     ) -> io::Result<Chain<'a, F>> {
         let mut sector_ids = Vec::<u32>::new();
         let mut current_sector_id = start_sector_id;
+        let first_sector_id = start_sector_id;
         while current_sector_id != consts::END_OF_CHAIN {
             sector_ids.push(current_sector_id);
             current_sector_id = allocator.next(current_sector_id)?;
+            if current_sector_id == first_sector_id {
+                invalid_data!(
+                    "Chain contained duplicate sector id {}",
+                    current_sector_id
+                );
+            }
         }
         Ok(Chain { allocator, init, sector_ids, offset_from_start: 0 })
     }
