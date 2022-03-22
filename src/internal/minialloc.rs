@@ -58,11 +58,7 @@ impl<F> MiniAllocator<F> {
             && (next_id > consts::MAX_REGULAR_SECTOR
                 || next_id as usize >= self.minifat.len())
         {
-            invalid_data!(
-                "next_id is {}, but should be {}",
-                next_id,
-                consts::END_OF_CHAIN
-            );
+            invalid_data!("next_id ({}) is invalid", next_id);
         }
         Ok(next_id)
     }

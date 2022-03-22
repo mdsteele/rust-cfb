@@ -271,7 +271,7 @@ impl<F: Read + Seek> CompoundFile<F> {
 
         if inner_len < header.version.sector_len() as u64 {
             invalid_data!(
-                "Invalid CFB file (length of {} != header length of {})",
+                "Invalid CFB file (length of {} < sector length of {})",
                 inner_len,
                 header.version.sector_len()
             );

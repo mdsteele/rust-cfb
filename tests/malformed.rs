@@ -159,7 +159,7 @@ fn infinite_loop_difat_issue_17() {
 
 #[test]
 #[should_panic(
-    expected = "Invalid CFB file (length of 512 != header length of 4096)"
+    expected = "Invalid CFB file (length of 512 < sector length of 4096)"
 )]
 fn sector_panic_pr_24() {
     let data = vec![
@@ -197,7 +197,7 @@ fn sector_panic_pr_24() {
 
 #[test]
 #[should_panic(
-    expected = "next_id is 4294967293, but should be 4294967294"
+    expected = "next_id (4294967293) is invalid"
 )]
 fn alloc_panic_pr_24() {
     let mut cfb = cfb::open("tests/panics_fuzzed/alloc_panic").unwrap();
@@ -217,7 +217,7 @@ fn alloc_panic_pr_24() {
 
 #[test]
 #[should_panic(
-    expected = "next_id is 4294967295, but should be 4294967294"
+    expected = "next_id (4294967295) is invalid"
 )]
 fn minialloc_panic_pr_24() {
     let mut cfb = cfb::open("tests/panics_fuzzed/minialloc_panic").unwrap();
