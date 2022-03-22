@@ -1083,7 +1083,7 @@ impl<'a, F> Stream<'a, F> {
         self.total_len
     }
 
-    /// Returns the current length of the stream is empty
+    /// Returns true if the stream is empty.
     pub fn is_empty(&self) -> bool {
         self.total_len == 0
     }

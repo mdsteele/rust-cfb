@@ -65,7 +65,7 @@ impl Entry {
         self.stream_len
     }
 
-    /// Returns stream is empty
+    /// Returns true if the stream is empty.
     pub fn is_empty(&self) -> bool {
         self.stream_len == 0
     }
