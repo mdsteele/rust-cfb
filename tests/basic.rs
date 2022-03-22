@@ -357,7 +357,7 @@ fn create_storages_all() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "Cannot create storage")]
 fn create_storage_all_with_stream_in_the_way() {
     let cursor = Cursor::new(Vec::new());
     let mut comp = CompoundFile::create(cursor).expect("create");
