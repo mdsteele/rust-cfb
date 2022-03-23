@@ -196,9 +196,7 @@ fn sector_panic_pr_24() {
 }
 
 #[test]
-#[should_panic(
-    expected = "next_id (4294967293) is invalid"
-)]
+#[should_panic(expected = "next_id (4294967293) is invalid")]
 fn alloc_panic_pr_24() {
     let mut cfb = cfb::open("tests/panics_fuzzed/alloc_panic").unwrap();
     cfb.walk()
@@ -216,9 +214,7 @@ fn alloc_panic_pr_24() {
 }
 
 #[test]
-#[should_panic(
-    expected = "next_id (4294967295) is invalid"
-)]
+#[should_panic(expected = "next_id (4294967295) is invalid")]
 fn minialloc_panic_pr_24() {
     let mut cfb = cfb::open("tests/panics_fuzzed/minialloc_panic").unwrap();
     cfb.walk()
