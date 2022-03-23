@@ -89,14 +89,14 @@ impl<F: Write + Seek> Sectors<F> {
         sector_id: u32,
         init: SectorInit,
     ) -> io::Result<()> {
-        if sector_id > self.num_sectors {
-            invalid_data!(
+        match sector_id.cmp(&self.num_sectors) {
+            cmp::Ordering::Greater => invalid_data!(
                 "Tried to initialize sector {}, but sector count is only {}",
                 sector_id,
                 self.num_sectors
-            );
-        } else if sector_id == self.num_sectors {
-            self.num_sectors += 1;
+            ),
+            cmp::Ordering::Less => {}
+            cmp::Ordering::Equal => self.num_sectors += 1,
         }
         let mut sector = self.seek_to_sector(sector_id)?;
         init.initialize(&mut sector)?;

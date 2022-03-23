@@ -65,6 +65,11 @@ impl Entry {
         self.stream_len
     }
 
+    /// Returns true if the stream is empty.
+    pub fn is_empty(&self) -> bool {
+        self.stream_len == 0
+    }
+
     /// Returns the CLSID (that is, the object class GUID) for this object.
     /// This will always be all zeros for stream objects.
     pub fn clsid(&self) -> &Uuid {
@@ -102,14 +107,14 @@ pub enum EntriesOrder {
 /// An iterator over the entries in a storage object.
 pub struct Entries<'a> {
     order: EntriesOrder,
-    directory: &'a Vec<DirEntry>,
+    directory: &'a [DirEntry],
     stack: Vec<(PathBuf, u32, bool)>,
 }
 
 impl<'a> Entries<'a> {
     pub(crate) fn new(
         order: EntriesOrder,
-        directory: &'a Vec<DirEntry>,
+        directory: &'a [DirEntry],
         parent_path: PathBuf,
         start: u32,
     ) -> Entries<'a> {
@@ -172,7 +177,7 @@ mod tests {
     use super::{Entries, EntriesOrder, Entry};
     use crate::internal::consts::{NO_STREAM, ROOT_DIR_NAME};
     use crate::internal::{DirEntry, ObjType};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn make_entry(
         name: &str,
@@ -211,8 +216,8 @@ mod tests {
         ]
     }
 
-    fn paths_for_entries<'a>(entries: &'a [Entry]) -> Vec<&'a str> {
-        entries.iter().map(|entry| entry.path().to_str().unwrap()).collect()
+    fn paths_for_entries(entries: &[Entry]) -> Vec<&Path> {
+        entries.iter().map(|entry| entry.path()).collect()
     }
 
     #[test]
@@ -226,7 +231,17 @@ mod tests {
         )
         .collect();
         let paths = paths_for_entries(&entries);
-        assert_eq!(paths, vec!["/1", "/2", "/3", "/4", "/5", "/6"]);
+        assert_eq!(
+            paths,
+            vec![
+                Path::new("/1"),
+                Path::new("/2"),
+                Path::new("/3"),
+                Path::new("/4"),
+                Path::new("/5"),
+                Path::new("/6")
+            ]
+        );
     }
 
     #[test]
@@ -240,7 +255,10 @@ mod tests {
         )
         .collect();
         let paths = paths_for_entries(&entries);
-        assert_eq!(paths, vec!["/3/7", "/3/8", "/3/9"]);
+        assert_eq!(
+            paths,
+            vec![Path::new("/3/7"), Path::new("/3/8"), Path::new("/3/9")]
+        );
     }
 
     #[test]
@@ -257,8 +275,16 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                "/", "/1", "/2", "/3", "/3/7", "/3/8", "/3/9", "/4", "/5",
-                "/6",
+                Path::new("/"),
+                Path::new("/1"),
+                Path::new("/2"),
+                Path::new("/3"),
+                Path::new("/3/7"),
+                Path::new("/3/8"),
+                Path::new("/3/9"),
+                Path::new("/4"),
+                Path::new("/5"),
+                Path::new("/6"),
             ]
         );
     }
@@ -274,7 +300,15 @@ mod tests {
         )
         .collect();
         let paths = paths_for_entries(&entries);
-        assert_eq!(paths, vec!["/3", "/3/7", "/3/8", "/3/9"]);
+        assert_eq!(
+            paths,
+            vec![
+                Path::new("/3"),
+                Path::new("/3/7"),
+                Path::new("/3/8"),
+                Path::new("/3/9")
+            ]
+        );
     }
 }
 

@@ -59,7 +59,7 @@ impl<F> Directory<F> {
                     return None;
                 }
                 let dir_entry = self.dir_entry(stream_id);
-                match internal::path::compare_names(&name, &dir_entry.name) {
+                match internal::path::compare_names(name, &dir_entry.name) {
                     Ordering::Equal => break,
                     Ordering::Less => stream_id = dir_entry.left_sibling,
                     Ordering::Greater => stream_id = dir_entry.right_sibling,
