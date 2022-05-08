@@ -1,7 +1,6 @@
 use clap::{App, Arg, SubCommand};
 use std::io;
 use std::path::PathBuf;
-use std::time::UNIX_EPOCH;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -34,18 +33,9 @@ fn list_entry(name: &str, entry: &cfb::Entry, long: bool) {
     };
     let last_modified = {
         let timestamp = entry.created().max(entry.modified());
-        let seconds = if timestamp > UNIX_EPOCH {
-            timestamp.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
-        } else {
-            -(UNIX_EPOCH.duration_since(timestamp).unwrap().as_secs() as i64)
-        };
-        match OffsetDateTime::from_unix_timestamp(seconds) {
-            Err(_) => "<date err>".to_string(),
-            Ok(datetime) => {
-                let (year, month, day) = datetime.to_calendar_date();
-                format!("{:04}-{:02}-{:02}", year, month as u8, day)
-            }
-        }
+        let datetime = OffsetDateTime::from(timestamp);
+        let (year, month, day) = datetime.to_calendar_date();
+        format!("{:04}-{:02}-{:02}", year, month as u8, day)
     };
     println!(
         "{}{:08x}   {:>10}   {}   {}",
