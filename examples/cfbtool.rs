@@ -1,14 +1,8 @@
-extern crate cfb;
-extern crate chrono;
-extern crate clap;
-extern crate uuid;
-
-use chrono::NaiveDateTime;
 use clap::{App, Arg, SubCommand};
-use std::cmp;
 use std::io;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 fn split(path: &str) -> (PathBuf, PathBuf) {
@@ -39,14 +33,19 @@ fn list_entry(name: &str, entry: &cfb::Entry, long: bool) {
         format!("{} B ", entry.len())
     };
     let last_modified = {
-        let timestamp = cmp::max(entry.created(), entry.modified());
+        let timestamp = entry.created().max(entry.modified());
         let seconds = if timestamp > UNIX_EPOCH {
             timestamp.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
         } else {
             -(UNIX_EPOCH.duration_since(timestamp).unwrap().as_secs() as i64)
         };
-        let naive = NaiveDateTime::from_timestamp(seconds as i64, 0);
-        naive.date().format("%b %d %Y")
+        match OffsetDateTime::from_unix_timestamp(seconds) {
+            Err(_) => "<date err>".to_string(),
+            Ok(datetime) => {
+                let (year, month, day) = datetime.to_calendar_date();
+                format!("{:04}-{:02}-{:02}", year, month as u8, day)
+            }
+        }
     };
     println!(
         "{}{:08x}   {:>10}   {}   {}",
