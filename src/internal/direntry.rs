@@ -87,7 +87,7 @@ impl DirEntry {
         let d3 = reader.read_u16::<LittleEndian>()?;
         let mut d4 = [0u8; 8];
         reader.read_exact(&mut d4)?;
-        Ok(Uuid::from_fields(d1, d2, d3, &d4).unwrap())
+        Ok(Uuid::from_fields(d1, d2, d3, &d4))
     }
 
     pub fn write_clsid<W: Write>(
