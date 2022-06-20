@@ -123,9 +123,12 @@ impl DirEntry {
                 0
             };
             debug_assert!(name_len_chars < name_chars.len());
-            if name_chars[name_len_chars] != 0 {
-                malformed!("name not null-terminated");
-            }
+            // According to section 2.6.1 of the MS-CFB spec, "The name MUST be
+            // terminated with a UTF-16 terminating null character."  (Even
+            // though the directory entry aready includes the length of the
+            // name.  And also, that length *includes* the null character?
+            // Look, CFB is a weird format.)  Anyway, some CFB files in the
+            // wild don't do this, so we're not going to enforce it.
             match String::from_utf16(&name_chars[0..name_len_chars]) {
                 Ok(name) => name,
                 Err(_) => malformed!("name not valid UTF-16"),
@@ -163,10 +166,20 @@ impl DirEntry {
                 malformed!("invalid child: {}", child);
             }
         }
-        let clsid = DirEntry::read_clsid(reader)?;
-        if obj_type == ObjType::Stream && !clsid.is_nil() {
-            malformed!("non-null stream CLSID: {:?}", clsid);
-        }
+
+        // Section 2.6.1 of the MS-CFB spec states that "In a stream object,
+        // this [CLSID] field MUST be set to all zeroes."  However, some CFB
+        // files in the wild violate this, so we don't enforce it; instead, for
+        // non-storage objects we just ignore the CLSID data entirely and treat
+        // it as though it were nil.
+        let clsid = match obj_type {
+            ObjType::Unallocated | ObjType::Stream => {
+                reader.read_exact(&mut [0u8; 16])?;
+                Uuid::nil()
+            }
+            ObjType::Storage | ObjType::Root => DirEntry::read_clsid(reader)?,
+        };
+
         let state_bits = reader.read_u32::<LittleEndian>()?;
         let creation_time = reader.read_u64::<LittleEndian>()?;
         let modified_time = reader.read_u64::<LittleEndian>()?;
@@ -364,6 +377,68 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0, // stream length
         ];
         DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+    }
+
+    // Regression test for https://github.com/mdsteele/rust-cfb/issues/26
+    #[test]
+    fn non_null_clsid_on_stream() {
+        let input: [u8; consts::DIR_ENTRY_LEN] = [
+            // Name:
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14, 0, // name length
+            2, // obj type
+            1, // color,
+            12, 0, 0, 0, // left sibling
+            34, 0, 0, 0, // right sibling
+            0xff, 0xff, 0xff, 0xff, // child
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 2, // CLSID
+            0, 0, 0, 0, // state bits
+            0, 0, 0, 0, 0, 0, 0, 0, // created
+            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            0, 0, 0, 0, // start sector
+            0, 0, 0, 0, 0, 0, 0, 0, // stream length
+        ];
+        // Section 2.6.1 of the MS-CFB spec states that "In a stream object,
+        // this [CLSID] field MUST be set to all zeroes."  However, some CFB
+        // files in the wild violate this.  So we allow parsing a stream dir
+        // entry with a non-nil CLSID, but we ignore that CLSID and just set it
+        // to all zeroes.
+        let dir_entry =
+            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        assert_eq!(dir_entry.obj_type, ObjType::Stream);
+        assert!(dir_entry.clsid.is_nil());
+    }
+
+    // Regression test for https://github.com/mdsteele/rust-cfb/issues/26
+    #[test]
+    fn non_null_terminated_name() {
+        let input: [u8; consts::DIR_ENTRY_LEN] = [
+            // Name:
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            0, 14, 0, // name length
+            2, // obj type
+            1, // color,
+            12, 0, 0, 0, // left sibling
+            34, 0, 0, 0, // right sibling
+            0xff, 0xff, 0xff, 0xff, // child
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+            0, 0, 0, 0, // state bits
+            0, 0, 0, 0, 0, 0, 0, 0, // created
+            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            0, 0, 0, 0, // start sector
+            0, 0, 0, 0, 0, 0, 0, 0, // stream length
+        ];
+        // According to section 2.6.1 of the MS-CFB spec, "The name MUST be
+        // terminated with a UTF-16 terminating null character."  But some CFB
+        // files in the wild don't do this, so we just rely on the name length
+        // field.
+        let dir_entry =
+            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        assert_eq!(dir_entry.name, "Foobar");
     }
 }
 
