@@ -183,23 +183,22 @@ impl DirEntry {
         let state_bits = reader.read_u32::<LittleEndian>()?;
         let creation_time = reader.read_u64::<LittleEndian>()?;
         let modified_time = reader.read_u64::<LittleEndian>()?;
-        let start_sector = reader.read_u32::<LittleEndian>()?;
 
-        // According to the MS-CFB spec section 2.6.3, the starting sector
-        // should be set to zero for storage entries.  However, some CFB
-        // implementations use FREE_SECTOR or END_OF_CHAIN instead.
-        if obj_type == ObjType::Storage
-            && !(start_sector == 0
-                || start_sector == consts::FREE_SECTOR
-                || start_sector == consts::END_OF_CHAIN)
-        {
-            malformed!("invalid storage start sector: 0x{:x}", start_sector);
-        }
-        let stream_len =
+        // According to the MS-CFB spec section 2.6.3, the starting sector and
+        // stream length fields should both be set to zero for storage entries.
+        // However, some CFB implementations use FREE_SECTOR or END_OF_CHAIN
+        // instead for the starting sector, or even just leave these fields
+        // with uninitialized garbage values, so we don't enforce this.
+        // Instead, for storage objects we just treat these fields as though
+        // they were zero.
+        let mut start_sector = reader.read_u32::<LittleEndian>()?;
+        let mut stream_len =
             reader.read_u64::<LittleEndian>()? & version.stream_len_mask();
-        if obj_type == ObjType::Storage && stream_len != 0 {
-            malformed!("non-zero storage stream length: {}", stream_len);
+        if obj_type == ObjType::Storage {
+            start_sector = 0;
+            stream_len = 0;
         }
+
         Ok(DirEntry {
             name,
             obj_type,
@@ -286,7 +285,7 @@ mod tests {
         assert_eq!(dir_entry.state_bits, 0xdeadbeef);
         assert_eq!(dir_entry.creation_time, 0);
         assert_eq!(dir_entry.modified_time, 0);
-        assert_eq!(dir_entry.start_sector, consts::END_OF_CHAIN);
+        assert_eq!(dir_entry.start_sector, 0);
         assert_eq!(dir_entry.stream_len, 0);
     }
 
@@ -439,6 +438,39 @@ mod tests {
         let dir_entry =
             DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
         assert_eq!(dir_entry.name, "Foobar");
+    }
+
+    // Regression test for https://github.com/mdsteele/rust-cfb/issues/27
+    #[test]
+    fn nonzero_storage_starting_sector_and_stream_len() {
+        let input: [u8; consts::DIR_ENTRY_LEN] = [
+            // Name:
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14, 0, // name length
+            1, // obj type
+            1, // color,
+            12, 0, 0, 0, // left sibling
+            34, 0, 0, 0, // right sibling
+            56, 0, 0, 0, // child
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+            239, 190, 173, 222, // state bits
+            0, 0, 0, 0, 0, 0, 0, 0, // created
+            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            58, 0, 0, 0, // start sector
+            62, 2, 0, 0, 0, 0, 0, 0, // stream length
+        ];
+        // According to section 2.6.3 of the MS-CFB spec, the starting sector
+        // location and stream size fields should be set to zero in a storage
+        // directory entry.  But some CFB files in the wild don't do this, so
+        // when parsing a storage entry, just ignore those fields' values and
+        // pretend they're zero.
+        let dir_entry =
+            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        assert_eq!(dir_entry.obj_type, ObjType::Storage);
+        assert_eq!(dir_entry.start_sector, 0);
+        assert_eq!(dir_entry.stream_len, 0);
     }
 }
 
