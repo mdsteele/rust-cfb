@@ -106,7 +106,7 @@ impl DirEntry {
         reader: &mut R,
         version: Version,
     ) -> io::Result<DirEntry> {
-        let name: String = {
+        let mut name: String = {
             let mut name_chars: Vec<u16> = Vec::with_capacity(32);
             for _ in 0..32 {
                 name_chars.push(reader.read_u16::<LittleEndian>()?);
@@ -134,7 +134,6 @@ impl DirEntry {
                 Err(_) => malformed!("name not valid UTF-16"),
             }
         };
-        internal::path::validate_name(&name)?;
         let obj_type = {
             let obj_type_byte = reader.read_u8()?;
             match ObjType::from_byte(obj_type_byte) {
@@ -142,6 +141,18 @@ impl DirEntry {
                 None => malformed!("invalid object type: {}", obj_type_byte),
             }
         };
+        // According to section 2.6.2 of the MS-CFB spec, "The root directory
+        // entry's Name field MUST contain the null-terminated string 'Root
+        // Entry' in Unicode UTF-16."  However, some CFB files in the wild
+        // don't do this, so we don't enforce it; instead, for the root entry
+        // we just ignore the actual name in the file and treat it as though it
+        // were what it's supposed to be.
+        if obj_type == ObjType::Root {
+            name = consts::ROOT_DIR_NAME.to_string();
+        } else {
+            internal::path::validate_name(&name)?;
+        }
+
         let color = {
             let color_byte = reader.read_u8()?;
             match Color::from_byte(color_byte) {
@@ -471,6 +482,37 @@ mod tests {
         assert_eq!(dir_entry.obj_type, ObjType::Storage);
         assert_eq!(dir_entry.start_sector, 0);
         assert_eq!(dir_entry.stream_len, 0);
+    }
+
+    // Regression test for https://github.com/mdsteele/rust-cfb/issues/29
+    #[test]
+    fn root_entry_with_incorrect_name() {
+        let input: [u8; consts::DIR_ENTRY_LEN] = [
+            // Name:
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14, 0, // name length
+            5, // obj type
+            1, // color,
+            12, 0, 0, 0, // left sibling
+            34, 0, 0, 0, // right sibling
+            56, 0, 0, 0, // child
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+            239, 190, 173, 222, // state bits
+            0, 0, 0, 0, 0, 0, 0, 0, // created
+            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            0, 0, 0, 0, // start sector
+            0, 0, 0, 0, 0, 0, 0, 0, // stream length
+        ];
+        // According to section 2.6.2 of the MS-CFB spec, the name field MUST
+        // be set to "Root Entry" in the root directory entry.  But some CFB
+        // files in the wild don't do this, so when parsing the root entry,
+        // just ignore the name in the file and pretend it's correct.
+        let dir_entry =
+            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        assert_eq!(dir_entry.obj_type, ObjType::Root);
+        assert_eq!(dir_entry.name, "Root Entry");
     }
 }
 

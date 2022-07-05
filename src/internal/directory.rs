@@ -168,13 +168,6 @@ impl<F> Directory<F> {
             malformed!("root entry is missing");
         }
         let root_entry = self.root_dir_entry();
-        if root_entry.name != consts::ROOT_DIR_NAME {
-            malformed!(
-                "root entry name is {:?}, but should be {:?}",
-                root_entry.name,
-                consts::ROOT_DIR_NAME
-            );
-        }
         if root_entry.stream_len % consts::MINI_SECTOR_LEN as u64 != 0 {
             malformed!(
                 "root stream len is {}, but should be multiple of {}",
@@ -560,17 +553,6 @@ mod tests {
     #[should_panic(expected = "Malformed directory (root entry is missing)")]
     fn no_root_entry() {
         make_directory(vec![]);
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "Malformed directory (root entry name is \\\"foo\\\", but \
-                    should be \\\"Root Entry\\\")"
-    )]
-    fn incorrect_root_entry_name() {
-        let mut root_entry = DirEntry::empty_root_entry();
-        root_entry.name = "foo".to_string();
-        make_directory(vec![root_entry]);
     }
 
     #[test]
