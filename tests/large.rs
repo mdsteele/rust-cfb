@@ -35,5 +35,5 @@ fn large_file_issue_12() {
     }
 
     let cursor = comp.into_inner();
-    let _comp = CompoundFile::open(cursor).expect("re-open");
+    let _comp = CompoundFile::open_strict(cursor).expect("re-open");
 }

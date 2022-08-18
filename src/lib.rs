@@ -48,7 +48,7 @@
 use crate::internal::consts::{self, NO_STREAM};
 use crate::internal::{
     Allocator, DirEntry, Directory, Header, MiniAllocator, ObjType,
-    SectorInit, Sectors,
+    SectorInit, Sectors, Validation,
 };
 pub use crate::internal::{Entries, Entry, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -248,7 +248,23 @@ impl<F: Read + Seek> CompoundFile<F> {
     /// Opens an existing compound file, using the underlying reader.  If the
     /// underlying reader also supports the `Write` trait, then the
     /// `CompoundFile` object will be writable as well.
-    pub fn open(mut inner: F) -> io::Result<CompoundFile<F>> {
+    pub fn open(inner: F) -> io::Result<CompoundFile<F>> {
+        CompoundFile::open_internal(inner, Validation::Permissive)
+    }
+
+    /// Like `open()`, but is stricter when parsing and will return an error if
+    /// the file violates the CFB spec in any way (which many CFB files in the
+    /// wild do).  This is mainly useful for validating a CFB file or
+    /// implemention (such as this crate itself) to help ensure compatibility
+    /// with other readers.
+    pub fn open_strict(inner: F) -> io::Result<CompoundFile<F>> {
+        CompoundFile::open_internal(inner, Validation::Strict)
+    }
+
+    fn open_internal(
+        mut inner: F,
+        validation: Validation,
+    ) -> io::Result<CompoundFile<F>> {
         let inner_len = inner.seek(SeekFrom::End(0))?;
         if inner_len < consts::HEADER_LEN as u64 {
             invalid_data!(
@@ -322,7 +338,9 @@ impl<F: Read + Seek> CompoundFile<F> {
             }
             current_difat_sector = sector.read_u32::<LittleEndian>()?;
         }
-        if header.num_difat_sectors as usize != difat_sector_ids.len() {
+        if validation.is_strict()
+            && header.num_difat_sectors as usize != difat_sector_ids.len()
+        {
             invalid_data!(
                 "Incorrect DIFAT chain length (header says {}, actual is {})",
                 header.num_difat_sectors,
@@ -332,7 +350,9 @@ impl<F: Read + Seek> CompoundFile<F> {
         while difat.last() == Some(&consts::FREE_SECTOR) {
             difat.pop();
         }
-        if header.num_fat_sectors as usize != difat.len() {
+        if validation.is_strict()
+            && header.num_fat_sectors as usize != difat.len()
+        {
             invalid_data!(
                 "Incorrect number of FAT sectors (header says {}, DIFAT says \
                  {})",
@@ -360,12 +380,15 @@ impl<F: Read + Seek> CompoundFile<F> {
         // of FAT entries per sector, then the last FAT sector must be padded
         // with FREE_SECTOR entries (see MS-CFB section 2.3).  However, some
         // CFB implementations incorrectly pad the last FAT sector with zeros
-        // (see https://github.com/mdsteele/rust-cfb/issues/8).  Since zero is
-        // normally a meaningful FAT entry (referring to sector 0), we only
-        // want to strip zeros from the end of the FAT if they are beyond the
-        // number of sectors in the file.
-        while fat.len() > num_sectors as usize && fat.last() == Some(&0) {
-            fat.pop();
+        // (see https://github.com/mdsteele/rust-cfb/issues/8), so we allow
+        // this under Permissive validation.  Since zero is normally a
+        // meaningful FAT entry (referring to sector 0), we only want to strip
+        // zeros from the end of the FAT if they are beyond the number of
+        // sectors in the file.
+        if !validation.is_strict() {
+            while fat.len() > num_sectors as usize && fat.last() == Some(&0) {
+                fat.pop();
+            }
         }
         // Strip FREE_SECTOR entries from the end of the FAT.  Unlike the zero
         // case above, we can remove these even if it makes the number of FAT
@@ -376,7 +399,7 @@ impl<F: Read + Seek> CompoundFile<F> {
         }
 
         let mut allocator =
-            Allocator::new(sectors, difat_sector_ids, difat, fat)?;
+            Allocator::new(sectors, difat_sector_ids, difat, fat, validation)?;
 
         // Read in directory.
         let mut dir_entries = Vec::<DirEntry>::new();
@@ -410,6 +433,7 @@ impl<F: Read + Seek> CompoundFile<F> {
                     dir_entries.push(DirEntry::read_from(
                         &mut sector,
                         header.version,
+                        validation,
                     )?);
                 }
             }
@@ -423,7 +447,9 @@ impl<F: Read + Seek> CompoundFile<F> {
         let minifat = {
             let mut chain = directory
                 .open_chain(header.first_minifat_sector, SectorInit::Fat)?;
-            if header.num_minifat_sectors as usize != chain.num_sectors() {
+            if validation.is_strict()
+                && header.num_minifat_sectors as usize != chain.num_sectors()
+            {
                 invalid_data!(
                     "Incorrect MiniFAT chain length (header says {}, actual \
                      is {})",
@@ -544,8 +570,14 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         }
 
         let sectors = Sectors::new(version, 3 * sector_len as u64, inner);
-        let allocator = Allocator::new(sectors, difat_sector_ids, difat, fat)
-            .expect("allocator");
+        let allocator = Allocator::new(
+            sectors,
+            difat_sector_ids,
+            difat,
+            fat,
+            Validation::Strict,
+        )
+        .expect("allocator");
         let directory = Directory::new(allocator, vec![root_dir_entry], 1)
             .expect("directory");
         let minialloc =
@@ -1330,9 +1362,7 @@ mod tests {
     use std::io::{self, Cursor};
     use std::mem::size_of;
 
-    /// Regression test for https://github.com/mdsteele/rust-cfb/issues/8.
-    #[test]
-    fn zero_padded_fat() -> io::Result<()> {
+    fn make_cfb_file_with_zero_padded_fat() -> io::Result<Vec<u8>> {
         let version = Version::V3;
         let mut data = Vec::<u8>::new();
         let mut header = Header {
@@ -1349,7 +1379,6 @@ mod tests {
         };
         header.initial_difat_entries[0] = 0;
         header.write_to(&mut data)?;
-
         // Write FAT sector:
         let fat: Vec<u32> = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
         for &entry in fat.iter() {
@@ -1361,16 +1390,31 @@ mod tests {
         for _ in fat.len()..(version.sector_len() / size_of::<u32>()) {
             data.write_u32::<LittleEndian>(0)?;
         }
-
         // Write directory sector:
         DirEntry::empty_root_entry().write_to(&mut data)?;
         for _ in 1..version.dir_entries_per_sector() {
             DirEntry::unallocated().write_to(&mut data)?;
         }
+        Ok(data)
+    }
 
-        // Despite the zero-padded FAT, we should be able to read this file.
+    #[test]
+    fn zero_padded_fat_strict() {
+        let data = make_cfb_file_with_zero_padded_fat().unwrap();
+        let result = CompoundFile::open_strict(Cursor::new(data));
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "Malformed FAT (FAT has 128 entries, but file has only 2 sectors)"
+        );
+    }
+
+    // Regression test for https://github.com/mdsteele/rust-cfb/issues/8.
+    #[test]
+    fn zero_padded_fat_permissive() {
+        let data = make_cfb_file_with_zero_padded_fat().unwrap();
+        // Despite the zero-padded FAT, we should be able to read this file
+        // under Permissive validation.
         CompoundFile::open(Cursor::new(data)).expect("open");
-        Ok(())
     }
 }
 

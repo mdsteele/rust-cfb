@@ -24,14 +24,14 @@ fn test_set_stream_len(initial_len: usize, resize_len: usize) {
         stream.write_all(&data).unwrap();
     }
     let cursor = comp.into_inner();
-    let mut comp = CompoundFile::open(cursor).expect("open");
+    let mut comp = CompoundFile::open_strict(cursor).expect("open");
     {
         let mut stream = comp.open_stream("/foobar").unwrap();
         assert_eq!(stream.len(), initial_len as u64);
         stream.set_len(resize_len as u64).unwrap();
     }
     let cursor = comp.into_inner();
-    let mut comp = CompoundFile::open(cursor).expect("open");
+    let mut comp = CompoundFile::open_strict(cursor).expect("open");
     {
         let mut stream = comp.open_stream("/foobar").unwrap();
         assert_eq!(stream.len(), resize_len as u64);

@@ -243,7 +243,7 @@ impl SectorInit {
 #[cfg(test)]
 mod tests {
     use super::{SectorInit, Sectors};
-    use crate::internal::{consts, DirEntry, ObjType, Version};
+    use crate::internal::{consts, DirEntry, ObjType, Validation, Version};
     use byteorder::{LittleEndian, ReadBytesExt};
     use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
@@ -362,8 +362,12 @@ mod tests {
             sectors.init_sector(3, SectorInit::Dir).unwrap();
             let mut sector = sectors.seek_to_sector(3).unwrap();
             for _ in 0..4 {
-                let dir_entry =
-                    DirEntry::read_from(&mut sector, Version::V3).unwrap();
+                let dir_entry = DirEntry::read_from(
+                    &mut sector,
+                    Version::V3,
+                    Validation::Strict,
+                )
+                .unwrap();
                 assert_eq!(dir_entry.obj_type, ObjType::Unallocated);
                 assert_eq!(dir_entry.left_sibling, consts::NO_STREAM);
                 assert_eq!(dir_entry.right_sibling, consts::NO_STREAM);

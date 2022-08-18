@@ -39,7 +39,7 @@ fn create_empty_compound_file() {
 
     let cursor = comp.into_inner();
     assert_eq!(cursor.get_ref().len(), 3 * version.sector_len());
-    let comp = CompoundFile::open(cursor).expect("open");
+    let comp = CompoundFile::open_strict(cursor).expect("open");
     assert_eq!(comp.version(), version);
     assert_eq!(comp.entry("/").unwrap().name(), "Root Entry");
 }
@@ -114,7 +114,7 @@ fn create_directory_tree() {
     comp.create_storage("/foo/bar").unwrap();
 
     let cursor = comp.into_inner();
-    let comp = CompoundFile::open(cursor).expect("open");
+    let comp = CompoundFile::open_strict(cursor).expect("open");
     assert_eq!(read_root_storage_to_vec(&comp), vec!["baz", "foo"]);
     assert_eq!(read_storage_to_vec(&comp, "/"), vec!["baz", "foo"]);
     assert_eq!(read_storage_to_vec(&comp, "/foo"), vec!["bar"]);
@@ -256,7 +256,7 @@ fn storage_clsids() {
     assert_eq!(comp.entry("/foo").unwrap().clsid(), &uuid2);
 
     let cursor = comp.into_inner();
-    let comp = CompoundFile::open(cursor).expect("open");
+    let comp = CompoundFile::open_strict(cursor).expect("open");
     assert_eq!(comp.root_entry().clsid(), &uuid1);
     assert_eq!(comp.entry("/foo").unwrap().clsid(), &uuid2);
 }
@@ -295,7 +295,7 @@ fn state_bits() {
     assert_eq!(comp.entry("bar").unwrap().state_bits(), 0x0ABCDEF0);
 
     let cursor = comp.into_inner();
-    let comp = CompoundFile::open(cursor).expect("open");
+    let comp = CompoundFile::open_strict(cursor).expect("open");
     assert_eq!(comp.root_entry().state_bits(), 0);
     assert_eq!(comp.entry("foo").unwrap().state_bits(), 0x12345678);
     assert_eq!(comp.entry("bar").unwrap().state_bits(), 0x0ABCDEF0);
@@ -383,7 +383,7 @@ fn remove_storages() {
     comp.remove_storage("/baz/blarg").unwrap();
 
     let cursor = comp.into_inner();
-    let comp = CompoundFile::open(cursor).expect("open");
+    let comp = CompoundFile::open_strict(cursor).expect("open");
     assert_eq!(read_storage_to_vec(&comp, "/"), vec!["baz", "quux"]);
     assert!(read_storage_to_vec(&comp, "/baz").is_empty());
 }
@@ -437,7 +437,7 @@ fn remove_storage_all_on_storage() {
     comp.remove_storage_all("foo").unwrap();
 
     let cursor = comp.into_inner();
-    let comp = CompoundFile::open(cursor).expect("open");
+    let comp = CompoundFile::open_strict(cursor).expect("open");
     assert_eq!(read_storage_to_vec(&comp, "/"), vec!["stuff"]);
     assert_eq!(read_storage_to_vec(&comp, "/stuff"), vec!["foo"]);
 }
@@ -453,7 +453,7 @@ fn remove_storage_all_on_root() {
     comp.remove_storage_all("/").unwrap();
 
     let cursor = comp.into_inner();
-    let comp = CompoundFile::open(cursor).expect("open");
+    let comp = CompoundFile::open_strict(cursor).expect("open");
     assert!(read_storage_to_vec(&comp, "/").is_empty());
 }
 
@@ -468,7 +468,7 @@ fn create_streams() {
     comp.create_stream("/baz").unwrap().write_all(b"baz!").unwrap();
 
     let cursor = comp.into_inner();
-    let mut comp = CompoundFile::open(cursor).expect("open");
+    let mut comp = CompoundFile::open_strict(cursor).expect("open");
     {
         let mut stream = comp.open_stream("/foo").unwrap();
         let mut data = String::new();
@@ -493,7 +493,7 @@ fn create_small_stream() {
     comp.create_stream("foobar").unwrap().write_all(&data).unwrap();
 
     let cursor = comp.into_inner();
-    let mut comp = CompoundFile::open(cursor).expect("open");
+    let mut comp = CompoundFile::open_strict(cursor).expect("open");
     let mut stream = comp.open_stream("foobar").unwrap();
     let mut actual_data = Vec::new();
     stream.read_to_end(&mut actual_data).unwrap();
@@ -510,7 +510,7 @@ fn create_large_stream() {
     comp.create_stream("foobar").unwrap().write_all(&data).unwrap();
 
     let cursor = comp.into_inner();
-    let mut comp = CompoundFile::open(cursor).expect("open");
+    let mut comp = CompoundFile::open_strict(cursor).expect("open");
     let mut stream = comp.open_stream("foobar").unwrap();
     let mut actual_data = Vec::new();
     stream.read_to_end(&mut actual_data).unwrap();
@@ -531,7 +531,7 @@ fn create_very_large_stream() {
     }
 
     let cursor = comp.into_inner();
-    let mut comp = CompoundFile::open(cursor).expect("open");
+    let mut comp = CompoundFile::open_strict(cursor).expect("open");
     let mut stream = comp.open_stream("foobar").unwrap();
     assert_eq!(stream.len(), 1_000_000);
     assert_eq!(stream.seek(SeekFrom::End(0)).unwrap(), 1_000_000);
@@ -598,7 +598,7 @@ fn remove_streams() {
     comp.remove_stream("/baz/blarg").unwrap();
 
     let cursor = comp.into_inner();
-    let comp = CompoundFile::open(cursor).expect("open");
+    let comp = CompoundFile::open_strict(cursor).expect("open");
     assert_eq!(read_storage_to_vec(&comp, "/"), vec!["baz", "quux"]);
     assert!(read_storage_to_vec(&comp, "/baz").is_empty());
 }
@@ -651,7 +651,7 @@ fn truncate_stream() {
     }
 
     let cursor = comp.into_inner();
-    let mut comp = CompoundFile::open(cursor).expect("open");
+    let mut comp = CompoundFile::open_strict(cursor).expect("open");
     let mut stream = comp.open_stream("/foobar").unwrap();
     assert_eq!(stream.len(), 6000);
     let mut actual_data = Vec::new();
@@ -682,7 +682,7 @@ fn extend_stream() {
     }
 
     let cursor = comp.into_inner();
-    let mut comp = CompoundFile::open(cursor).expect("open");
+    let mut comp = CompoundFile::open_strict(cursor).expect("open");
     let mut stream = comp.open_stream("/foobar").unwrap();
     assert_eq!(stream.len(), 5000);
     let mut actual_data = Vec::new();

@@ -533,7 +533,8 @@ impl<F: Write + Seek> Directory<F> {
 mod tests {
     use super::Directory;
     use crate::internal::{
-        consts, Allocator, Color, DirEntry, ObjType, Sectors, Version,
+        consts, Allocator, Color, DirEntry, ObjType, Sectors, Validation,
+        Version,
     };
     use std::io::Cursor;
 
@@ -545,7 +546,9 @@ mod tests {
         let sectors = Sectors::new(version, data_len as u64, cursor);
         let mut fat = vec![consts::END_OF_CHAIN; num_sectors];
         fat[0] = consts::FAT_SECTOR;
-        let allocator = Allocator::new(sectors, vec![], vec![0], fat).unwrap();
+        let allocator =
+            Allocator::new(sectors, vec![], vec![0], fat, Validation::Strict)
+                .unwrap();
         Directory::new(allocator, entries, 1).unwrap()
     }
 

@@ -15,6 +15,7 @@ mod objtype;
 pub mod path;
 mod sector;
 pub mod time;
+mod validate;
 mod version;
 
 pub use self::alloc::Allocator;
@@ -28,4 +29,5 @@ pub use self::minialloc::MiniAllocator;
 pub use self::minichain::MiniChain;
 pub use self::objtype::ObjType;
 pub use self::sector::{Sector, SectorInit, Sectors};
+pub use self::validate::Validation;
 pub use self::version::Version;

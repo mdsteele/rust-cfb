@@ -393,7 +393,8 @@ impl<F: Write + Seek> MiniAllocator<F> {
 mod tests {
     use super::MiniAllocator;
     use crate::internal::{
-        consts, Allocator, DirEntry, Directory, ObjType, Sectors, Version,
+        consts, Allocator, DirEntry, Directory, ObjType, Sectors, Validation,
+        Version,
     };
     use std::io::Cursor;
 
@@ -413,7 +414,9 @@ mod tests {
         let sectors = Sectors::new(version, data_len as u64, cursor);
         let mut fat = vec![consts::END_OF_CHAIN; num_sectors];
         fat[0] = consts::FAT_SECTOR;
-        let allocator = Allocator::new(sectors, vec![], vec![0], fat).unwrap();
+        let allocator =
+            Allocator::new(sectors, vec![], vec![0], fat, Validation::Strict)
+                .unwrap();
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
         root_entry.start_sector = 3;

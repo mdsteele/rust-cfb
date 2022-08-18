@@ -1,5 +1,5 @@
 use crate::internal::consts::{self, MAX_REGULAR_STREAM_ID, NO_STREAM};
-use crate::internal::{self, Color, ObjType, Version};
+use crate::internal::{self, Color, ObjType, Validation, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Write};
 use uuid::Uuid;
@@ -81,7 +81,7 @@ impl DirEntry {
         DirEntry::new(consts::ROOT_DIR_NAME, ObjType::Root, 0)
     }
 
-    pub fn read_clsid<R: Read>(reader: &mut R) -> io::Result<Uuid> {
+    fn read_clsid<R: Read>(reader: &mut R) -> io::Result<Uuid> {
         let d1 = reader.read_u32::<LittleEndian>()?;
         let d2 = reader.read_u16::<LittleEndian>()?;
         let d3 = reader.read_u16::<LittleEndian>()?;
@@ -90,10 +90,7 @@ impl DirEntry {
         Ok(Uuid::from_fields(d1, d2, d3, &d4))
     }
 
-    pub fn write_clsid<W: Write>(
-        writer: &mut W,
-        clsid: &Uuid,
-    ) -> io::Result<()> {
+    fn write_clsid<W: Write>(writer: &mut W, clsid: &Uuid) -> io::Result<()> {
         let (d1, d2, d3, d4) = clsid.as_fields();
         writer.write_u32::<LittleEndian>(d1)?;
         writer.write_u16::<LittleEndian>(d2)?;
@@ -105,6 +102,7 @@ impl DirEntry {
     pub fn read_from<R: Read>(
         reader: &mut R,
         version: Version,
+        validation: Validation,
     ) -> io::Result<DirEntry> {
         let mut name: String = {
             let mut name_chars: Vec<u16> = Vec::with_capacity(32);
@@ -128,12 +126,17 @@ impl DirEntry {
             // though the directory entry aready includes the length of the
             // name.  And also, that length *includes* the null character?
             // Look, CFB is a weird format.)  Anyway, some CFB files in the
-            // wild don't do this, so we're not going to enforce it.
+            // wild don't do this, so under Permissive validation we don't
+            // enforce it.
+            if validation.is_strict() && name_chars[name_len_chars] != 0 {
+                malformed!("name not null-terminated");
+            }
             match String::from_utf16(&name_chars[0..name_len_chars]) {
                 Ok(name) => name,
                 Err(_) => malformed!("name not valid UTF-16"),
             }
         };
+
         let obj_type = {
             let obj_type_byte = reader.read_u8()?;
             match ObjType::from_byte(obj_type_byte) {
@@ -141,14 +144,24 @@ impl DirEntry {
                 None => malformed!("invalid object type: {}", obj_type_byte),
             }
         };
+
         // According to section 2.6.2 of the MS-CFB spec, "The root directory
         // entry's Name field MUST contain the null-terminated string 'Root
         // Entry' in Unicode UTF-16."  However, some CFB files in the wild
-        // don't do this, so we don't enforce it; instead, for the root entry
-        // we just ignore the actual name in the file and treat it as though it
-        // were what it's supposed to be.
+        // don't do this, so under Permissive validation we don't enforce it;
+        // instead, for the root entry we just ignore the actual name in the
+        // file and treat it as though it were what it's supposed to be.
         if obj_type == ObjType::Root {
-            name = consts::ROOT_DIR_NAME.to_string();
+            if name != consts::ROOT_DIR_NAME {
+                if validation.is_strict() {
+                    malformed!(
+                        "root entry name is {:?}, but should be {:?}",
+                        name,
+                        consts::ROOT_DIR_NAME
+                    );
+                }
+                name = consts::ROOT_DIR_NAME.to_string();
+            }
         } else {
             internal::path::validate_name(&name)?;
         }
@@ -180,16 +193,16 @@ impl DirEntry {
 
         // Section 2.6.1 of the MS-CFB spec states that "In a stream object,
         // this [CLSID] field MUST be set to all zeroes."  However, some CFB
-        // files in the wild violate this, so we don't enforce it; instead, for
-        // non-storage objects we just ignore the CLSID data entirely and treat
-        // it as though it were nil.
-        let clsid = match obj_type {
-            ObjType::Unallocated | ObjType::Stream => {
-                reader.read_exact(&mut [0u8; 16])?;
-                Uuid::nil()
+        // files in the wild violate this, so under Permissive validation we
+        // don't enforce it; instead, for non-storage objects we just ignore
+        // the CLSID data entirely and treat it as though it were nil.
+        let mut clsid = DirEntry::read_clsid(reader)?;
+        if obj_type == ObjType::Stream && !clsid.is_nil() {
+            if validation.is_strict() {
+                malformed!("non-null stream CLSID: {:?}", clsid);
             }
-            ObjType::Storage | ObjType::Root => DirEntry::read_clsid(reader)?,
-        };
+            clsid = Uuid::nil();
+        }
 
         let state_bits = reader.read_u32::<LittleEndian>()?;
         let creation_time = reader.read_u64::<LittleEndian>()?;
@@ -199,14 +212,20 @@ impl DirEntry {
         // stream length fields should both be set to zero for storage entries.
         // However, some CFB implementations use FREE_SECTOR or END_OF_CHAIN
         // instead for the starting sector, or even just leave these fields
-        // with uninitialized garbage values, so we don't enforce this.
-        // Instead, for storage objects we just treat these fields as though
-        // they were zero.
+        // with uninitialized garbage values, so under Permissive validation we
+        // don't enforce this; instead, for storage objects we just treat these
+        // fields as though they were zero.
         let mut start_sector = reader.read_u32::<LittleEndian>()?;
         let mut stream_len =
             reader.read_u64::<LittleEndian>()? & version.stream_len_mask();
         if obj_type == ObjType::Storage {
+            if validation.is_strict() && start_sector != 0 {
+                malformed!("non-zero storage start sector: {}", start_sector);
+            }
             start_sector = 0;
+            if validation.is_strict() && stream_len != 0 {
+                malformed!("non-zero storage stream length: {}", stream_len);
+            }
             stream_len = 0;
         }
 
@@ -257,7 +276,7 @@ impl DirEntry {
 #[cfg(test)]
 mod tests {
     use super::DirEntry;
-    use crate::internal::{consts, Color, ObjType, Version};
+    use crate::internal::{consts, Color, ObjType, Validation, Version};
     use uuid::Uuid;
 
     #[test]
@@ -281,8 +300,12 @@ mod tests {
             0xfe, 0xff, 0xff, 0xff, // start sector
             0, 0, 0, 0, 0, 0, 0, 0, // stream length
         ];
-        let dir_entry =
-            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        let dir_entry = DirEntry::read_from(
+            &mut (&input as &[u8]),
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
         assert_eq!(&dir_entry.name, "Foobar");
         assert_eq!(dir_entry.obj_type, ObjType::Storage);
         assert_eq!(dir_entry.color, Color::Black);
@@ -321,8 +344,12 @@ mod tests {
             0, 0, 0, 0, // start sector
             0, 0, 0, 0, 0, 0, 0, 0, // stream length
         ];
-        let dir_entry =
-            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        let dir_entry = DirEntry::read_from(
+            &mut (&input as &[u8]),
+            Version::V4,
+            Validation::Strict,
+        )
+        .unwrap();
         assert_eq!(&dir_entry.name, "Foobar");
         assert_eq!(dir_entry.obj_type, ObjType::Storage);
         assert_eq!(dir_entry.color, Color::Black);
@@ -362,7 +389,12 @@ mod tests {
             0, 0, 0, 0, // start sector
             0, 0, 0, 0, 0, 0, 0, 0, // stream length
         ];
-        DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        DirEntry::read_from(
+            &mut (&input as &[u8]),
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -386,131 +418,212 @@ mod tests {
             0, 0, 0, 0, // start sector
             0, 0, 0, 0, 0, 0, 0, 0, // stream length
         ];
-        DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        DirEntry::read_from(
+            &mut (&input as &[u8]),
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
+    }
+
+    const NON_NULL_CLSID_ON_STREAM: [u8; consts::DIR_ENTRY_LEN] = [
+        70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, // name
+        14, 0, // name length
+        2, // obj type
+        1, // color,
+        12, 0, 0, 0, // left sibling
+        34, 0, 0, 0, // right sibling
+        0xff, 0xff, 0xff, 0xff, // child
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 2, // CLSID
+        0, 0, 0, 0, // state bits
+        0, 0, 0, 0, 0, 0, 0, 0, // created
+        0, 0, 0, 0, 0, 0, 0, 0, // modified
+        0, 0, 0, 0, // start sector
+        0, 0, 0, 0, 0, 0, 0, 0, // stream length
+    ];
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory entry (non-null stream CLSID: \
+                    04030201-0605-0807-0908-070605040302)"
+    )]
+    fn non_null_clsid_on_stream_strict() {
+        let mut input: &[u8] = &NON_NULL_CLSID_ON_STREAM;
+        DirEntry::read_from(&mut input, Version::V4, Validation::Strict)
+            .unwrap();
     }
 
     // Regression test for https://github.com/mdsteele/rust-cfb/issues/26
     #[test]
-    fn non_null_clsid_on_stream() {
-        let input: [u8; consts::DIR_ENTRY_LEN] = [
-            // Name:
-            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 14, 0, // name length
-            2, // obj type
-            1, // color,
-            12, 0, 0, 0, // left sibling
-            34, 0, 0, 0, // right sibling
-            0xff, 0xff, 0xff, 0xff, // child
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 2, // CLSID
-            0, 0, 0, 0, // state bits
-            0, 0, 0, 0, 0, 0, 0, 0, // created
-            0, 0, 0, 0, 0, 0, 0, 0, // modified
-            0, 0, 0, 0, // start sector
-            0, 0, 0, 0, 0, 0, 0, 0, // stream length
-        ];
+    fn non_null_clsid_on_stream_permissive() {
+        let mut input: &[u8] = &NON_NULL_CLSID_ON_STREAM;
         // Section 2.6.1 of the MS-CFB spec states that "In a stream object,
         // this [CLSID] field MUST be set to all zeroes."  However, some CFB
         // files in the wild violate this.  So we allow parsing a stream dir
-        // entry with a non-nil CLSID, but we ignore that CLSID and just set it
-        // to all zeroes.
-        let dir_entry =
-            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        // entry with a non-nil CLSID under Permissive validation, but we
+        // ignore that CLSID and just set it to all zeroes.
+        let dir_entry = DirEntry::read_from(
+            &mut input,
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
         assert_eq!(dir_entry.obj_type, ObjType::Stream);
         assert!(dir_entry.clsid.is_nil());
     }
 
+    const NON_NULL_TERMINATED_NAME: [u8; consts::DIR_ENTRY_LEN] = [
+        70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        0, // name
+        14, 0, // name length
+        2, // obj type
+        1, // color,
+        12, 0, 0, 0, // left sibling
+        34, 0, 0, 0, // right sibling
+        0xff, 0xff, 0xff, 0xff, // child
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+        0, 0, 0, 0, // state bits
+        0, 0, 0, 0, 0, 0, 0, 0, // created
+        0, 0, 0, 0, 0, 0, 0, 0, // modified
+        0, 0, 0, 0, // start sector
+        0, 0, 0, 0, 0, 0, 0, 0, // stream length
+    ];
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory entry (name not null-terminated)"
+    )]
+    fn non_null_terminated_name_strict() {
+        let mut input: &[u8] = &NON_NULL_TERMINATED_NAME;
+        DirEntry::read_from(&mut input, Version::V4, Validation::Strict)
+            .unwrap();
+    }
+
     // Regression test for https://github.com/mdsteele/rust-cfb/issues/26
     #[test]
-    fn non_null_terminated_name() {
-        let input: [u8; consts::DIR_ENTRY_LEN] = [
-            // Name:
-            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-            0, 14, 0, // name length
-            2, // obj type
-            1, // color,
-            12, 0, 0, 0, // left sibling
-            34, 0, 0, 0, // right sibling
-            0xff, 0xff, 0xff, 0xff, // child
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
-            0, 0, 0, 0, // state bits
-            0, 0, 0, 0, 0, 0, 0, 0, // created
-            0, 0, 0, 0, 0, 0, 0, 0, // modified
-            0, 0, 0, 0, // start sector
-            0, 0, 0, 0, 0, 0, 0, 0, // stream length
-        ];
+    fn non_null_terminated_name_permissive() {
+        let mut input: &[u8] = &NON_NULL_TERMINATED_NAME;
         // According to section 2.6.1 of the MS-CFB spec, "The name MUST be
         // terminated with a UTF-16 terminating null character."  But some CFB
-        // files in the wild don't do this, so we just rely on the name length
-        // field.
-        let dir_entry =
-            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        // files in the wild don't do this, so under Permissive validation we
+        // just rely on the name length field.
+        let dir_entry = DirEntry::read_from(
+            &mut input,
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
         assert_eq!(dir_entry.name, "Foobar");
+    }
+
+    #[test]
+    fn nonzero_storage_starting_sector_strict() {
+        let mut dir_entry = DirEntry::new("Foobar", ObjType::Storage, 0);
+        dir_entry.start_sector = 58;
+        let mut input = Vec::<u8>::new();
+        dir_entry.write_to(&mut input).unwrap();
+        let result = DirEntry::read_from(
+            &mut input.as_slice(),
+            Version::V4,
+            Validation::Strict,
+        );
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "Malformed directory entry (non-zero storage start sector: 58)"
+        );
+    }
+
+    #[test]
+    fn nonzero_storage_stream_len_strict() {
+        let mut dir_entry = DirEntry::new("Foobar", ObjType::Storage, 0);
+        dir_entry.stream_len = 574;
+        let mut input = Vec::<u8>::new();
+        dir_entry.write_to(&mut input).unwrap();
+        let result = DirEntry::read_from(
+            &mut input.as_slice(),
+            Version::V4,
+            Validation::Strict,
+        );
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "Malformed directory entry (non-zero storage stream length: 574)"
+        );
     }
 
     // Regression test for https://github.com/mdsteele/rust-cfb/issues/27
     #[test]
-    fn nonzero_storage_starting_sector_and_stream_len() {
-        let input: [u8; consts::DIR_ENTRY_LEN] = [
-            // Name:
-            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 14, 0, // name length
-            1, // obj type
-            1, // color,
-            12, 0, 0, 0, // left sibling
-            34, 0, 0, 0, // right sibling
-            56, 0, 0, 0, // child
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
-            239, 190, 173, 222, // state bits
-            0, 0, 0, 0, 0, 0, 0, 0, // created
-            0, 0, 0, 0, 0, 0, 0, 0, // modified
-            58, 0, 0, 0, // start sector
-            62, 2, 0, 0, 0, 0, 0, 0, // stream length
-        ];
+    fn nonzero_storage_starting_sector_and_stream_len_permissive() {
+        let mut dir_entry = DirEntry::new("Foobar", ObjType::Storage, 0);
+        dir_entry.start_sector = 58;
+        dir_entry.stream_len = 574;
+        let mut input = Vec::<u8>::new();
+        dir_entry.write_to(&mut input).unwrap();
         // According to section 2.6.3 of the MS-CFB spec, the starting sector
         // location and stream size fields should be set to zero in a storage
         // directory entry.  But some CFB files in the wild don't do this, so
-        // when parsing a storage entry, just ignore those fields' values and
-        // pretend they're zero.
-        let dir_entry =
-            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        // when parsing a storage entry under Permissive validation, just
+        // ignore those fields' values and pretend they're zero.
+        let dir_entry = DirEntry::read_from(
+            &mut (&input as &[u8]),
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
         assert_eq!(dir_entry.obj_type, ObjType::Storage);
         assert_eq!(dir_entry.start_sector, 0);
         assert_eq!(dir_entry.stream_len, 0);
     }
 
+    const ROOT_ENTRY_WITH_INCORRECT_NAME: [u8; consts::DIR_ENTRY_LEN] = [
+        70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, // name
+        14, 0, // name length
+        5, // obj type
+        1, // color,
+        12, 0, 0, 0, // left sibling
+        34, 0, 0, 0, // right sibling
+        56, 0, 0, 0, // child
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+        239, 190, 173, 222, // state bits
+        0, 0, 0, 0, 0, 0, 0, 0, // created
+        0, 0, 0, 0, 0, 0, 0, 0, // modified
+        0, 0, 0, 0, // start sector
+        0, 0, 0, 0, 0, 0, 0, 0, // stream length
+    ];
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory entry (root entry name is \
+                    \\\"Foobar\\\", but should be \\\"Root Entry\\\")"
+    )]
+    fn root_entry_with_incorrect_name_strict() {
+        let mut input: &[u8] = &ROOT_ENTRY_WITH_INCORRECT_NAME;
+        DirEntry::read_from(&mut input, Version::V4, Validation::Strict)
+            .unwrap();
+    }
+
     // Regression test for https://github.com/mdsteele/rust-cfb/issues/29
     #[test]
-    fn root_entry_with_incorrect_name() {
-        let input: [u8; consts::DIR_ENTRY_LEN] = [
-            // Name:
-            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 14, 0, // name length
-            5, // obj type
-            1, // color,
-            12, 0, 0, 0, // left sibling
-            34, 0, 0, 0, // right sibling
-            56, 0, 0, 0, // child
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
-            239, 190, 173, 222, // state bits
-            0, 0, 0, 0, 0, 0, 0, 0, // created
-            0, 0, 0, 0, 0, 0, 0, 0, // modified
-            0, 0, 0, 0, // start sector
-            0, 0, 0, 0, 0, 0, 0, 0, // stream length
-        ];
+    fn root_entry_with_incorrect_name_permissive() {
+        let mut input: &[u8] = &ROOT_ENTRY_WITH_INCORRECT_NAME;
         // According to section 2.6.2 of the MS-CFB spec, the name field MUST
         // be set to "Root Entry" in the root directory entry.  But some CFB
-        // files in the wild don't do this, so when parsing the root entry,
-        // just ignore the name in the file and pretend it's correct.
-        let dir_entry =
-            DirEntry::read_from(&mut (&input as &[u8]), Version::V4).unwrap();
+        // files in the wild don't do this, so when parsing the root entry
+        // under Permissive validation, just ignore the name in the file and
+        // pretend it's correct.
+        let dir_entry = DirEntry::read_from(
+            &mut input,
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
         assert_eq!(dir_entry.obj_type, ObjType::Root);
         assert_eq!(dir_entry.name, "Root Entry");
     }
