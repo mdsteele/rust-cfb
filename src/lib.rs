@@ -48,7 +48,7 @@
 use crate::internal::consts;
 use crate::internal::{
     Allocator, DirEntry, Directory, Header, MiniAllocator, ObjType,
-    SectorInit, Sectors, Validation,
+    SectorInit, Sectors, Timestamp, Validation,
 };
 pub use crate::internal::{Entries, Entry, Stream, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -856,7 +856,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 ObjType::Root
             );
             self.minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
-                dir_entry.modified_time = internal::time::current_timestamp();
+                dir_entry.modified_time = Timestamp::now();
             })?;
         }
         Ok(())

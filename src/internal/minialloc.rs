@@ -393,8 +393,8 @@ impl<F: Write + Seek> MiniAllocator<F> {
 mod tests {
     use super::MiniAllocator;
     use crate::internal::{
-        consts, Allocator, DirEntry, Directory, ObjType, Sectors, Validation,
-        Version,
+        consts, Allocator, DirEntry, Directory, ObjType, Sectors, Timestamp,
+        Validation, Version,
     };
     use std::io::Cursor;
 
@@ -421,7 +421,8 @@ mod tests {
         root_entry.child = 1;
         root_entry.start_sector = 3;
         root_entry.stream_len = root_stream_len;
-        let mut stream_entry = DirEntry::new("foo", ObjType::Stream, 0);
+        let mut stream_entry =
+            DirEntry::new("foo", ObjType::Stream, Timestamp::zero());
         stream_entry.start_sector = 0;
         stream_entry.stream_len = root_entry.stream_len;
         let entries = vec![root_entry, stream_entry];

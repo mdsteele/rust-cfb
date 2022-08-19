@@ -31,8 +31,7 @@ pub fn validate_name(name: &str) -> io::Result<Vec<u16>> {
         name.encode_utf16().take(MAX_NAME_LEN + 1).collect();
     if name_utf16.len() > MAX_NAME_LEN {
         invalid_input!(
-            "Object name cannot be more than {} UTF-16 code units \
-                        (was {})",
+            "Object name cannot be more than {} UTF-16 code units (was {})",
             MAX_NAME_LEN,
             name.encode_utf16().count()
         );
@@ -108,8 +107,8 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "Object name cannot be more than 31 UTF-16 code \
-                               units (was 35)"
+        expected = "Object name cannot be more than 31 UTF-16 code units \
+                    (was 35)"
     )]
     fn long_name_is_invalid() {
         validate_name("ThisNameIsMostDefinitelyMuchTooLong").unwrap();

@@ -1,4 +1,4 @@
-use crate::internal::{self, consts, DirEntry, ObjType};
+use crate::internal::{consts, DirEntry, ObjType, Timestamp};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use uuid::Uuid;
@@ -13,8 +13,8 @@ pub struct Entry {
     obj_type: ObjType,
     clsid: Uuid,
     state_bits: u32,
-    creation_time: u64,
-    modified_time: u64,
+    creation_time: Timestamp,
+    modified_time: Timestamp,
     stream_len: u64,
 }
 
@@ -84,13 +84,13 @@ impl Entry {
     /// Returns the time when the object that this entry represents was
     /// created.
     pub fn created(&self) -> SystemTime {
-        internal::time::system_time_from_timestamp(self.creation_time)
+        self.creation_time.to_system_time()
     }
 
     /// Returns the time when the object that this entry represents was last
     /// modified.
     pub fn modified(&self) -> SystemTime {
-        internal::time::system_time_from_timestamp(self.modified_time)
+        self.modified_time.to_system_time()
     }
 }
 
@@ -176,7 +176,7 @@ impl<'a> Iterator for Entries<'a> {
 mod tests {
     use super::{Entries, EntriesOrder, Entry};
     use crate::internal::consts::{NO_STREAM, ROOT_DIR_NAME};
-    use crate::internal::{DirEntry, ObjType};
+    use crate::internal::{DirEntry, ObjType, Timestamp};
     use std::path::{Path, PathBuf};
 
     fn make_entry(
@@ -186,7 +186,7 @@ mod tests {
         child: u32,
         right: u32,
     ) -> DirEntry {
-        let mut dir_entry = DirEntry::new(name, obj_type, 0);
+        let mut dir_entry = DirEntry::new(name, obj_type, Timestamp::zero());
         dir_entry.left_sibling = left;
         dir_entry.child = child;
         dir_entry.right_sibling = right;

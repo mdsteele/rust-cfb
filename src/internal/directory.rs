@@ -1,6 +1,6 @@
 use crate::internal::{
     self, consts, Allocator, Chain, DirEntry, Entries, EntriesOrder, ObjType,
-    Sector, SectorInit, Version,
+    Sector, SectorInit, Timestamp, Version,
 };
 use byteorder::{LittleEndian, WriteBytesExt};
 use fnv::FnvHashSet;
@@ -326,7 +326,7 @@ impl<F: Write + Seek> Directory<F> {
         );
         // Create a new directory entry.
         let stream_id = self.allocate_dir_entry()?;
-        let now = internal::time::current_timestamp();
+        let now = Timestamp::now();
         *self.dir_entry_mut(stream_id) = DirEntry::new(name, obj_type, now);
 
         // Insert the new entry into the tree.
@@ -533,8 +533,8 @@ impl<F: Write + Seek> Directory<F> {
 mod tests {
     use super::Directory;
     use crate::internal::{
-        consts, Allocator, Color, DirEntry, ObjType, Sectors, Validation,
-        Version,
+        consts, Allocator, Color, DirEntry, ObjType, Sectors, Timestamp,
+        Validation, Version,
     };
     use std::io::Cursor;
 
@@ -575,7 +575,8 @@ mod tests {
     fn storage_is_child_of_itself() {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
-        let mut storage = DirEntry::new("foo", ObjType::Storage, 0);
+        let mut storage =
+            DirEntry::new("foo", ObjType::Storage, Timestamp::zero());
         storage.child = 1;
         make_directory(vec![root_entry, storage]);
     }
@@ -597,7 +598,7 @@ mod tests {
     fn nonroot_has_wrong_type() {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
-        let storage = DirEntry::new("foo", ObjType::Root, 0);
+        let storage = DirEntry::new("foo", ObjType::Root, Timestamp::zero());
         make_directory(vec![root_entry, storage]);
     }
 
@@ -622,10 +623,12 @@ mod tests {
         // if there are two red nodes in a row.
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
-        let mut storage1 = DirEntry::new("foo", ObjType::Storage, 0);
+        let mut storage1 =
+            DirEntry::new("foo", ObjType::Storage, Timestamp::zero());
         storage1.color = Color::Red;
         storage1.left_sibling = 2;
-        let mut storage2 = DirEntry::new("bar", ObjType::Storage, 0);
+        let mut storage2 =
+            DirEntry::new("bar", ObjType::Storage, Timestamp::zero());
         storage2.color = Color::Red;
         make_directory(vec![root_entry, storage1, storage2]);
     }

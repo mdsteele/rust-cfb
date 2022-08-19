@@ -1,5 +1,5 @@
 use crate::internal::consts::{self, MAX_REGULAR_STREAM_ID, NO_STREAM};
-use crate::internal::{self, Color, ObjType, Validation, Version};
+use crate::internal::{self, Color, ObjType, Timestamp, Validation, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Write};
 use uuid::Uuid;
@@ -26,14 +26,18 @@ pub struct DirEntry {
     pub child: u32,
     pub clsid: Uuid,
     pub state_bits: u32,
-    pub creation_time: u64,
-    pub modified_time: u64,
+    pub creation_time: Timestamp,
+    pub modified_time: Timestamp,
     pub start_sector: u32,
     pub stream_len: u64,
 }
 
 impl DirEntry {
-    pub fn new(name: &str, obj_type: ObjType, timestamp: u64) -> DirEntry {
+    pub fn new(
+        name: &str,
+        obj_type: ObjType,
+        timestamp: Timestamp,
+    ) -> DirEntry {
         debug_assert_ne!(obj_type, ObjType::Unallocated);
         DirEntry {
             name: name.to_string(),
@@ -70,15 +74,15 @@ impl DirEntry {
             child: NO_STREAM,
             clsid: Uuid::nil(),
             state_bits: 0,
-            creation_time: 0,
-            modified_time: 0,
+            creation_time: Timestamp::zero(),
+            modified_time: Timestamp::zero(),
             start_sector: 0,
             stream_len: 0,
         }
     }
 
     pub fn empty_root_entry() -> DirEntry {
-        DirEntry::new(consts::ROOT_DIR_NAME, ObjType::Root, 0)
+        DirEntry::new(consts::ROOT_DIR_NAME, ObjType::Root, Timestamp::zero())
     }
 
     fn read_clsid<R: Read>(reader: &mut R) -> io::Result<Uuid> {
@@ -205,8 +209,8 @@ impl DirEntry {
         }
 
         let state_bits = reader.read_u32::<LittleEndian>()?;
-        let creation_time = reader.read_u64::<LittleEndian>()?;
-        let modified_time = reader.read_u64::<LittleEndian>()?;
+        let creation_time = Timestamp::read_from(reader)?;
+        let modified_time = Timestamp::read_from(reader)?;
 
         // According to the MS-CFB spec section 2.6.3, the starting sector and
         // stream length fields should both be set to zero for storage entries.
@@ -263,8 +267,8 @@ impl DirEntry {
         writer.write_u32::<LittleEndian>(self.child)?;
         DirEntry::write_clsid(writer, &self.clsid)?;
         writer.write_u32::<LittleEndian>(self.state_bits)?;
-        writer.write_u64::<LittleEndian>(self.creation_time)?;
-        writer.write_u64::<LittleEndian>(self.modified_time)?;
+        self.creation_time.write_to(writer)?;
+        self.modified_time.write_to(writer)?;
         writer.write_u32::<LittleEndian>(self.start_sector)?;
         writer.write_u64::<LittleEndian>(self.stream_len)?;
         Ok(())
@@ -276,7 +280,10 @@ impl DirEntry {
 #[cfg(test)]
 mod tests {
     use super::DirEntry;
-    use crate::internal::{consts, Color, ObjType, Validation, Version};
+    use crate::internal::{
+        consts, Color, ObjType, Timestamp, Validation, Version,
+    };
+    use std::time::UNIX_EPOCH;
     use uuid::Uuid;
 
     #[test]
@@ -317,8 +324,8 @@ mod tests {
             Uuid::parse_str("F29F85E0-4FF9-1068-AB91-08002B27B3D9").unwrap()
         );
         assert_eq!(dir_entry.state_bits, 0xdeadbeef);
-        assert_eq!(dir_entry.creation_time, 0);
-        assert_eq!(dir_entry.modified_time, 0);
+        assert_eq!(dir_entry.creation_time, Timestamp::zero());
+        assert_eq!(dir_entry.modified_time, Timestamp::zero());
         assert_eq!(dir_entry.start_sector, 0);
         assert_eq!(dir_entry.stream_len, 0);
     }
@@ -340,7 +347,7 @@ mod tests {
             0xab, 0x91, 0x08, 0x00, 0x2b, 0x27, 0xb3, 0xd9, // CLSID
             239, 190, 173, 222, // state bits
             0, 0, 0, 0, 0, 0, 0, 0, // created
-            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            0, 128, 62, 213, 222, 177, 157, 1, // modified
             0, 0, 0, 0, // start sector
             0, 0, 0, 0, 0, 0, 0, 0, // stream length
         ];
@@ -361,8 +368,11 @@ mod tests {
             Uuid::parse_str("F29F85E0-4FF9-1068-AB91-08002B27B3D9").unwrap()
         );
         assert_eq!(dir_entry.state_bits, 0xdeadbeef);
-        assert_eq!(dir_entry.creation_time, 0);
-        assert_eq!(dir_entry.modified_time, 0);
+        assert_eq!(dir_entry.creation_time, Timestamp::zero());
+        assert_eq!(
+            dir_entry.modified_time,
+            Timestamp::from_system_time(UNIX_EPOCH)
+        );
         assert_eq!(dir_entry.start_sector, 0);
         assert_eq!(dir_entry.stream_len, 0);
     }
@@ -523,7 +533,8 @@ mod tests {
 
     #[test]
     fn nonzero_storage_starting_sector_strict() {
-        let mut dir_entry = DirEntry::new("Foobar", ObjType::Storage, 0);
+        let mut dir_entry =
+            DirEntry::new("Foobar", ObjType::Storage, Timestamp::zero());
         dir_entry.start_sector = 58;
         let mut input = Vec::<u8>::new();
         dir_entry.write_to(&mut input).unwrap();
@@ -540,7 +551,8 @@ mod tests {
 
     #[test]
     fn nonzero_storage_stream_len_strict() {
-        let mut dir_entry = DirEntry::new("Foobar", ObjType::Storage, 0);
+        let mut dir_entry =
+            DirEntry::new("Foobar", ObjType::Storage, Timestamp::zero());
         dir_entry.stream_len = 574;
         let mut input = Vec::<u8>::new();
         dir_entry.write_to(&mut input).unwrap();
@@ -558,7 +570,8 @@ mod tests {
     // Regression test for https://github.com/mdsteele/rust-cfb/issues/27
     #[test]
     fn nonzero_storage_starting_sector_and_stream_len_permissive() {
-        let mut dir_entry = DirEntry::new("Foobar", ObjType::Storage, 0);
+        let mut dir_entry =
+            DirEntry::new("Foobar", ObjType::Storage, Timestamp::zero());
         dir_entry.start_sector = 58;
         dir_entry.stream_len = 574;
         let mut input = Vec::<u8>::new();

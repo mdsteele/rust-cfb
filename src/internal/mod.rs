@@ -15,7 +15,7 @@ mod objtype;
 pub mod path;
 mod sector;
 mod stream;
-pub mod time;
+mod timestamp;
 mod validate;
 mod version;
 
@@ -31,5 +31,6 @@ pub use self::minichain::MiniChain;
 pub use self::objtype::ObjType;
 pub use self::sector::{Sector, SectorInit, Sectors};
 pub use self::stream::Stream;
+pub use self::timestamp::Timestamp;
 pub use self::validate::Validation;
 pub use self::version::Version;

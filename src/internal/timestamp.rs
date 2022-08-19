@@ -1,17 +1,52 @@
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use std::io::{self, Read, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+//===========================================================================//
+
+/// A CFB file timestamp.  This is represented as the number of 100-nanosecond
+/// intervals since January 1, 1601 UTC.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Timestamp(u64);
+
+impl Timestamp {
+    /// Returns a timestamp representing the CFB file epoch of January 1, 1601
+    /// UTC.  This is an appropriate value to use for an uninitialized
+    /// timestamp.
+    pub fn zero() -> Timestamp {
+        Timestamp(0)
+    }
+
+    /// Returns a timestamp representing the current system time.
+    pub fn now() -> Timestamp {
+        Timestamp::from_system_time(SystemTime::now())
+    }
+
+    /// Returns a timestamp representing the given system time.
+    pub fn from_system_time(system_time: SystemTime) -> Timestamp {
+        Timestamp(timestamp_from_system_time(system_time))
+    }
+
+    /// Returns the local system time that this timestamp represents.
+    pub fn to_system_time(self) -> SystemTime {
+        system_time_from_timestamp(self.0)
+    }
+
+    pub fn read_from<R: Read>(reader: &mut R) -> io::Result<Timestamp> {
+        Ok(Timestamp(reader.read_u64::<LittleEndian>()?))
+    }
+
+    pub fn write_to<W: Write>(self, writer: &mut W) -> io::Result<()> {
+        writer.write_u64::<LittleEndian>(self.0)
+    }
+}
 
 //===========================================================================//
 
 /// The CFB timestamp value for the Unix epoch (Jan 1, 1970 UTC).
 const UNIX_EPOCH_TIMESTAMP: u64 = 116444736000000000;
 
-/// Returns the current time as a CFB file timestamp (the number of
-/// 100-nanosecond intervals since January 1, 1601 UTC).
-pub fn current_timestamp() -> u64 {
-    timestamp_from_system_time(SystemTime::now())
-}
-
-/// Converts a local `SystemTime` to a CFB file timestamp.
+/// Converts a local `SystemTime` to a CFB file timestamp value.
 fn timestamp_from_system_time(system_time: SystemTime) -> u64 {
     match system_time.duration_since(UNIX_EPOCH) {
         Ok(duration) => {
@@ -25,8 +60,8 @@ fn timestamp_from_system_time(system_time: SystemTime) -> u64 {
     }
 }
 
-/// Converts a CFB file timestamp to a local `SystemTime`.
-pub fn system_time_from_timestamp(timestamp: u64) -> SystemTime {
+/// Converts a CFB file timestamp value to a local `SystemTime`.
+fn system_time_from_timestamp(timestamp: u64) -> SystemTime {
     // The maximum range of SystemTime varies by system, and some systems
     // (e.g. 32-bit Linux) can't represent, say, a zero CFB timestamp.  So we
     // center our calculations around UNIX_EPOCH (the one value we can be sure
