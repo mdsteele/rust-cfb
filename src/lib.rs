@@ -848,7 +848,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             name,
             ObjType::Stream,
         )?;
-        return Ok(Stream::new(&self.minialloc, new_stream_id));
+        Ok(Stream::new(&self.minialloc, new_stream_id))
     }
 
     /// Removes the stream object at the provided path.
