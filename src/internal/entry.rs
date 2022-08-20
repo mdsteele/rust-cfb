@@ -1,9 +1,11 @@
-use crate::internal::{consts, DirEntry, ObjType, Timestamp};
+use crate::internal::{consts, DirEntry, MiniAllocator, ObjType, Timestamp};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::SystemTime;
 use uuid::Uuid;
 
-// ========================================================================= //
+//===========================================================================//
 
 /// Metadata about a single object (storage or stream) in a compound file.
 #[derive(Clone)]
@@ -94,7 +96,7 @@ impl Entry {
     }
 }
 
-// ========================================================================= //
+//===========================================================================//
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum EntriesOrder {
@@ -102,23 +104,27 @@ pub enum EntriesOrder {
     Preorder,
 }
 
-// ========================================================================= //
+//===========================================================================//
 
 /// An iterator over the entries in a storage object.
-pub struct Entries<'a> {
+pub struct Entries<'a, F: 'a> {
     order: EntriesOrder,
-    directory: &'a [DirEntry],
+    // TODO: Consider storing a Weak<RefCell<MiniAllocator<F>>> here instead of
+    // a reference to the Rc.  That would allow e.g. opening streams during
+    // iteration.  But we'd need to think about how the iterator should behave
+    // if the CFB tree structure is modified during iteration.
+    minialloc: &'a Rc<RefCell<MiniAllocator<F>>>,
     stack: Vec<(PathBuf, u32, bool)>,
 }
 
-impl<'a> Entries<'a> {
+impl<'a, F> Entries<'a, F> {
     pub(crate) fn new(
         order: EntriesOrder,
-        directory: &'a [DirEntry],
+        minialloc: &'a Rc<RefCell<MiniAllocator<F>>>,
         parent_path: PathBuf,
         start: u32,
-    ) -> Entries<'a> {
-        let mut entries = Entries { order, directory, stack: Vec::new() };
+    ) -> Entries<'a, F> {
+        let mut entries = Entries { order, minialloc, stack: Vec::new() };
         match order {
             EntriesOrder::Nonrecursive => {
                 entries.stack_left_spine(&parent_path, start);
@@ -130,30 +136,23 @@ impl<'a> Entries<'a> {
         entries
     }
 
-    fn join_path(parent_path: &Path, dir_entry: &DirEntry) -> PathBuf {
-        if dir_entry.obj_type == ObjType::Root {
-            parent_path.to_path_buf()
-        } else {
-            parent_path.join(&dir_entry.name)
-        }
-    }
-
     fn stack_left_spine(&mut self, parent_path: &Path, mut current_id: u32) {
+        let minialloc = self.minialloc.borrow();
         while current_id != consts::NO_STREAM {
-            let dir_entry = &self.directory[current_id as usize];
             self.stack.push((parent_path.to_path_buf(), current_id, true));
-            current_id = dir_entry.left_sibling;
+            current_id = minialloc.dir_entry(current_id).left_sibling;
         }
     }
 }
 
-impl<'a> Iterator for Entries<'a> {
+impl<'a, F> Iterator for Entries<'a, F> {
     type Item = Entry;
 
     fn next(&mut self) -> Option<Entry> {
         if let Some((parent, stream_id, visit_siblings)) = self.stack.pop() {
-            let dir_entry = &self.directory[stream_id as usize];
-            let path = Entries::join_path(&parent, dir_entry);
+            let minialloc = self.minialloc.borrow();
+            let dir_entry = minialloc.dir_entry(stream_id);
+            let path = join_path(&parent, dir_entry);
             if visit_siblings {
                 self.stack_left_spine(&parent, dir_entry.right_sibling);
             }
@@ -170,14 +169,29 @@ impl<'a> Iterator for Entries<'a> {
     }
 }
 
-// ========================================================================= //
+//===========================================================================//
+
+fn join_path(parent_path: &Path, dir_entry: &DirEntry) -> PathBuf {
+    if dir_entry.obj_type == ObjType::Root {
+        parent_path.to_path_buf()
+    } else {
+        parent_path.join(&dir_entry.name)
+    }
+}
+
+//===========================================================================//
 
 #[cfg(test)]
 mod tests {
     use super::{Entries, EntriesOrder, Entry};
-    use crate::internal::consts::{NO_STREAM, ROOT_DIR_NAME};
-    use crate::internal::{DirEntry, ObjType, Timestamp};
+    use crate::internal::consts::{self, NO_STREAM, ROOT_DIR_NAME};
+    use crate::internal::{
+        Allocator, DirEntry, Directory, MiniAllocator, ObjType, Sectors,
+        Timestamp, Validation, Version,
+    };
+    use std::cell::RefCell;
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
 
     fn make_entry(
         name: &str,
@@ -193,7 +207,7 @@ mod tests {
         dir_entry
     }
 
-    fn make_directory() -> Vec<DirEntry> {
+    fn make_minialloc() -> Rc<RefCell<MiniAllocator<()>>> {
         // Root contains:      3 contains:
         //      5                  8
         //     / \                / \
@@ -202,7 +216,7 @@ mod tests {
         //  1   4
         //   \
         //    2
-        vec![
+        let dir_entries = vec![
             make_entry(ROOT_DIR_NAME, ObjType::Root, NO_STREAM, 5, NO_STREAM),
             make_entry("1", ObjType::Stream, NO_STREAM, NO_STREAM, 2),
             make_entry("2", ObjType::Stream, NO_STREAM, NO_STREAM, NO_STREAM),
@@ -213,7 +227,23 @@ mod tests {
             make_entry("7", ObjType::Stream, NO_STREAM, NO_STREAM, NO_STREAM),
             make_entry("8", ObjType::Stream, 7, NO_STREAM, 9),
             make_entry("9", ObjType::Stream, NO_STREAM, NO_STREAM, NO_STREAM),
-        ]
+        ];
+        let version = Version::V3;
+        let sectors =
+            Sectors::new(version, 3 * version.sector_len() as u64, ());
+        let allocator = Allocator::new(
+            sectors,
+            vec![],
+            vec![0],
+            vec![consts::FAT_SECTOR, consts::END_OF_CHAIN],
+            Validation::Strict,
+        )
+        .unwrap();
+        let directory = Directory::new(allocator, dir_entries, 1).unwrap();
+        let minialloc =
+            MiniAllocator::new(directory, vec![], consts::END_OF_CHAIN)
+                .unwrap();
+        Rc::new(RefCell::new(minialloc))
     }
 
     fn paths_for_entries(entries: &[Entry]) -> Vec<&Path> {
@@ -222,10 +252,10 @@ mod tests {
 
     #[test]
     fn nonrecursive_entries_from_root() {
-        let directory = make_directory();
+        let minialloc = make_minialloc();
         let entries: Vec<Entry> = Entries::new(
             EntriesOrder::Nonrecursive,
-            &directory,
+            &minialloc,
             PathBuf::from("/"),
             5,
         )
@@ -246,10 +276,10 @@ mod tests {
 
     #[test]
     fn nonrecursive_entries_from_storage() {
-        let directory = make_directory();
+        let minialloc = make_minialloc();
         let entries: Vec<Entry> = Entries::new(
             EntriesOrder::Nonrecursive,
-            &directory,
+            &minialloc,
             PathBuf::from("/3"),
             8,
         )
@@ -263,10 +293,10 @@ mod tests {
 
     #[test]
     fn preorder_entries_from_root() {
-        let directory = make_directory();
+        let minialloc = make_minialloc();
         let entries: Vec<Entry> = Entries::new(
             EntriesOrder::Preorder,
-            &directory,
+            &minialloc,
             PathBuf::from("/"),
             0,
         )
@@ -291,10 +321,10 @@ mod tests {
 
     #[test]
     fn preorder_entries_from_storage() {
-        let directory = make_directory();
+        let minialloc = make_minialloc();
         let entries: Vec<Entry> = Entries::new(
             EntriesOrder::Preorder,
-            &directory,
+            &minialloc,
             PathBuf::from("/"),
             3,
         )
@@ -312,4 +342,4 @@ mod tests {
     }
 }
 
-// ========================================================================= //
+//===========================================================================//

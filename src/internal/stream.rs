@@ -1,5 +1,7 @@
 use crate::internal::{consts, MiniAllocator, ObjType, SectorInit, Timestamp};
+use std::cell::RefCell;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
+use std::rc::{Rc, Weak};
 
 //===========================================================================//
 
@@ -8,8 +10,8 @@ const BUFFER_SIZE: usize = 8192;
 //===========================================================================//
 
 /// A stream entry in a compound file, much like a filesystem file.
-pub struct Stream<'a, F: 'a> {
-    minialloc: &'a mut MiniAllocator<F>,
+pub struct Stream<F> {
+    minialloc: Weak<RefCell<MiniAllocator<F>>>,
     stream_id: u32,
     total_len: u64,
     buffer: Box<[u8; BUFFER_SIZE]>,
@@ -19,14 +21,14 @@ pub struct Stream<'a, F: 'a> {
     flusher: Option<Box<dyn Flusher<F>>>,
 }
 
-impl<'a, F> Stream<'a, F> {
+impl<F> Stream<F> {
     pub(crate) fn new(
-        minialloc: &'a mut MiniAllocator<F>,
+        minialloc: &Rc<RefCell<MiniAllocator<F>>>,
         stream_id: u32,
-    ) -> Stream<'a, F> {
-        let total_len = minialloc.dir_entry(stream_id).stream_len;
+    ) -> Stream<F> {
+        let total_len = minialloc.borrow().dir_entry(stream_id).stream_len;
         Stream {
-            minialloc,
+            minialloc: Rc::downgrade(minialloc),
             stream_id,
             total_len,
             buffer: Box::new([0; BUFFER_SIZE]),
@@ -35,6 +37,12 @@ impl<'a, F> Stream<'a, F> {
             buf_offset_from_start: 0,
             flusher: None,
         }
+    }
+
+    fn minialloc(&self) -> io::Result<Rc<RefCell<MiniAllocator<F>>>> {
+        self.minialloc.upgrade().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "CompoundFile was dropped")
+        })
     }
 
     /// Returns the current length of the stream, in bytes.
@@ -59,7 +67,7 @@ impl<'a, F> Stream<'a, F> {
     }
 }
 
-impl<'a, F: Read + Write + Seek> Stream<'a, F> {
+impl<F: Read + Write + Seek> Stream<F> {
     /// Truncates or extends the stream, updating the size of this stream to
     /// become `size`.
     ///
@@ -74,7 +82,8 @@ impl<'a, F: Read + Write + Seek> Stream<'a, F> {
         if size != self.total_len {
             let new_position = self.current_position().min(size);
             self.flush_changes()?;
-            resize_stream(self.minialloc, self.stream_id, size)?;
+            let minialloc = self.minialloc()?;
+            resize_stream(&mut minialloc.borrow_mut(), self.stream_id, size)?;
             self.total_len = size;
             self.buf_offset_from_start = new_position;
             self.buf_pos = 0;
@@ -91,7 +100,7 @@ impl<'a, F: Read + Write + Seek> Stream<'a, F> {
     }
 }
 
-impl<'a, F: Read + Seek> BufRead for Stream<'a, F> {
+impl<F: Read + Seek> BufRead for Stream<F> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if self.buf_pos >= self.buf_cap
             && self.current_position() < self.total_len
@@ -99,8 +108,9 @@ impl<'a, F: Read + Seek> BufRead for Stream<'a, F> {
             self.flush_changes()?;
             self.buf_offset_from_start += self.buf_pos as u64;
             self.buf_pos = 0;
+            let minialloc = self.minialloc()?;
             self.buf_cap = read_data_from_stream(
-                self.minialloc,
+                &mut minialloc.borrow_mut(),
                 self.stream_id,
                 self.buf_offset_from_start,
                 &mut self.buffer[..],
@@ -114,7 +124,7 @@ impl<'a, F: Read + Seek> BufRead for Stream<'a, F> {
     }
 }
 
-impl<'a, F: Read + Seek> Read for Stream<'a, F> {
+impl<F: Read + Seek> Read for Stream<F> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let num_bytes = {
             let mut buffered_data = self.fill_buf()?;
@@ -125,7 +135,7 @@ impl<'a, F: Read + Seek> Read for Stream<'a, F> {
     }
 }
 
-impl<'a, F: Read + Seek> Seek for Stream<'a, F> {
+impl<F: Read + Seek> Seek for Stream<F> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let new_pos: u64 =
             match pos {
@@ -200,7 +210,7 @@ impl<'a, F: Read + Seek> Seek for Stream<'a, F> {
     }
 }
 
-impl<'a, F: Read + Write + Seek> Write for Stream<'a, F> {
+impl<F: Read + Write + Seek> Write for Stream<F> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         debug_assert!(self.buf_pos <= self.buffer.len());
         if self.buf_pos >= self.buffer.len() {
@@ -223,11 +233,13 @@ impl<'a, F: Read + Write + Seek> Write for Stream<'a, F> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.flush_changes()?;
-        self.minialloc.flush()
+        let minialloc = self.minialloc()?;
+        minialloc.borrow_mut().flush()?;
+        Ok(())
     }
 }
 
-impl<'a, F> Drop for Stream<'a, F> {
+impl<F> Drop for Stream<F> {
     fn drop(&mut self) {
         let _ = self.flush_changes();
     }
@@ -243,14 +255,15 @@ struct FlushBuffer;
 
 impl<F: Read + Write + Seek> Flusher<F> for FlushBuffer {
     fn flush_changes(&self, stream: &mut Stream<F>) -> io::Result<()> {
+        let minialloc = stream.minialloc()?;
         write_data_to_stream(
-            stream.minialloc,
+            &mut minialloc.borrow_mut(),
             stream.stream_id,
             stream.buf_offset_from_start,
             &stream.buffer[..stream.buf_cap],
         )?;
         debug_assert_eq!(
-            stream.minialloc.dir_entry(stream.stream_id).stream_len,
+            minialloc.borrow().dir_entry(stream.stream_id).stream_len,
             stream.total_len
         );
         Ok(())

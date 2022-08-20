@@ -1,12 +1,11 @@
 use crate::internal::{
-    consts, Chain, DirEntry, Directory, Entries, MiniChain, ObjType, Sector,
+    consts, Chain, DirEntry, Directory, MiniChain, ObjType, Sector,
     SectorInit, Version,
 };
 use byteorder::{LittleEndian, WriteBytesExt};
 use fnv::FnvHashSet;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::mem::size_of;
-use std::path::Path;
 
 //===========================================================================//
 
@@ -69,30 +68,6 @@ impl<F> MiniAllocator<F> {
 
     pub fn stream_id_for_name_chain(&self, names: &[&str]) -> Option<u32> {
         self.directory.stream_id_for_name_chain(names)
-    }
-
-    /// Returns an iterator over the entries within the root storage object.
-    pub fn root_storage_entries(&self) -> Entries {
-        self.directory.root_storage_entries()
-    }
-
-    /// Returns an iterator over the entries within a storage object.
-    pub fn storage_entries(&self, path: &Path) -> io::Result<Entries> {
-        self.directory.storage_entries(path)
-    }
-
-    /// Returns an iterator over all entries within the compound file, starting
-    /// from and including the root entry.  The iterator walks the storage tree
-    /// in a preorder traversal.
-    pub fn walk(&self) -> Entries {
-        self.directory.walk()
-    }
-
-    /// Returns an iterator over all entries under a storage subtree, including
-    /// the given path itself.  The iterator walks the storage tree in a
-    /// preorder traversal.
-    pub fn walk_storage(&self, path: &Path) -> io::Result<Entries> {
-        self.directory.walk_storage(path)
     }
 
     pub fn open_chain(

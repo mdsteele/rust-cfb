@@ -1,5 +1,5 @@
 use cfb::{CompoundFile, Entry, Version};
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -717,6 +717,55 @@ fn stream_seek() {
     assert_eq!(stream.seek(SeekFrom::Current(-256)).unwrap(), 256);
     stream.read_exact(&mut buffer).unwrap();
     assert_eq!(buffer, vec![3; 128]);
+}
+
+//===========================================================================//
+// Tests for opening multiple streams at once:
+
+#[test]
+fn multiple_open_streams() -> io::Result<()> {
+    let cursor = Cursor::new(Vec::new());
+    let mut comp = CompoundFile::create(cursor)?;
+
+    // Create a stream and write multiple sectors worth of data into it.
+    let mut stream1 = comp.create_stream("/foo")?;
+    let mut data = Vec::<u8>::new();
+    for i in 1..150 {
+        for j in 0..i {
+            data.push(j);
+        }
+    }
+    assert!(data.len() > comp.version().sector_len() * 2);
+    stream1.write_all(&data)?;
+
+    // Create a second stream and copy the first stream into it.  Having two
+    // open streams at once, and interleaving reads and writes between them,
+    // should work fine.
+    let mut stream2 = comp.create_stream("/bar")?;
+    stream1.rewind()?;
+    let num_bytes = io::copy(&mut stream1, &mut stream2)?;
+    assert_eq!(num_bytes, data.len() as u64);
+
+    // Read the copied data out of the second stream and verify that it matches
+    // the original data.
+    let mut copied = Vec::<u8>::new();
+    stream2.rewind()?;
+    let num_bytes = stream2.read_to_end(&mut copied)?;
+    assert_eq!(num_bytes, data.len());
+    assert_eq!(copied, data);
+    Ok(())
+}
+
+#[test]
+fn drop_compound_file_with_stream_open() -> io::Result<()> {
+    let cursor = Cursor::new(Vec::new());
+    let mut comp = CompoundFile::create(cursor)?;
+    let mut stream = comp.create_stream("/foobar")?;
+    stream.write_all(b"Hello, world!")?;
+    comp.into_inner();
+    let result = stream.flush();
+    assert_eq!(result.unwrap_err().to_string(), "CompoundFile was dropped");
+    Ok(())
 }
 
 //===========================================================================//

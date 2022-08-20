@@ -1,12 +1,11 @@
 use crate::internal::{
-    self, consts, Allocator, Chain, DirEntry, Entries, EntriesOrder, ObjType,
-    Sector, SectorInit, Timestamp, Version,
+    self, consts, Allocator, Chain, DirEntry, ObjType, Sector, SectorInit,
+    Timestamp, Version,
 };
 use byteorder::{LittleEndian, WriteBytesExt};
 use fnv::FnvHashSet;
 use std::cmp::Ordering;
 use std::io::{self, Seek, SeekFrom, Write};
-use std::path::Path;
 
 //===========================================================================//
 
@@ -67,80 +66,6 @@ impl<F> Directory<F> {
             }
         }
         Some(stream_id)
-    }
-
-    /// Returns an iterator over the entries within the root storage object.
-    pub fn root_storage_entries(&self) -> Entries {
-        let start = self.root_dir_entry().child;
-        Entries::new(
-            EntriesOrder::Nonrecursive,
-            &self.dir_entries,
-            internal::path::path_from_name_chain(&[]),
-            start,
-        )
-    }
-
-    /// Returns an iterator over the entries within a storage object.
-    pub fn storage_entries(&self, path: &Path) -> io::Result<Entries> {
-        let names = internal::path::name_chain_from_path(path)?;
-        let path = internal::path::path_from_name_chain(&names);
-        let stream_id = match self.stream_id_for_name_chain(&names) {
-            Some(stream_id) => stream_id,
-            None => not_found!("No such storage: {:?}", path),
-        };
-        let start = {
-            let dir_entry = self.dir_entry(stream_id);
-            if dir_entry.obj_type == ObjType::Stream {
-                invalid_input!("Not a storage: {:?}", path);
-            }
-            debug_assert!(
-                dir_entry.obj_type == ObjType::Storage
-                    || dir_entry.obj_type == ObjType::Root
-            );
-            dir_entry.child
-        };
-        Ok(Entries::new(
-            EntriesOrder::Nonrecursive,
-            &self.dir_entries,
-            path,
-            start,
-        ))
-    }
-
-    /// Returns an iterator over all entries within the compound file, starting
-    /// from and including the root entry.  The iterator walks the storage tree
-    /// in a preorder traversal.
-    pub fn walk(&self) -> Entries {
-        Entries::new(
-            EntriesOrder::Preorder,
-            &self.dir_entries,
-            internal::path::path_from_name_chain(&[]),
-            consts::ROOT_STREAM_ID,
-        )
-    }
-
-    /// Returns an iterator over all entries under a storage subtree, including
-    /// the given path itself.  The iterator walks the storage tree in a
-    /// preorder traversal.
-    pub fn walk_storage(&self, path: &Path) -> io::Result<Entries> {
-        let mut names = internal::path::name_chain_from_path(path)?;
-        let stream_id = match self.stream_id_for_name_chain(&names) {
-            Some(stream_id) => stream_id,
-            None => {
-                not_found!(
-                    "No such object: {:?}",
-                    internal::path::path_from_name_chain(&names)
-                );
-            }
-        };
-        names.pop();
-        let parent_path = internal::path::path_from_name_chain(&names);
-        Ok(Entries::new(
-            EntriesOrder::Preorder,
-            &self.dir_entries,
-            parent_path,
-            stream_id,
-        ))
     }
 
     pub fn open_chain(

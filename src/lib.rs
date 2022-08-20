@@ -47,16 +47,18 @@
 
 use crate::internal::consts;
 use crate::internal::{
-    Allocator, DirEntry, Directory, Header, MiniAllocator, ObjType,
-    SectorInit, Sectors, Timestamp, Validation,
+    Allocator, DirEntry, Directory, EntriesOrder, Header, MiniAllocator,
+    ObjType, SectorInit, Sectors, Timestamp, Validation,
 };
 pub use crate::internal::{Entries, Entry, Stream, Version};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use fnv::FnvHashSet;
+use std::cell::{Ref, RefCell, RefMut};
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use uuid::Uuid;
 
 #[macro_use]
@@ -103,23 +105,31 @@ fn create_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
 /// [`File`](https://doc.rust-lang.org/std/fs/struct.File.html) or
 /// [`Cursor`](https://doc.rust-lang.org/std/io/struct.Cursor.html)).
 pub struct CompoundFile<F> {
-    minialloc: MiniAllocator<F>,
+    minialloc: Rc<RefCell<MiniAllocator<F>>>,
 }
 
 impl<F> CompoundFile<F> {
+    fn minialloc(&self) -> Ref<MiniAllocator<F>> {
+        self.minialloc.borrow()
+    }
+
+    fn minialloc_mut(&mut self) -> RefMut<MiniAllocator<F>> {
+        self.minialloc.borrow_mut()
+    }
+
     /// Returns the CFB format version used for this compound file.
     pub fn version(&self) -> Version {
-        self.minialloc.version()
+        self.minialloc().version()
     }
 
     fn stream_id_for_name_chain(&self, names: &[&str]) -> Option<u32> {
-        self.minialloc.stream_id_for_name_chain(names)
+        self.minialloc().stream_id_for_name_chain(names)
     }
 
     /// Returns information about the root storage object.  This is equivalent
     /// to `self.entry("/").unwrap()` (but always succeeds).
     pub fn root_entry(&self) -> Entry {
-        Entry::new(self.minialloc.root_dir_entry(), PathBuf::from("/"))
+        Entry::new(self.minialloc().root_dir_entry(), PathBuf::from("/"))
     }
 
     /// Given a path within the compound file, get information about that
@@ -135,30 +145,68 @@ impl<F> CompoundFile<F> {
             Some(stream_id) => stream_id,
             None => not_found!("No such object: {:?}", path),
         };
-        Ok(Entry::new(self.minialloc.dir_entry(stream_id), path))
+        Ok(Entry::new(self.minialloc().dir_entry(stream_id), path))
     }
 
     /// Returns an iterator over the entries within the root storage object.
     /// This is equivalent to `self.read_storage("/").unwrap()` (but always
     /// succeeds).
-    pub fn read_root_storage(&self) -> Entries {
-        self.minialloc.root_storage_entries()
+    pub fn read_root_storage(&self) -> Entries<F> {
+        let start = self.minialloc().root_dir_entry().child;
+        Entries::new(
+            EntriesOrder::Nonrecursive,
+            &self.minialloc,
+            internal::path::path_from_name_chain(&[]),
+            start,
+        )
     }
 
     /// Returns an iterator over the entries within a storage object.
     pub fn read_storage<P: AsRef<Path>>(
         &self,
         path: P,
-    ) -> io::Result<Entries> {
-        self.minialloc.storage_entries(path.as_ref())
+    ) -> io::Result<Entries<F>> {
+        self.read_storage_with_path(path.as_ref())
+    }
+
+    fn read_storage_with_path(&self, path: &Path) -> io::Result<Entries<F>> {
+        let names = internal::path::name_chain_from_path(path)?;
+        let path = internal::path::path_from_name_chain(&names);
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => not_found!("No such storage: {:?}", path),
+        };
+        let start = {
+            let minialloc = self.minialloc();
+            let dir_entry = minialloc.dir_entry(stream_id);
+            if dir_entry.obj_type == ObjType::Stream {
+                invalid_input!("Not a storage: {:?}", path);
+            }
+            debug_assert!(
+                dir_entry.obj_type == ObjType::Storage
+                    || dir_entry.obj_type == ObjType::Root
+            );
+            dir_entry.child
+        };
+        Ok(Entries::new(
+            EntriesOrder::Nonrecursive,
+            &self.minialloc,
+            path,
+            start,
+        ))
     }
 
     /// Returns an iterator over all entries within the compound file, starting
     /// from and including the root entry.  The iterator walks the storage tree
     /// in a preorder traversal.  This is equivalent to
     /// `self.walk_storage("/").unwrap()` (but always succeeds).
-    pub fn walk(&self) -> Entries {
-        self.minialloc.walk()
+    pub fn walk(&self) -> Entries<F> {
+        Entries::new(
+            EntriesOrder::Preorder,
+            &self.minialloc,
+            internal::path::path_from_name_chain(&[]),
+            consts::ROOT_STREAM_ID,
+        )
     }
 
     /// Returns an iterator over all entries under a storage subtree, including
@@ -167,8 +215,29 @@ impl<F> CompoundFile<F> {
     pub fn walk_storage<P: AsRef<Path>>(
         &self,
         path: P,
-    ) -> io::Result<Entries> {
-        self.minialloc.walk_storage(path.as_ref())
+    ) -> io::Result<Entries<F>> {
+        self.walk_storage_with_path(path.as_ref())
+    }
+
+    fn walk_storage_with_path(&self, path: &Path) -> io::Result<Entries<F>> {
+        let mut names = internal::path::name_chain_from_path(path)?;
+        let stream_id = match self.stream_id_for_name_chain(&names) {
+            Some(stream_id) => stream_id,
+            None => {
+                not_found!(
+                    "No such object: {:?}",
+                    internal::path::path_from_name_chain(&names)
+                );
+            }
+        };
+        names.pop();
+        let parent_path = internal::path::path_from_name_chain(&names);
+        Ok(Entries::new(
+            EntriesOrder::Preorder,
+            &self.minialloc,
+            parent_path,
+            stream_id,
+        ))
     }
 
     /// Returns true if there is an existing stream or storage at the given
@@ -186,7 +255,7 @@ impl<F> CompoundFile<F> {
         match internal::path::name_chain_from_path(path.as_ref()) {
             Ok(names) => match self.stream_id_for_name_chain(&names) {
                 Some(stream_id) => {
-                    self.minialloc.dir_entry(stream_id).obj_type
+                    self.minialloc().dir_entry(stream_id).obj_type
                         == ObjType::Stream
                 }
                 None => false,
@@ -201,7 +270,7 @@ impl<F> CompoundFile<F> {
         match internal::path::name_chain_from_path(path.as_ref()) {
             Ok(names) => match self.stream_id_for_name_chain(&names) {
                 Some(stream_id) => {
-                    self.minialloc.dir_entry(stream_id).obj_type
+                    self.minialloc().dir_entry(stream_id).obj_type
                         != ObjType::Stream
                 }
                 None => false,
@@ -216,7 +285,13 @@ impl<F> CompoundFile<F> {
 
     /// Consumes the `CompoundFile`, returning the underlying reader/writer.
     pub fn into_inner(self) -> F {
-        self.minialloc.into_inner()
+        // We only ever retain Weak copies of the CompoundFile's minialloc Rc
+        // (e.g. in Stream structs), so the Rc::try_unwrap() should always
+        // succeed.
+        match Rc::try_unwrap(self.minialloc) {
+            Ok(ref_cell) => ref_cell.into_inner().into_inner(),
+            Err(_) => unreachable!(),
+        }
     }
 }
 
@@ -237,10 +312,10 @@ impl<F: Seek> CompoundFile<F> {
             Some(stream_id) => stream_id,
             None => not_found!("No such stream: {:?}", path),
         };
-        if self.minialloc.dir_entry(stream_id).obj_type != ObjType::Stream {
+        if self.minialloc().dir_entry(stream_id).obj_type != ObjType::Stream {
             invalid_input!("Not a stream: {:?}", path);
         }
-        Ok(Stream::new(&mut self.minialloc, stream_id))
+        Ok(Stream::new(&self.minialloc, stream_id))
     }
 }
 
@@ -474,7 +549,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             header.first_minifat_sector,
         )?;
 
-        Ok(CompoundFile { minialloc })
+        Ok(CompoundFile { minialloc: Rc::new(RefCell::new(minialloc)) })
     }
 }
 
@@ -545,7 +620,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         let minialloc =
             MiniAllocator::new(directory, vec![], consts::END_OF_CHAIN)
                 .expect("minialloc");
-        Ok(CompoundFile { minialloc })
+        Ok(CompoundFile { minialloc: Rc::new(RefCell::new(minialloc)) })
     }
 
     /// Creates a new, empty storage object (i.e. "directory") at the provided
@@ -561,7 +636,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
             let path = internal::path::path_from_name_chain(&names);
-            if self.minialloc.dir_entry(stream_id).obj_type != ObjType::Stream
+            if self.minialloc().dir_entry(stream_id).obj_type
+                != ObjType::Stream
             {
                 already_exists!(
                     "Cannot create storage at {:?} because a \
@@ -586,7 +662,11 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 not_found!("Parent storage doesn't exist");
             }
         };
-        self.minialloc.insert_dir_entry(parent_id, name, ObjType::Storage)?;
+        self.minialloc_mut().insert_dir_entry(
+            parent_id,
+            name,
+            ObjType::Storage,
+        )?;
         Ok(())
     }
 
@@ -628,7 +708,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             None => not_found!("No such storage: {:?}", path),
         };
         {
-            let dir_entry = self.minialloc.dir_entry(stream_id);
+            let minialloc = self.minialloc();
+            let dir_entry = minialloc.dir_entry(stream_id);
             if dir_entry.obj_type == ObjType::Root {
                 invalid_input!("Cannot remove the root storage object");
             }
@@ -643,7 +724,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         debug_assert!(!names.is_empty());
         let name = names.pop().unwrap();
         let parent_id = self.stream_id_for_name_chain(&names).unwrap();
-        self.minialloc.remove_dir_entry(parent_id, name)?;
+        self.minialloc_mut().remove_dir_entry(parent_id, name)?;
         Ok(())
     }
 
@@ -658,10 +739,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     }
 
     fn remove_storage_all_with_path(&mut self, path: &Path) -> io::Result<()> {
-        let mut stack = Vec::<Entry>::new();
-        for entry in self.minialloc.walk_storage(path)? {
-            stack.push(entry);
-        }
+        let mut stack = self.walk_storage(path)?.collect::<Vec<Entry>>();
         while let Some(entry) = stack.pop() {
             if entry.is_stream() {
                 self.remove_stream_with_path(entry.path())?;
@@ -696,13 +774,14 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 internal::path::path_from_name_chain(&names)
             ),
         };
-        if self.minialloc.dir_entry(stream_id).obj_type == ObjType::Stream {
+        let mut minialloc = self.minialloc_mut();
+        if minialloc.dir_entry(stream_id).obj_type == ObjType::Stream {
             invalid_input!(
                 "Not a storage: {:?}",
                 internal::path::path_from_name_chain(&names)
             );
         }
-        self.minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
+        minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
             dir_entry.clsid = clsid;
         })
     }
@@ -734,7 +813,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     ) -> io::Result<Stream<F>> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
-            if self.minialloc.dir_entry(stream_id).obj_type != ObjType::Stream
+            if self.minialloc().dir_entry(stream_id).obj_type
+                != ObjType::Stream
             {
                 already_exists!(
                     "Cannot create stream at {:?} because a \
@@ -748,7 +828,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                     internal::path::path_from_name_chain(&names)
                 );
             } else {
-                let mut stream = Stream::new(&mut self.minialloc, stream_id);
+                let mut stream = Stream::new(&self.minialloc, stream_id);
                 stream.set_len(0)?;
                 return Ok(stream);
             }
@@ -763,12 +843,12 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 not_found!("Parent storage doesn't exist");
             }
         };
-        let new_stream_id = self.minialloc.insert_dir_entry(
+        let new_stream_id = self.minialloc_mut().insert_dir_entry(
             parent_id,
             name,
             ObjType::Stream,
         )?;
-        return Ok(Stream::new(&mut self.minialloc, new_stream_id));
+        return Ok(Stream::new(&self.minialloc, new_stream_id));
     }
 
     /// Removes the stream object at the provided path.
@@ -786,7 +866,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             None => not_found!("No such stream: {:?}", path),
         };
         let (start_sector_id, is_in_mini_stream) = {
-            let dir_entry = self.minialloc.dir_entry(stream_id);
+            let minialloc = self.minialloc();
+            let dir_entry = minialloc.dir_entry(stream_id);
             if dir_entry.obj_type != ObjType::Stream {
                 invalid_input!("Not a stream: {:?}", path);
             }
@@ -797,14 +878,14 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             )
         };
         if is_in_mini_stream {
-            self.minialloc.free_mini_chain(start_sector_id)?;
+            self.minialloc_mut().free_mini_chain(start_sector_id)?;
         } else {
-            self.minialloc.free_chain(start_sector_id)?;
+            self.minialloc_mut().free_chain(start_sector_id)?;
         }
         debug_assert!(!names.is_empty());
         let name = names.pop().unwrap();
         let parent_id = self.stream_id_for_name_chain(&names).unwrap();
-        self.minialloc.remove_dir_entry(parent_id, name)?;
+        self.minialloc_mut().remove_dir_entry(parent_id, name)?;
         Ok(())
     }
 
@@ -832,7 +913,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 internal::path::path_from_name_chain(&names)
             ),
         };
-        self.minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
+        self.minialloc_mut().with_dir_entry_mut(stream_id, |dir_entry| {
             dir_entry.state_bits = bits;
         })
     }
@@ -851,11 +932,12 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             None => not_found!("No such object: {:?}", path),
         };
         if stream_id != consts::ROOT_STREAM_ID {
+            let mut minialloc = self.minialloc_mut();
             debug_assert_ne!(
-                self.minialloc.dir_entry(stream_id).obj_type,
+                minialloc.dir_entry(stream_id).obj_type,
                 ObjType::Root
             );
-            self.minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
+            minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
                 dir_entry.modified_time = Timestamp::now();
             })?;
         }
@@ -864,7 +946,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
 
     /// Flushes all changes to the underlying file.
     pub fn flush(&mut self) -> io::Result<()> {
-        self.minialloc.flush()
+        self.minialloc_mut().flush()
     }
 }
 
