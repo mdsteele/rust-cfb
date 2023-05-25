@@ -45,21 +45,23 @@
 
 #![warn(missing_docs)]
 
-use crate::internal::consts;
-use crate::internal::{
-    Allocator, DirEntry, Directory, EntriesOrder, Header, MiniAllocator,
-    ObjType, SectorInit, Sectors, Timestamp, Validation,
-};
-pub use crate::internal::{Entries, Entry, Stream, Version};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use fnv::FnvHashSet;
 use std::cell::{Ref, RefCell, RefMut};
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use fnv::FnvHashSet;
 use uuid::Uuid;
+
+use crate::internal::consts;
+use crate::internal::{
+    Allocator, DirEntry, Directory, EntriesOrder, Header, MiniAllocator,
+    ObjType, SectorInit, Sectors, Timestamp, Validation,
+};
+pub use crate::internal::{Entries, Entry, Stream, Version};
 
 #[macro_use]
 mod internal;
@@ -547,6 +549,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             directory,
             minifat,
             header.first_minifat_sector,
+            validation,
         )?;
 
         Ok(CompoundFile { minialloc: Rc::new(RefCell::new(minialloc)) })
@@ -613,13 +616,14 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             difat,
             fat,
             Validation::Strict,
-        )
-        .expect("allocator");
-        let directory = Directory::new(allocator, vec![root_dir_entry], 1)
-            .expect("directory");
-        let minialloc =
-            MiniAllocator::new(directory, vec![], consts::END_OF_CHAIN)
-                .expect("minialloc");
+        )?;
+        let directory = Directory::new(allocator, vec![root_dir_entry], 1)?;
+        let minialloc = MiniAllocator::new(
+            directory,
+            vec![],
+            consts::END_OF_CHAIN,
+            Validation::Strict,
+        )?;
         Ok(CompoundFile { minialloc: Rc::new(RefCell::new(minialloc)) })
     }
 
@@ -954,11 +958,14 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
 
 #[cfg(test)]
 mod tests {
-    use super::CompoundFile;
-    use crate::internal::{consts, DirEntry, Header, Version};
-    use byteorder::{LittleEndian, WriteBytesExt};
     use std::io::{self, Cursor};
     use std::mem::size_of;
+
+    use byteorder::{LittleEndian, WriteBytesExt};
+
+    use crate::internal::{consts, DirEntry, Header, Version};
+
+    use super::CompoundFile;
 
     fn make_cfb_file_with_zero_padded_fat() -> io::Result<Vec<u8>> {
         let version = Version::V3;

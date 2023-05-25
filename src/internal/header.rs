@@ -1,6 +1,8 @@
-use crate::internal::{consts, Version};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Write};
+
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+
+use crate::internal::{consts, Version};
 
 //===========================================================================//
 
@@ -153,8 +155,9 @@ impl Header {
 
 #[cfg(test)]
 mod tests {
-    use super::Header;
     use crate::internal::{consts, Version};
+
+    use super::Header;
 
     fn make_valid_header() -> Header {
         let mut header = Header {

@@ -240,9 +240,13 @@ mod tests {
         )
         .unwrap();
         let directory = Directory::new(allocator, dir_entries, 1).unwrap();
-        let minialloc =
-            MiniAllocator::new(directory, vec![], consts::END_OF_CHAIN)
-                .unwrap();
+        let minialloc = MiniAllocator::new(
+            directory,
+            vec![],
+            consts::END_OF_CHAIN,
+            Validation::Strict,
+        )
+        .unwrap();
         Rc::new(RefCell::new(minialloc))
     }
 

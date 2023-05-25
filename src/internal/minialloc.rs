@@ -1,11 +1,13 @@
-use crate::internal::{
-    consts, Chain, DirEntry, Directory, MiniChain, ObjType, Sector,
-    SectorInit, Version,
-};
-use byteorder::{LittleEndian, WriteBytesExt};
-use fnv::FnvHashSet;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::mem::size_of;
+
+use byteorder::{LittleEndian, WriteBytesExt};
+use fnv::FnvHashSet;
+
+use crate::internal::{
+    consts, Chain, DirEntry, Directory, MiniChain, ObjType, Sector,
+    SectorInit, Validation, Version,
+};
 
 //===========================================================================//
 
@@ -31,10 +33,11 @@ impl<F> MiniAllocator<F> {
         directory: Directory<F>,
         minifat: Vec<u32>,
         minifat_start_sector: u32,
+        validation: Validation,
     ) -> io::Result<MiniAllocator<F>> {
-        let minialloc =
+        let mut minialloc =
             MiniAllocator { directory, minifat, minifat_start_sector };
-        minialloc.validate()?;
+        minialloc.validate(validation)?;
         Ok(minialloc)
     }
 
@@ -93,17 +96,21 @@ impl<F> MiniAllocator<F> {
         self.directory.dir_entry(stream_id)
     }
 
-    fn validate(&self) -> io::Result<()> {
+    fn validate(&mut self, validation: Validation) -> io::Result<()> {
         let root_entry = self.directory.root_dir_entry();
         let root_stream_mini_sectors =
             root_entry.stream_len / (consts::MINI_SECTOR_LEN as u64);
         if root_stream_mini_sectors < (self.minifat.len() as u64) {
-            malformed!(
+            if validation.is_strict() {
+                malformed!(
                 "MiniFAT has {} entries, but root stream has only {} mini \
                  sectors",
                 self.minifat.len(),
                 root_stream_mini_sectors
             );
+            } else {
+                self.minifat.truncate(root_stream_mini_sectors as usize);
+            }
         }
         let mut pointees = FnvHashSet::default();
         for (from_mini_sector, &to_mini_sector) in
@@ -366,12 +373,14 @@ impl<F: Write + Seek> MiniAllocator<F> {
 
 #[cfg(test)]
 mod tests {
-    use super::MiniAllocator;
+    use std::io::Cursor;
+
     use crate::internal::{
         consts, Allocator, DirEntry, Directory, ObjType, Sectors, Timestamp,
         Validation, Version,
     };
-    use std::io::Cursor;
+
+    use super::MiniAllocator;
 
     fn make_minialloc(minifat: Vec<u32>) -> MiniAllocator<Cursor<Vec<u8>>> {
         let root_stream_len = (consts::MINI_SECTOR_LEN * minifat.len()) as u64;
@@ -402,7 +411,7 @@ mod tests {
         stream_entry.stream_len = root_entry.stream_len;
         let entries = vec![root_entry, stream_entry];
         let directory = Directory::new(allocator, entries, 1).unwrap();
-        MiniAllocator::new(directory, minifat, 2).unwrap()
+        MiniAllocator::new(directory, minifat, 2, Validation::Strict).unwrap()
     }
 
     #[test]
