@@ -1,6 +1,6 @@
 [package]
 name = "cfb"
-version = "0.7.3"
+version = "0.8.0"
 authors = ["Matthew D. Steele <mdsteele@alum.mit.edu>"]
 description = "Read/write Compound File Binary (structured storage) files"
 repository = "https://github.com/mdsteele/rust-cfb"
