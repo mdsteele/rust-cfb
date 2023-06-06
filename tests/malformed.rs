@@ -31,7 +31,7 @@ where
 
 // Checks to see if a file can be walked over and read properly, or fail if it can not be read
 fn can_read(path: &Path) {
-    let data = std::fs::read(&path).unwrap();
+    let data = std::fs::read(path).unwrap();
 
     let cursor = Cursor::new(data);
     let mut cfb = match CompoundFile::open(cursor) {

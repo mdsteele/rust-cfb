@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn absolute_path_is_valid() {
         assert_eq!(
-            name_chain_from_path(&Path::new("/foo/bar/baz/")).unwrap(),
+            name_chain_from_path(Path::new("/foo/bar/baz/")).unwrap(),
             vec!["foo", "bar", "baz"]
         );
     }
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn relative_path_is_valid() {
         assert_eq!(
-            name_chain_from_path(&Path::new("foo/bar/baz")).unwrap(),
+            name_chain_from_path(Path::new("foo/bar/baz")).unwrap(),
             vec!["foo", "bar", "baz"]
         );
     }
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn path_with_parents_is_valid() {
         assert_eq!(
-            name_chain_from_path(&Path::new("foo/bar/../baz")).unwrap(),
+            name_chain_from_path(Path::new("foo/bar/../baz")).unwrap(),
             vec!["foo", "baz"]
         );
     }
@@ -147,13 +147,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "Invalid path (must be within root)")]
     fn parent_of_root_is_invalid() {
-        name_chain_from_path(&Path::new("foo/../../baz")).unwrap();
+        name_chain_from_path(Path::new("foo/../../baz")).unwrap();
     }
 
     #[test]
     fn canonical_path_is_absolute() {
         let path = Path::new("foo/bar/../baz");
-        let names = name_chain_from_path(&path).unwrap();
+        let names = name_chain_from_path(path).unwrap();
         assert_eq!(path_from_name_chain(&names), PathBuf::from("/foo/baz"));
     }
 }
