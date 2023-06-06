@@ -162,7 +162,7 @@ mod tests {
     fn make_valid_header() -> Header {
         let mut header = Header {
             version: Version::V3,
-            num_dir_sectors: 2,
+            num_dir_sectors: 0,
             num_fat_sectors: 1,
             first_dir_sector: 1,
             first_minifat_sector: 2,
