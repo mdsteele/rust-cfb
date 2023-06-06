@@ -251,8 +251,12 @@ impl<F: Write + Seek> Directory<F> {
         );
         // Create a new directory entry.
         let stream_id = self.allocate_dir_entry()?;
-        let now = Timestamp::now();
-        *self.dir_entry_mut(stream_id) = DirEntry::new(name, obj_type, now);
+        // 2.6.1 streams must have creation and modified time of 0
+        let mut ts = Timestamp::zero();
+        if obj_type == ObjType::Storage {
+            ts = Timestamp::now();
+        }
+        *self.dir_entry_mut(stream_id) = DirEntry::new(name, obj_type, ts);
 
         // Insert the new entry into the tree.
         let mut sibling_id = self.dir_entry(parent_id).child;
