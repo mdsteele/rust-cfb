@@ -1,4 +1,4 @@
-use crate::internal::{consts, MiniAllocator, ObjType, SectorInit, Timestamp};
+use crate::internal::{consts, MiniAllocator, ObjType, SectorInit};
 use std::cell::RefCell;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::rc::{Rc, Weak};
@@ -385,7 +385,6 @@ fn write_data_to_stream<F: Read + Write + Seek>(
     minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
         dir_entry.start_sector = new_start_sector;
         dir_entry.stream_len = new_stream_len;
-        dir_entry.modified_time = Timestamp::now();
     })
 }
 
@@ -481,7 +480,6 @@ fn resize_stream<F: Read + Write + Seek>(
     minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
         dir_entry.start_sector = new_start_sector;
         dir_entry.stream_len = new_stream_len;
-        dir_entry.modified_time = Timestamp::now();
     })
 }
 

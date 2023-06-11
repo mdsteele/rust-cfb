@@ -643,7 +643,7 @@ fn truncate_stream() {
         assert_eq!(stream.seek(SeekFrom::Start(6000)).unwrap(), 6000);
         stream.set_len(7000).unwrap();
         assert_eq!(stream.len(), 7000);
-        assert_eq!(stream.seek(SeekFrom::Current(0)).unwrap(), 6000);
+        assert_eq!(stream.stream_position().unwrap(), 6000);
         stream.set_len(5000).unwrap();
         assert_eq!(stream.len(), 5000);
         stream.write_all(&vec![b'x'; 1000]).unwrap();
@@ -672,13 +672,13 @@ fn extend_stream() {
         assert_eq!(stream.seek(SeekFrom::Start(1000)).unwrap(), 1000);
         stream.write_all(&vec![b'y'; 500]).unwrap();
         assert_eq!(stream.len(), 2000);
-        assert_eq!(stream.seek(SeekFrom::Current(0)).unwrap(), 1500);
+        assert_eq!(stream.stream_position().unwrap(), 1500);
         stream.set_len(5000).unwrap();
         assert_eq!(stream.len(), 5000);
-        assert_eq!(stream.seek(SeekFrom::Current(0)).unwrap(), 1500);
+        assert_eq!(stream.stream_position().unwrap(), 1500);
         stream.write_all(&vec![b'z'; 500]).unwrap();
         assert_eq!(stream.len(), 5000);
-        assert_eq!(stream.seek(SeekFrom::Current(0)).unwrap(), 2000);
+        assert_eq!(stream.stream_position().unwrap(), 2000);
     }
 
     let cursor = comp.into_inner();

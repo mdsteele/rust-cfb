@@ -571,7 +571,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     ) -> io::Result<CompoundFile<F>> {
         let mut header = Header {
             version,
-            num_dir_sectors: 1,
+            // 2.2 requires this to be zero in V3
+            num_dir_sectors: if version == Version::V3 { 0 } else { 1 },
             num_fat_sectors: 1,
             first_dir_sector: 1,
             first_minifat_sector: consts::END_OF_CHAIN,
@@ -972,7 +973,7 @@ mod tests {
         let mut data = Vec::<u8>::new();
         let mut header = Header {
             version,
-            num_dir_sectors: 1,
+            num_dir_sectors: 0,
             num_fat_sectors: 1,
             first_dir_sector: 1,
             first_minifat_sector: consts::END_OF_CHAIN,
