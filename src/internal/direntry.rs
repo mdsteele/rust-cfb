@@ -209,8 +209,30 @@ impl DirEntry {
         }
 
         let state_bits = reader.read_u32::<LittleEndian>()?;
-        let creation_time = Timestamp::read_from(reader)?;
-        let modified_time = Timestamp::read_from(reader)?;
+        let mut creation_time = Timestamp::read_from(reader)?;
+        // Section 2.6.1 of the MS-CFB spec states that "for a stream object,
+        // [creation time and modified time] MUST be all zeroes."  However,
+        // under Permissive validation, we don't enforce this, but instead just
+        // treat these fields as though they were zero.
+        if obj_type == ObjType::Stream && creation_time != Timestamp::zero() {
+            if validation.is_strict() {
+                malformed!(
+                    "non-zero stream creation time: {}",
+                    creation_time.value()
+                );
+            }
+            creation_time = Timestamp::zero();
+        }
+        let mut modified_time = Timestamp::read_from(reader)?;
+        if obj_type == ObjType::Stream && modified_time != Timestamp::zero() {
+            if validation.is_strict() {
+                malformed!(
+                    "non-zero stream modified time: {}",
+                    modified_time.value()
+                );
+            }
+            modified_time = Timestamp::zero();
+        }
 
         // According to the MS-CFB spec section 2.6.3, the starting sector and
         // stream length fields should both be set to zero for storage entries.
@@ -434,6 +456,92 @@ mod tests {
             Validation::Permissive,
         )
         .unwrap();
+    }
+
+    const NON_ZERO_CREATION_TIME_ON_STREAM: [u8; consts::DIR_ENTRY_LEN] = [
+        70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, // name
+        14, 0, // name length
+        2, // obj type
+        1, // color,
+        12, 0, 0, 0, // left sibling
+        34, 0, 0, 0, // right sibling
+        0xff, 0xff, 0xff, 0xff, // child
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+        0, 0, 0, 0, // state bits
+        37, 0, 0, 0, 0, 0, 0, 0, // created
+        0, 0, 0, 0, 0, 0, 0, 0, // modified
+        0, 0, 0, 0, // start sector
+        0, 0, 0, 0, 0, 0, 0, 0, // stream length
+    ];
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory entry (non-zero stream creation time: \
+                    37)"
+    )]
+    fn non_zero_creation_time_on_stream_strict() {
+        let mut input: &[u8] = &NON_ZERO_CREATION_TIME_ON_STREAM;
+        DirEntry::read_from(&mut input, Version::V4, Validation::Strict)
+            .unwrap();
+    }
+
+    #[test]
+    fn non_zero_creation_time_on_stream_permissive() {
+        let mut input: &[u8] = &NON_ZERO_CREATION_TIME_ON_STREAM;
+        let dir_entry = DirEntry::read_from(
+            &mut input,
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
+        assert_eq!(dir_entry.obj_type, ObjType::Stream);
+        assert_eq!(dir_entry.creation_time, Timestamp::zero());
+    }
+
+    const NON_ZERO_MODIFIED_TIME_ON_STREAM: [u8; consts::DIR_ENTRY_LEN] = [
+        70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, // name
+        14, 0, // name length
+        2, // obj type
+        1, // color,
+        12, 0, 0, 0, // left sibling
+        34, 0, 0, 0, // right sibling
+        0xff, 0xff, 0xff, 0xff, // child
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+        0, 0, 0, 0, // state bits
+        0, 0, 0, 0, 0, 0, 0, 0, // created
+        0, 1, 0, 0, 0, 0, 0, 0, // modified
+        0, 0, 0, 0, // start sector
+        0, 0, 0, 0, 0, 0, 0, 0, // stream length
+    ];
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory entry (non-zero stream modified time: \
+                    256)"
+    )]
+    fn non_zero_modified_time_on_stream_strict() {
+        let mut input: &[u8] = &NON_ZERO_MODIFIED_TIME_ON_STREAM;
+        DirEntry::read_from(&mut input, Version::V4, Validation::Strict)
+            .unwrap();
+    }
+
+    #[test]
+    fn non_zero_modified_time_on_stream_permissive() {
+        let mut input: &[u8] = &NON_ZERO_MODIFIED_TIME_ON_STREAM;
+        let dir_entry = DirEntry::read_from(
+            &mut input,
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
+        assert_eq!(dir_entry.obj_type, ObjType::Stream);
+        assert_eq!(dir_entry.modified_time, Timestamp::zero());
     }
 
     const NON_NULL_CLSID_ON_STREAM: [u8; consts::DIR_ENTRY_LEN] = [

@@ -10,6 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct Timestamp(u64);
 
 impl Timestamp {
+    pub(crate) fn value(self) -> u64 {
+        self.0
+    }
+
     /// Returns a timestamp representing the CFB file epoch of January 1, 1601
     /// UTC.  This is an appropriate value to use for an uninitialized
     /// timestamp.
