@@ -391,6 +391,7 @@ mod tests {
         minifat: Vec<u32>,
         root_stream_len: u64,
     ) -> MiniAllocator<Cursor<Vec<u8>>> {
+        let validation = Validation::Strict;
         let version = Version::V3;
         let num_sectors = 4; // FAT, Directory, MiniFAT, and mini chain
         let data_len = (1 + num_sectors) * version.sector_len();
@@ -399,8 +400,7 @@ mod tests {
         let mut fat = vec![consts::END_OF_CHAIN; num_sectors];
         fat[0] = consts::FAT_SECTOR;
         let allocator =
-            Allocator::new(sectors, vec![], vec![0], fat, Validation::Strict)
-                .unwrap();
+            Allocator::new(sectors, vec![], vec![0], fat, validation).unwrap();
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
         root_entry.start_sector = 3;
@@ -410,8 +410,9 @@ mod tests {
         stream_entry.start_sector = 0;
         stream_entry.stream_len = root_entry.stream_len;
         let entries = vec![root_entry, stream_entry];
-        let directory = Directory::new(allocator, entries, 1).unwrap();
-        MiniAllocator::new(directory, minifat, 2, Validation::Strict).unwrap()
+        let directory =
+            Directory::new(allocator, entries, 1, validation).unwrap();
+        MiniAllocator::new(directory, minifat, 2, validation).unwrap()
     }
 
     #[test]

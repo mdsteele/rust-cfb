@@ -517,8 +517,12 @@ impl<F: Read + Seek> CompoundFile<F> {
             current_dir_sector = allocator.next(current_dir_sector)?;
         }
 
-        let mut directory =
-            Directory::new(allocator, dir_entries, header.first_dir_sector)?;
+        let mut directory = Directory::new(
+            allocator,
+            dir_entries,
+            header.first_dir_sector,
+            validation,
+        )?;
 
         // Read in MiniFAT.
         let minifat = {
@@ -618,7 +622,12 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             fat,
             Validation::Strict,
         )?;
-        let directory = Directory::new(allocator, vec![root_dir_entry], 1)?;
+        let directory = Directory::new(
+            allocator,
+            vec![root_dir_entry],
+            1,
+            Validation::Strict,
+        )?;
         let minialloc = MiniAllocator::new(
             directory,
             vec![],

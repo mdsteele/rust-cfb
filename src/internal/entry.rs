@@ -239,7 +239,9 @@ mod tests {
             Validation::Strict,
         )
         .unwrap();
-        let directory = Directory::new(allocator, dir_entries, 1).unwrap();
+        let directory =
+            Directory::new(allocator, dir_entries, 1, Validation::Strict)
+                .unwrap();
         let minialloc = MiniAllocator::new(
             directory,
             vec![],

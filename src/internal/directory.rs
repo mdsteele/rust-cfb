@@ -1,6 +1,6 @@
 use crate::internal::{
-    self, consts, Allocator, Chain, DirEntry, ObjType, Sector, SectorInit,
-    Timestamp, Version,
+    self, consts, Allocator, Chain, Color, DirEntry, ObjType, Sector,
+    SectorInit, Timestamp, Validation, Version,
 };
 use byteorder::{LittleEndian, WriteBytesExt};
 use fnv::FnvHashSet;
@@ -31,9 +31,10 @@ impl<F> Directory<F> {
         allocator: Allocator<F>,
         dir_entries: Vec<DirEntry>,
         dir_start_sector: u32,
+        validation: Validation,
     ) -> io::Result<Directory<F>> {
         let directory = Directory { allocator, dir_entries, dir_start_sector };
-        directory.validate()?;
+        directory.validate(validation)?;
         Ok(directory)
     }
 
@@ -88,7 +89,7 @@ impl<F> Directory<F> {
         &mut self.dir_entries[stream_id as usize]
     }
 
-    fn validate(&self) -> io::Result<()> {
+    fn validate(&self, validation: Validation) -> io::Result<()> {
         if self.dir_entries.is_empty() {
             malformed!("root entry is missing");
         }
@@ -101,8 +102,8 @@ impl<F> Directory<F> {
             );
         }
         let mut visited = FnvHashSet::default();
-        let mut stack = vec![consts::ROOT_STREAM_ID];
-        while let Some(stream_id) = stack.pop() {
+        let mut stack = vec![(consts::ROOT_STREAM_ID, false)];
+        while let Some((stream_id, parent_is_red)) = stack.pop() {
             if visited.contains(&stream_id) {
                 malformed!("loop in tree");
             }
@@ -122,6 +123,16 @@ impl<F> Directory<F> {
                     "non-root entry with object type {:?}",
                     dir_entry.obj_type
                 );
+            }
+            let node_is_red = dir_entry.color == Color::Red;
+            // The MS-CFB spec section 2.6.4 says that two consecutive nodes in
+            // the red-black tree for siblings within a storage object MUST NOT
+            // both be red, but apparently some implementations don't obey this
+            // (see https://github.com/mdsteele/rust-cfb/issues/10).  We still
+            // want to be able to read these files, so we only consider this an
+            // error under Strict validation.
+            if parent_is_red && node_is_red && validation.is_strict() {
+                malformed!("RB tree has adjacent red nodes");
             }
             let left_sibling = dir_entry.left_sibling;
             if left_sibling != consts::NO_STREAM {
@@ -143,7 +154,7 @@ impl<F> Directory<F> {
                         entry.name
                     );
                 }
-                stack.push(left_sibling);
+                stack.push((left_sibling, node_is_red));
             }
             let right_sibling = dir_entry.right_sibling;
             if right_sibling != consts::NO_STREAM {
@@ -163,7 +174,7 @@ impl<F> Directory<F> {
                         entry.name
                     );
                 }
-                stack.push(right_sibling);
+                stack.push((right_sibling, node_is_red));
             }
             let child = dir_entry.child;
             if child != consts::NO_STREAM {
@@ -174,7 +185,7 @@ impl<F> Directory<F> {
                         self.dir_entries.len()
                     );
                 }
-                stack.push(child);
+                stack.push((child, false));
             }
         }
         Ok(())
@@ -467,7 +478,10 @@ mod tests {
     };
     use std::io::Cursor;
 
-    fn make_directory(entries: Vec<DirEntry>) -> Directory<Cursor<Vec<u8>>> {
+    fn make_directory(
+        entries: Vec<DirEntry>,
+        validation: Validation,
+    ) -> Directory<Cursor<Vec<u8>>> {
         let version = Version::V3;
         let num_sectors = 3;
         let data_len = (1 + num_sectors) * version.sector_len();
@@ -476,15 +490,14 @@ mod tests {
         let mut fat = vec![consts::END_OF_CHAIN; num_sectors];
         fat[0] = consts::FAT_SECTOR;
         let allocator =
-            Allocator::new(sectors, vec![], vec![0], fat, Validation::Strict)
-                .unwrap();
-        Directory::new(allocator, entries, 1).unwrap()
+            Allocator::new(sectors, vec![], vec![0], fat, validation).unwrap();
+        Directory::new(allocator, entries, 1, validation).unwrap()
     }
 
     #[test]
     #[should_panic(expected = "Malformed directory (root entry is missing)")]
     fn no_root_entry() {
-        make_directory(vec![]);
+        make_directory(vec![], Validation::Permissive);
     }
 
     #[test]
@@ -496,7 +509,7 @@ mod tests {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.start_sector = 2;
         root_entry.stream_len = 147;
-        make_directory(vec![root_entry]);
+        make_directory(vec![root_entry], Validation::Permissive);
     }
 
     #[test]
@@ -507,7 +520,7 @@ mod tests {
         let mut storage =
             DirEntry::new("foo", ObjType::Storage, Timestamp::zero());
         storage.child = 1;
-        make_directory(vec![root_entry, storage]);
+        make_directory(vec![root_entry, storage], Validation::Permissive);
     }
 
     #[test]
@@ -517,7 +530,7 @@ mod tests {
     fn root_has_wrong_type() {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.obj_type = ObjType::Storage;
-        make_directory(vec![root_entry]);
+        make_directory(vec![root_entry], Validation::Permissive);
     }
 
     #[test]
@@ -528,7 +541,7 @@ mod tests {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
         let storage = DirEntry::new("foo", ObjType::Root, Timestamp::zero());
-        make_directory(vec![root_entry, storage]);
+        make_directory(vec![root_entry, storage], Validation::Permissive);
     }
 
     #[test]
@@ -540,16 +553,10 @@ mod tests {
         // we shouldn't complain if the root is red.
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.color = Color::Red;
-        make_directory(vec![root_entry]);
+        make_directory(vec![root_entry], Validation::Permissive);
     }
 
-    #[test]
-    fn tolerate_two_red_nodes_in_a_row() {
-        // The MS-CFB spec section 2.6.4 says that two consecutive nodes in the
-        // tree MUST NOT both be red, but apparently some implementations don't
-        // obey this (see https://github.com/mdsteele/rust-cfb/issues/10).  We
-        // still want to be able to read these files, so we shouldn't complain
-        // if there are two red nodes in a row.
+    fn make_entries_with_adjacent_red_nodes() -> Vec<DirEntry> {
         let mut root_entry = DirEntry::empty_root_entry();
         root_entry.child = 1;
         let mut storage1 =
@@ -559,7 +566,26 @@ mod tests {
         let mut storage2 =
             DirEntry::new("bar", ObjType::Storage, Timestamp::zero());
         storage2.color = Color::Red;
-        make_directory(vec![root_entry, storage1, storage2]);
+        vec![root_entry, storage1, storage2]
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory (RB tree has adjacent red nodes)"
+    )]
+    fn adjacent_red_nodes_strict() {
+        make_directory(
+            make_entries_with_adjacent_red_nodes(),
+            Validation::Strict,
+        );
+    }
+
+    #[test]
+    fn adjacent_red_nodes_permissive() {
+        make_directory(
+            make_entries_with_adjacent_red_nodes(),
+            Validation::Permissive,
+        );
     }
 }
 
