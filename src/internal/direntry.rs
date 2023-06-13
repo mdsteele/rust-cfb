@@ -209,11 +209,12 @@ impl DirEntry {
         }
 
         let state_bits = reader.read_u32::<LittleEndian>()?;
-        let mut creation_time = Timestamp::read_from(reader)?;
+
         // Section 2.6.1 of the MS-CFB spec states that "for a stream object,
         // [creation time and modified time] MUST be all zeroes."  However,
         // under Permissive validation, we don't enforce this, but instead just
         // treat these fields as though they were zero.
+        let mut creation_time = Timestamp::read_from(reader)?;
         if obj_type == ObjType::Stream && creation_time != Timestamp::zero() {
             if validation.is_strict() {
                 malformed!(

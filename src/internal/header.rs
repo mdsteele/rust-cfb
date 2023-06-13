@@ -2,7 +2,7 @@ use std::io::{self, Read, Write};
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::internal::{consts, Version};
+use crate::internal::{consts, Validation, Version};
 
 //===========================================================================//
 
@@ -19,7 +19,10 @@ pub struct Header {
 }
 
 impl Header {
-    pub fn read_from<R: Read>(reader: &mut R) -> io::Result<Header> {
+    pub fn read_from<R: Read>(
+        reader: &mut R,
+        validation: Validation,
+    ) -> io::Result<Header> {
         let mut magic = [0u8; 8];
         reader.read_exact(&mut magic)?;
         if magic != consts::MAGIC_NUMBER {
@@ -71,9 +74,26 @@ impl Header {
                 mini_sector_shift
             );
         }
+
+        // TODO: require reserved field to be all zeros under strict validation
         reader.read_exact(&mut [0u8; 6])?; // reserved field
 
-        let num_dir_sectors = reader.read_u32::<LittleEndian>()?;
+        // According to section 2.2 of the MS-CFB spec, "If Major Version is 3,
+        // the Number of Directory Sectors MUST be zero."  However, under
+        // Permissive validation, we don't enforce this, but instead just treat
+        // the field as though it were zero for V3 files.
+        let mut num_dir_sectors = reader.read_u32::<LittleEndian>()?;
+        if version == Version::V3 && num_dir_sectors != 0 {
+            if validation.is_strict() {
+                invalid_data!(
+                    "Invalid number of directory sectors field (must be zero \
+                     for CFB version 3, found {})",
+                    num_dir_sectors
+                );
+            }
+            num_dir_sectors = 0;
+        }
+
         let num_fat_sectors = reader.read_u32::<LittleEndian>()?;
         let first_dir_sector = reader.read_u32::<LittleEndian>()?;
         let _transaction_signature = reader.read_u32::<LittleEndian>()?;
@@ -155,7 +175,7 @@ impl Header {
 
 #[cfg(test)]
 mod tests {
-    use crate::internal::{consts, Version};
+    use crate::internal::{consts, Validation, Version};
 
     use super::Header;
 
@@ -188,7 +208,9 @@ mod tests {
         let header1 = make_valid_header();
         let mut data = Vec::<u8>::new();
         header1.write_to(&mut data).unwrap();
-        let header2 = Header::read_from(&mut data.as_slice()).unwrap();
+        let header2 =
+            Header::read_from(&mut data.as_slice(), Validation::Strict)
+                .unwrap();
         assert_eq!(header1.version, header2.version);
         assert_eq!(header1.num_dir_sectors, header2.num_dir_sectors);
         assert_eq!(header1.num_fat_sectors, header2.num_fat_sectors);
@@ -208,7 +230,7 @@ mod tests {
     fn invalid_magic_number() {
         let mut data = make_valid_header_data();
         data[2] = 255;
-        Header::read_from(&mut data.as_slice()).unwrap();
+        Header::read_from(&mut data.as_slice(), Validation::Strict).unwrap();
     }
 
     #[test]
@@ -216,7 +238,7 @@ mod tests {
     fn invalid_version() {
         let mut data = make_valid_header_data();
         data[26] = 42;
-        Header::read_from(&mut data.as_slice()).unwrap();
+        Header::read_from(&mut data.as_slice(), Validation::Strict).unwrap();
     }
 
     #[test]
@@ -227,7 +249,7 @@ mod tests {
     fn invalid_byte_order_mark() {
         let mut data = make_valid_header_data();
         data[29] = 7;
-        Header::read_from(&mut data.as_slice()).unwrap();
+        Header::read_from(&mut data.as_slice(), Validation::Strict).unwrap();
     }
 
     #[test]
@@ -238,7 +260,7 @@ mod tests {
     fn invalid_sector_shift() {
         let mut data = make_valid_header_data();
         data[30] = 12;
-        Header::read_from(&mut data.as_slice()).unwrap();
+        Header::read_from(&mut data.as_slice(), Validation::Strict).unwrap();
     }
 
     #[test]
@@ -248,7 +270,28 @@ mod tests {
     fn invalid_mini_sector_shift() {
         let mut data = make_valid_header_data();
         data[32] = 7;
-        Header::read_from(&mut data.as_slice()).unwrap();
+        Header::read_from(&mut data.as_slice(), Validation::Strict).unwrap();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Invalid number of directory sectors field (must be zero \
+                    for CFB version 3, found 37)"
+    )]
+    fn v3_non_zero_dir_sectors_strict() {
+        let mut data = make_valid_header_data();
+        data[40] = 37;
+        Header::read_from(&mut data.as_slice(), Validation::Strict).unwrap();
+    }
+
+    #[test]
+    fn v3_non_zero_dir_sectors_permissive() {
+        let mut data = make_valid_header_data();
+        data[40] = 37;
+        let header =
+            Header::read_from(&mut data.as_slice(), Validation::Permissive)
+                .unwrap();
+        assert_eq!(header.num_dir_sectors, 0);
     }
 
     #[test]
@@ -258,7 +301,7 @@ mod tests {
     fn invalid_mini_stream_cutoff() {
         let mut data = make_valid_header_data();
         data[57] = 8;
-        Header::read_from(&mut data.as_slice()).unwrap();
+        Header::read_from(&mut data.as_slice(), Validation::Strict).unwrap();
     }
 
     #[test]
@@ -269,7 +312,7 @@ mod tests {
     fn invalid_difat_array() {
         let mut data = make_valid_header_data();
         data[80] = 0xFB;
-        Header::read_from(&mut data.as_slice()).unwrap();
+        Header::read_from(&mut data.as_slice(), Validation::Strict).unwrap();
     }
 }
 
