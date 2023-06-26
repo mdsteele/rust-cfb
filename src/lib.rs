@@ -307,7 +307,7 @@ impl<F: Seek> CompoundFile<F> {
         self.open_stream_with_path(path.as_ref())
     }
 
-    /// Rads an existing stream in the compound file for reading
+    /// Reads an existing stream in the compound file for reading
     pub fn read_stream<P: AsRef<Path>>(
         &self,
         path: P,
