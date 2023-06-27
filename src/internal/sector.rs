@@ -37,6 +37,10 @@ impl<F> Sectors<F> {
     pub fn into_inner(self) -> F {
         self.inner
     }
+
+    pub fn inner(&self) -> &F {
+        &self.inner
+    }
 }
 
 impl<F: Seek> Sectors<F> {

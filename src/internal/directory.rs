@@ -42,6 +42,10 @@ impl<F> Directory<F> {
         self.allocator.version()
     }
 
+    pub fn inner(&self) -> &F {
+        self.allocator.inner()
+    }
+
     pub fn sector_len(&self) -> usize {
         self.allocator.sector_len()
     }

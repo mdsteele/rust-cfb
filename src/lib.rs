@@ -46,6 +46,7 @@
 #![warn(missing_docs)]
 
 use std::cell::{Ref, RefCell, RefMut};
+use std::fmt;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -961,6 +962,12 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     /// Flushes all changes to the underlying file.
     pub fn flush(&mut self) -> io::Result<()> {
         self.minialloc_mut().flush()
+    }
+}
+
+impl<F: fmt::Debug> fmt::Debug for CompoundFile<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("CompoundFile").field(self.minialloc().inner()).finish()
     }
 }
 
