@@ -1,5 +1,6 @@
 use crate::internal::{consts, DirEntry, MiniAllocator, ObjType, Timestamp};
 use std::cell::RefCell;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -93,6 +94,17 @@ impl Entry {
     /// modified.
     pub fn modified(&self) -> SystemTime {
         self.modified_time.to_system_time()
+    }
+}
+
+impl fmt::Debug for Entry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            "{path} ({len} bytes)",
+            path = self.path().display(),
+            len = self.len()
+        )
     }
 }
 
