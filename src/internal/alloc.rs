@@ -43,6 +43,10 @@ impl<F> Allocator<F> {
         self.sectors.version()
     }
 
+    pub fn inner(&self) -> &F {
+        self.sectors.inner()
+    }
+
     pub fn sector_len(&self) -> usize {
         self.sectors.sector_len()
     }

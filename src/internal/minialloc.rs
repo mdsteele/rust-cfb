@@ -45,6 +45,10 @@ impl<F> MiniAllocator<F> {
         self.directory.version()
     }
 
+    pub fn inner(&self) -> &F {
+        self.directory.inner()
+    }
+
     pub fn next_mini_sector(&self, sector_id: u32) -> io::Result<u32> {
         let index = sector_id as usize;
         if index >= self.minifat.len() {
