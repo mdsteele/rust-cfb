@@ -45,13 +45,12 @@
 
 #![warn(missing_docs)]
 
-use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use fnv::FnvHashSet;
@@ -108,16 +107,16 @@ fn create_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
 /// [`File`](https://doc.rust-lang.org/std/fs/struct.File.html) or
 /// [`Cursor`](https://doc.rust-lang.org/std/io/struct.Cursor.html)).
 pub struct CompoundFile<F> {
-    minialloc: Rc<RefCell<MiniAllocator<F>>>,
+    minialloc: Arc<RwLock<MiniAllocator<F>>>,
 }
 
 impl<F> CompoundFile<F> {
-    fn minialloc(&self) -> Ref<MiniAllocator<F>> {
-        self.minialloc.borrow()
+    fn minialloc(&self) -> RwLockReadGuard<MiniAllocator<F>> {
+        self.minialloc.read().unwrap()
     }
 
-    fn minialloc_mut(&mut self) -> RefMut<MiniAllocator<F>> {
-        self.minialloc.borrow_mut()
+    fn minialloc_mut(&mut self) -> RwLockWriteGuard<MiniAllocator<F>> {
+        self.minialloc.write().unwrap()
     }
 
     /// Returns the CFB format version used for this compound file.
@@ -291,8 +290,8 @@ impl<F> CompoundFile<F> {
         // We only ever retain Weak copies of the CompoundFile's minialloc Rc
         // (e.g. in Stream structs), so the Rc::try_unwrap() should always
         // succeed.
-        match Rc::try_unwrap(self.minialloc) {
-            Ok(ref_cell) => ref_cell.into_inner().into_inner(),
+        match Arc::try_unwrap(self.minialloc) {
+            Ok(ref_cell) => ref_cell.into_inner().unwrap().into_inner(),
             Err(_) => unreachable!(),
         }
     }
@@ -557,7 +556,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             validation,
         )?;
 
-        Ok(CompoundFile { minialloc: Rc::new(RefCell::new(minialloc)) })
+        Ok(CompoundFile { minialloc: Arc::new(RwLock::new(minialloc)) })
     }
 }
 
@@ -635,7 +634,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             consts::END_OF_CHAIN,
             Validation::Strict,
         )?;
-        Ok(CompoundFile { minialloc: Rc::new(RefCell::new(minialloc)) })
+        Ok(CompoundFile { minialloc: Arc::new(RwLock::new(minialloc)) })
     }
 
     /// Creates a new, empty storage object (i.e. "directory") at the provided
