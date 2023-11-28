@@ -1,7 +1,6 @@
 use crate::internal::{consts, MiniAllocator, ObjType, SectorInit};
-use std::cell::RefCell;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, RwLock, Weak};
 
 //===========================================================================//
 
@@ -11,7 +10,7 @@ const BUFFER_SIZE: usize = 8192;
 
 /// A stream entry in a compound file, much like a filesystem file.
 pub struct Stream<F> {
-    minialloc: Weak<RefCell<MiniAllocator<F>>>,
+    minialloc: Weak<RwLock<MiniAllocator<F>>>,
     stream_id: u32,
     total_len: u64,
     buffer: Box<[u8; BUFFER_SIZE]>,
@@ -23,12 +22,13 @@ pub struct Stream<F> {
 
 impl<F> Stream<F> {
     pub(crate) fn new(
-        minialloc: &Rc<RefCell<MiniAllocator<F>>>,
+        minialloc: &Arc<RwLock<MiniAllocator<F>>>,
         stream_id: u32,
     ) -> Stream<F> {
-        let total_len = minialloc.borrow().dir_entry(stream_id).stream_len;
+        let total_len =
+            minialloc.read().unwrap().dir_entry(stream_id).stream_len;
         Stream {
-            minialloc: Rc::downgrade(minialloc),
+            minialloc: Arc::downgrade(minialloc),
             stream_id,
             total_len,
             buffer: Box::new([0; BUFFER_SIZE]),
@@ -39,7 +39,7 @@ impl<F> Stream<F> {
         }
     }
 
-    fn minialloc(&self) -> io::Result<Rc<RefCell<MiniAllocator<F>>>> {
+    fn minialloc(&self) -> io::Result<Arc<RwLock<MiniAllocator<F>>>> {
         self.minialloc.upgrade().ok_or_else(|| {
             io::Error::new(io::ErrorKind::Other, "CompoundFile was dropped")
         })
@@ -83,7 +83,11 @@ impl<F: Read + Write + Seek> Stream<F> {
             let new_position = self.current_position().min(size);
             self.flush_changes()?;
             let minialloc = self.minialloc()?;
-            resize_stream(&mut minialloc.borrow_mut(), self.stream_id, size)?;
+            resize_stream(
+                &mut minialloc.write().unwrap(),
+                self.stream_id,
+                size,
+            )?;
             self.total_len = size;
             self.buf_offset_from_start = new_position;
             self.buf_pos = 0;
@@ -110,7 +114,7 @@ impl<F: Read + Seek> BufRead for Stream<F> {
             self.buf_pos = 0;
             let minialloc = self.minialloc()?;
             self.buf_cap = read_data_from_stream(
-                &mut minialloc.borrow_mut(),
+                &mut minialloc.write().unwrap(),
                 self.stream_id,
                 self.buf_offset_from_start,
                 &mut self.buffer[..],
@@ -234,7 +238,7 @@ impl<F: Read + Write + Seek> Write for Stream<F> {
     fn flush(&mut self) -> io::Result<()> {
         self.flush_changes()?;
         let minialloc = self.minialloc()?;
-        minialloc.borrow_mut().flush()?;
+        minialloc.write().unwrap().flush()?;
         Ok(())
     }
 }
@@ -257,13 +261,13 @@ impl<F: Read + Write + Seek> Flusher<F> for FlushBuffer {
     fn flush_changes(&self, stream: &mut Stream<F>) -> io::Result<()> {
         let minialloc = stream.minialloc()?;
         write_data_to_stream(
-            &mut minialloc.borrow_mut(),
+            &mut minialloc.write().unwrap(),
             stream.stream_id,
             stream.buf_offset_from_start,
             &stream.buffer[..stream.buf_cap],
         )?;
         debug_assert_eq!(
-            minialloc.borrow().dir_entry(stream.stream_id).stream_len,
+            minialloc.read().unwrap().dir_entry(stream.stream_id).stream_len,
             stream.total_len
         );
         Ok(())

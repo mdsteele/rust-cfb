@@ -769,3 +769,18 @@ fn drop_compound_file_with_stream_open() -> io::Result<()> {
 }
 
 //===========================================================================//
+// Tests for asserting Send + Sync:
+
+#[test]
+fn test_compound_file_send() {
+    fn assert_send<T: Send>() {}
+    assert_send::<CompoundFile<std::fs::File>>();
+}
+
+#[test]
+fn test_compound_file_sync() {
+    fn assert_sync<T: Sync>() {}
+    assert_sync::<CompoundFile<std::fs::File>>();
+}
+
+//===========================================================================//
