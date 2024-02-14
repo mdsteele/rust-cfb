@@ -378,7 +378,9 @@ impl<F: Read + Seek> CompoundFile<F> {
         let mut seen_sector_ids = FnvHashSet::default();
         let mut difat_sector_ids = Vec::new();
         let mut current_difat_sector = header.first_difat_sector;
-        while current_difat_sector != consts::END_OF_CHAIN {
+        while current_difat_sector != consts::END_OF_CHAIN
+            && current_difat_sector != consts::FREE_SECTOR
+        {
             if current_difat_sector > consts::MAX_REGULAR_SECTOR {
                 invalid_data!(
                     "DIFAT chain includes invalid sector index {}",
@@ -414,6 +416,15 @@ impl<F: Read + Seek> CompoundFile<F> {
                 difat.push(next);
             }
             current_difat_sector = sector.read_u32::<LittleEndian>()?;
+            if validation.is_strict()
+                && current_difat_sector == consts::FREE_SECTOR
+            {
+                invalid_data!(
+                    "DIFAT chain must terminate with {}, not {}",
+                    consts::END_OF_CHAIN,
+                    consts::FREE_SECTOR
+                );
+            }
         }
         if validation.is_strict()
             && header.num_difat_sectors as usize != difat_sector_ids.len()
