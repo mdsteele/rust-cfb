@@ -225,12 +225,10 @@ impl<F> CompoundFile<F> {
         let mut names = internal::path::name_chain_from_path(path)?;
         let stream_id = match self.stream_id_for_name_chain(&names) {
             Some(stream_id) => stream_id,
-            None => {
-                not_found!(
-                    "No such object: {:?}",
-                    internal::path::path_from_name_chain(&names)
-                );
-            }
+            None => not_found!(
+                "No such object: {:?}",
+                internal::path::path_from_name_chain(&names)
+            ),
         };
         names.pop();
         let parent_path = internal::path::path_from_name_chain(&names);
@@ -695,9 +693,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         let name = names.pop().unwrap();
         let parent_id = match self.stream_id_for_name_chain(&names) {
             Some(stream_id) => stream_id,
-            None => {
-                not_found!("Parent storage doesn't exist");
-            }
+            None => not_found!("Parent storage doesn't exist"),
         };
         self.minialloc_mut().insert_dir_entry(
             parent_id,
@@ -876,9 +872,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         let name = names.pop().unwrap();
         let parent_id = match self.stream_id_for_name_chain(&names) {
             Some(stream_id) => stream_id,
-            None => {
-                not_found!("Parent storage doesn't exist");
-            }
+            None => not_found!("Parent storage doesn't exist"),
         };
         let new_stream_id = self.minialloc_mut().insert_dir_entry(
             parent_id,
