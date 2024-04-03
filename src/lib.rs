@@ -1043,6 +1043,20 @@ mod tests {
         Ok(data)
     }
 
+    fn make_cfb_with_ts(ts: std::time::SystemTime) -> Vec<u8> {
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        let mut cfb = CompoundFile::create(io::Cursor::new(&mut buf)).unwrap();
+
+        cfb.create_storage("/foo/").unwrap();
+        let mut stream = cfb.create_stream("/foo/bar").unwrap();
+        stream.write_all(b"data").unwrap();
+        drop(stream);
+        cfb.flush().unwrap();
+        buf
+    }
+
     #[test]
     fn zero_padded_fat_strict() {
         let data = make_cfb_file_with_zero_padded_fat().unwrap();
@@ -1082,6 +1096,28 @@ mod tests {
         cursor.seek(SeekFrom::Start(40)).unwrap();
         let num_dir_sectors = cursor.read_u32::<LittleEndian>().unwrap();
         assert_eq!(num_dir_sectors, 2);
+    }
+
+    #[test]
+    fn deterministic_cfbs() {
+        use super::Timestamp;
+        let ts = std::time::SystemTime::now();
+        let cfb1 = make_cfb_with_ts(ts);
+        let cfb2 = make_cfb_with_ts(ts);
+        let ts = Timestamp::from_system_time(ts);
+        assert_eq!(cfb1, cfb2);
+
+        let cfb = CompoundFile::open(Cursor::new(&cfb1)).unwrap();
+
+        let entry = cfb.entry("/foo").unwrap();
+        assert_eq!(Timestamp::from_system_time(entry.created()), ts);
+        assert_eq!(Timestamp::from_system_time(entry.modified()), ts);
+
+        let strict = CompoundFile::open_strict(Cursor::new(cfb1)).unwrap();
+
+        let entry = strict.entry("/foo").unwrap();
+        assert_eq!(Timestamp::from_system_time(entry.created()), ts);
+        assert_eq!(Timestamp::from_system_time(entry.modified()), ts);
     }
 }
 
