@@ -493,7 +493,15 @@ impl<F: Read + Seek> CompoundFile<F> {
         let mut dir_entries = Vec::<DirEntry>::new();
         let mut seen_dir_sectors = FnvHashSet::default();
         let mut current_dir_sector = header.first_dir_sector;
+        let mut dir_sector_count = 1;
         while current_dir_sector != consts::END_OF_CHAIN {
+            if validation.is_strict() && header.version == Version::V4 && dir_sector_count > header.num_dir_sectors {
+                invalid_data!(
+                    "Directory chain includes at least {} sectors which is greater than header num_dir_sectors {}",
+                    dir_sector_count,
+                    header.num_dir_sectors
+                );
+            }
             if current_dir_sector > consts::MAX_REGULAR_SECTOR {
                 invalid_data!(
                     "Directory chain includes invalid sector index {}",
@@ -526,6 +534,7 @@ impl<F: Read + Seek> CompoundFile<F> {
                 }
             }
             current_dir_sector = allocator.next(current_dir_sector)?;
+            dir_sector_count += 1;
         }
 
         let mut directory = Directory::new(
@@ -985,10 +994,11 @@ impl<F: fmt::Debug> fmt::Debug for CompoundFile<F> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, Cursor};
+    use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
     use std::mem::size_of;
+    use std::path::Path;
 
-    use byteorder::{LittleEndian, WriteBytesExt};
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
     use crate::internal::{consts, DirEntry, Header, Version};
 
@@ -1047,6 +1057,28 @@ mod tests {
         // Despite the zero-padded FAT, we should be able to read this file
         // under Permissive validation.
         CompoundFile::open(Cursor::new(data)).expect("open");
+    }
+
+    // Regression test for https://github.com/mdsteele/rust-cfb/issues/52.
+    #[test]
+    fn update_num_dir_sectors() {
+        // Create a CFB file with 2 sectors for the directory.
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).unwrap();
+        // root + 31 entries in the first sector
+        // 1 stream entry in the second sector
+        for i in 0..32 {
+            let path = format!("stream{}", i);
+            let path = Path::new(&path);
+            comp.create_stream(path).unwrap();
+        }
+        comp.flush().unwrap();
+
+        // read num_dir_sectors from the header
+        let mut cursor = comp.into_inner();
+        cursor.seek(SeekFrom::Start(40)).unwrap();
+        let num_dir_sectors = cursor.read_u32::<LittleEndian>().unwrap();
+        assert_eq!(num_dir_sectors, 2);
     }
 }
 

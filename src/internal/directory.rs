@@ -413,11 +413,33 @@ impl<F: Write + Seek> Directory<F> {
         if self.dir_entries.len() % dir_entries_per_sector == 0 {
             let start_sector = self.dir_start_sector;
             self.allocator.extend_chain(start_sector, SectorInit::Dir)?;
+            self.update_num_dir_sectors()?;
         }
         // Add a new entry to the end of the directory and return it.
         let stream_id = self.dir_entries.len() as u32;
         self.dir_entries.push(unallocated_dir_entry);
         Ok(stream_id)
+    }
+
+    /// Increase header num_dir_sectors if version V4
+    /// note: not updating this value breaks ole32 compatibility
+    fn update_num_dir_sectors(&mut self) -> io::Result<()> {
+        let start_sector = self.dir_start_sector;
+        if self.version() == Version::V4 {
+            let num_dir_sectors = self.count_directory_sectors(start_sector)?;
+            self.seek_within_header(40)?.write_u32::<LittleEndian>(num_dir_sectors)?;
+        }
+        Ok(())
+    }
+
+    fn count_directory_sectors(&mut self, start_sector: u32) -> io::Result<u32> {
+        let mut num_dir_sectors = 1;
+        let mut next_sector = self.allocator.next(start_sector)?;
+        while next_sector != consts::END_OF_CHAIN {
+            num_dir_sectors += 1;
+            next_sector = self.allocator.next(next_sector)?;
+        }
+        Ok(num_dir_sectors)
     }
 
     /// Deallocates the specified directory entry.
@@ -428,6 +450,7 @@ impl<F: Write + Seek> Directory<F> {
         *self.dir_entry_mut(stream_id) = dir_entry;
         // TODO: Truncate directory chain if last directory sector is now all
         //       unallocated.
+        //       In that case, also call update_num_dir_sectors()
         Ok(())
     }
 
