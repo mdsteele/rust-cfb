@@ -478,7 +478,7 @@ fn invalid_num_dir_sectors_issue_52() {
     // update the header and set num_dir_sectors = 1 instead of 2
     let mut cursor = comp.into_inner();
     cursor.seek(SeekFrom::Start(40)).unwrap();
-    cursor.write_all(&[0x01, 0x00, 0x00, 0x00]).unwrap();
+    cursor.write_u32::<LittleEndian>(1).unwrap();
     cursor.flush().unwrap();
 
     // Read the file back in.
