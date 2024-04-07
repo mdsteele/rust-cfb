@@ -16,8 +16,6 @@ jobs:
       matrix:
         os: [ ubuntu-latest, windows-latest, macos-latest]
         rust: [ stable ]
-
-    needs: [linters]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
@@ -30,7 +28,6 @@ jobs:
 
   linters:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v3
         with:

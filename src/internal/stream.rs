@@ -130,10 +130,8 @@ impl<F: Read + Seek> BufRead for Stream<F> {
 
 impl<F: Read + Seek> Read for Stream<F> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let num_bytes = {
-            let mut buffered_data = self.fill_buf()?;
-            buffered_data.read(buf)?
-        };
+        let mut buffered_data = self.fill_buf()?;
+        let num_bytes = buffered_data.read(buf)?;
         self.consume(num_bytes);
         Ok(num_bytes)
     }
