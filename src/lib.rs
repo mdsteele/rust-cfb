@@ -997,7 +997,7 @@ impl<F: fmt::Debug> fmt::Debug for CompoundFile<F> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+    use std::io::{self, Cursor, Seek, SeekFrom};
     use std::mem::size_of;
     use std::path::Path;
 
