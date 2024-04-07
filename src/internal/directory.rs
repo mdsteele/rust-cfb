@@ -426,13 +426,18 @@ impl<F: Write + Seek> Directory<F> {
     fn update_num_dir_sectors(&mut self) -> io::Result<()> {
         let start_sector = self.dir_start_sector;
         if self.version() == Version::V4 {
-            let num_dir_sectors = self.count_directory_sectors(start_sector)?;
-            self.seek_within_header(40)?.write_u32::<LittleEndian>(num_dir_sectors)?;
+            let num_dir_sectors =
+                self.count_directory_sectors(start_sector)?;
+            self.seek_within_header(40)?
+                .write_u32::<LittleEndian>(num_dir_sectors)?;
         }
         Ok(())
     }
 
-    fn count_directory_sectors(&mut self, start_sector: u32) -> io::Result<u32> {
+    fn count_directory_sectors(
+        &mut self,
+        start_sector: u32,
+    ) -> io::Result<u32> {
         let mut num_dir_sectors = 1;
         let mut next_sector = self.allocator.next(start_sector)?;
         while next_sector != consts::END_OF_CHAIN {

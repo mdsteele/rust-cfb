@@ -495,7 +495,10 @@ impl<F: Read + Seek> CompoundFile<F> {
         let mut current_dir_sector = header.first_dir_sector;
         let mut dir_sector_count = 1;
         while current_dir_sector != consts::END_OF_CHAIN {
-            if validation.is_strict() && header.version == Version::V4 && dir_sector_count > header.num_dir_sectors {
+            if validation.is_strict()
+                && header.version == Version::V4
+                && dir_sector_count > header.num_dir_sectors
+            {
                 invalid_data!(
                     "Directory chain includes at least {} sectors which is greater than header num_dir_sectors {}",
                     dir_sector_count,

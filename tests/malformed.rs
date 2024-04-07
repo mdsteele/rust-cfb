@@ -460,7 +460,7 @@ fn open_strict_difat_terminate_freesect() {
 /// Regression test for https://github.com/mdsteele/rust-cfb/issues/52.
 #[test]
 #[should_panic(
-expected = "Directory chain includes at least 2 sectors which is greater than header num_dir_sectors 1"
+    expected = "Directory chain includes at least 2 sectors which is greater than header num_dir_sectors 1"
 )]
 fn invalid_num_dir_sectors_issue_52() {
     // Create a CFB file with 2 sectors for the directory.
