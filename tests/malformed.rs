@@ -456,3 +456,31 @@ fn open_difat_terminate_freesect() {
 fn open_strict_difat_terminate_freesect() {
     CompoundFile::open_strict(difat_terminate_in_freesect()).unwrap();
 }
+
+/// Regression test for https://github.com/mdsteele/rust-cfb/issues/52.
+#[test]
+#[should_panic(
+    expected = "Directory chain includes at least 2 sectors which is greater than header num_dir_sectors 1"
+)]
+fn invalid_num_dir_sectors_issue_52() {
+    // Create a CFB file with 2 sectors for the directory.
+    let cursor = Cursor::new(Vec::new());
+    let mut comp = CompoundFile::create(cursor).unwrap();
+    // root + 31 entries in the first sector
+    // 1 stream entry in the second sector
+    for i in 0..32 {
+        let path = format!("stream{}", i);
+        let path = Path::new(&path);
+        comp.create_stream(path).unwrap();
+    }
+    comp.flush().unwrap();
+
+    // update the header and set num_dir_sectors = 1 instead of 2
+    let mut cursor = comp.into_inner();
+    cursor.seek(SeekFrom::Start(40)).unwrap();
+    cursor.write_u32::<LittleEndian>(1).unwrap();
+    cursor.flush().unwrap();
+
+    // Read the file back in.
+    CompoundFile::open_strict(cursor).unwrap();
+}
