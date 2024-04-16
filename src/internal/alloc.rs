@@ -83,12 +83,17 @@ impl<F> Allocator<F> {
     }
 
     fn validate(&mut self, validation: Validation) -> io::Result<()> {
-        if self.fat.len() > self.sectors.num_sectors() as usize {
-            malformed!(
-                "FAT has {} entries, but file has only {} sectors",
-                self.fat.len(),
-                self.sectors.num_sectors()
-            );
+        let num_sectors = self.sectors.num_sectors() as usize;
+        if self.fat.len() > num_sectors {
+            if validation.is_strict() {
+                malformed!(
+                    "FAT has {} entries, but file has only {} sectors",
+                    self.fat.len(),
+                    num_sectors
+                );
+            } else {
+                self.fat.truncate(num_sectors)
+            }
         }
         for &difat_sector in self.difat_sector_ids.iter() {
             let difat_sector_index = difat_sector as usize;
@@ -134,12 +139,17 @@ impl<F> Allocator<F> {
         for (from_sector, &to_sector) in self.fat.iter().enumerate() {
             if to_sector <= consts::MAX_REGULAR_SECTOR {
                 if to_sector as usize >= self.fat.len() {
-                    malformed!(
-                        "FAT has {} entries, but sector {} points to {}",
-                        self.fat.len(),
-                        from_sector,
-                        to_sector
-                    );
+                    if validation.is_strict() {
+                        malformed!(
+                            "FAT has {} entries, but sector {} points to {}",
+                            self.fat.len(),
+                            from_sector,
+                            to_sector
+                        );
+                    } else {
+                        self.fat.truncate(from_sector + 1);
+                        return Ok(());
+                    }
                 }
                 if pointees.contains(&to_sector) {
                     malformed!("sector {} pointed to twice", to_sector);
