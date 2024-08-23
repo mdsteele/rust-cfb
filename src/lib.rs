@@ -45,13 +45,12 @@
 
 #![warn(missing_docs)]
 
-use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use fnv::FnvHashSet;
@@ -108,16 +107,16 @@ fn create_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
 /// [`File`](https://doc.rust-lang.org/std/fs/struct.File.html) or
 /// [`Cursor`](https://doc.rust-lang.org/std/io/struct.Cursor.html)).
 pub struct CompoundFile<F> {
-    minialloc: Rc<RefCell<MiniAllocator<F>>>,
+    minialloc: Arc<RwLock<MiniAllocator<F>>>,
 }
 
 impl<F> CompoundFile<F> {
-    fn minialloc(&self) -> Ref<MiniAllocator<F>> {
-        self.minialloc.borrow()
+    fn minialloc(&self) -> RwLockReadGuard<MiniAllocator<F>> {
+        self.minialloc.read().unwrap()
     }
 
-    fn minialloc_mut(&mut self) -> RefMut<MiniAllocator<F>> {
-        self.minialloc.borrow_mut()
+    fn minialloc_mut(&mut self) -> RwLockWriteGuard<MiniAllocator<F>> {
+        self.minialloc.write().unwrap()
     }
 
     /// Returns the CFB format version used for this compound file.
@@ -291,8 +290,8 @@ impl<F> CompoundFile<F> {
         // We only ever retain Weak copies of the CompoundFile's minialloc Rc
         // (e.g. in Stream structs), so the Rc::try_unwrap() should always
         // succeed.
-        match Rc::try_unwrap(self.minialloc) {
-            Ok(ref_cell) => ref_cell.into_inner().into_inner(),
+        match Arc::try_unwrap(self.minialloc) {
+            Ok(ref_cell) => ref_cell.into_inner().unwrap().into_inner(),
             Err(_) => unreachable!(),
         }
     }
@@ -379,7 +378,9 @@ impl<F: Read + Seek> CompoundFile<F> {
         let mut seen_sector_ids = FnvHashSet::default();
         let mut difat_sector_ids = Vec::new();
         let mut current_difat_sector = header.first_difat_sector;
-        while current_difat_sector != consts::END_OF_CHAIN {
+        while current_difat_sector != consts::END_OF_CHAIN
+            && current_difat_sector != consts::FREE_SECTOR
+        {
             if current_difat_sector > consts::MAX_REGULAR_SECTOR {
                 invalid_data!(
                     "DIFAT chain includes invalid sector index {}",
@@ -415,6 +416,15 @@ impl<F: Read + Seek> CompoundFile<F> {
                 difat.push(next);
             }
             current_difat_sector = sector.read_u32::<LittleEndian>()?;
+            if validation.is_strict()
+                && current_difat_sector == consts::FREE_SECTOR
+            {
+                invalid_data!(
+                    "DIFAT chain must terminate with {}, not {}",
+                    consts::END_OF_CHAIN,
+                    consts::FREE_SECTOR
+                );
+            }
         }
         if validation.is_strict()
             && header.num_difat_sectors as usize != difat_sector_ids.len()
@@ -483,7 +493,18 @@ impl<F: Read + Seek> CompoundFile<F> {
         let mut dir_entries = Vec::<DirEntry>::new();
         let mut seen_dir_sectors = FnvHashSet::default();
         let mut current_dir_sector = header.first_dir_sector;
+        let mut dir_sector_count = 1;
         while current_dir_sector != consts::END_OF_CHAIN {
+            if validation.is_strict()
+                && header.version == Version::V4
+                && dir_sector_count > header.num_dir_sectors
+            {
+                invalid_data!(
+                    "Directory chain includes at least {} sectors which is greater than header num_dir_sectors {}",
+                    dir_sector_count,
+                    header.num_dir_sectors
+                );
+            }
             if current_dir_sector > consts::MAX_REGULAR_SECTOR {
                 invalid_data!(
                     "Directory chain includes invalid sector index {}",
@@ -516,6 +537,7 @@ impl<F: Read + Seek> CompoundFile<F> {
                 }
             }
             current_dir_sector = allocator.next(current_dir_sector)?;
+            dir_sector_count += 1;
         }
 
         let mut directory = Directory::new(
@@ -557,7 +579,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             validation,
         )?;
 
-        Ok(CompoundFile { minialloc: Rc::new(RefCell::new(minialloc)) })
+        Ok(CompoundFile { minialloc: Arc::new(RwLock::new(minialloc)) })
     }
 }
 
@@ -635,7 +657,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             consts::END_OF_CHAIN,
             Validation::Strict,
         )?;
-        Ok(CompoundFile { minialloc: Rc::new(RefCell::new(minialloc)) })
+        Ok(CompoundFile { minialloc: Arc::new(RwLock::new(minialloc)) })
     }
 
     /// Creates a new, empty storage object (i.e. "directory") at the provided
@@ -975,10 +997,11 @@ impl<F: fmt::Debug> fmt::Debug for CompoundFile<F> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, Cursor};
+    use std::io::{self, Cursor, Seek, SeekFrom};
     use std::mem::size_of;
+    use std::path::Path;
 
-    use byteorder::{LittleEndian, WriteBytesExt};
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
     use crate::internal::{consts, DirEntry, Header, Version};
 
@@ -1037,6 +1060,28 @@ mod tests {
         // Despite the zero-padded FAT, we should be able to read this file
         // under Permissive validation.
         CompoundFile::open(Cursor::new(data)).expect("open");
+    }
+
+    // Regression test for https://github.com/mdsteele/rust-cfb/issues/52.
+    #[test]
+    fn update_num_dir_sectors() {
+        // Create a CFB file with 2 sectors for the directory.
+        let cursor = Cursor::new(Vec::new());
+        let mut comp = CompoundFile::create(cursor).unwrap();
+        // root + 31 entries in the first sector
+        // 1 stream entry in the second sector
+        for i in 0..32 {
+            let path = format!("stream{}", i);
+            let path = Path::new(&path);
+            comp.create_stream(path).unwrap();
+        }
+        comp.flush().unwrap();
+
+        // read num_dir_sectors from the header
+        let mut cursor = comp.into_inner();
+        cursor.seek(SeekFrom::Start(40)).unwrap();
+        let num_dir_sectors = cursor.read_u32::<LittleEndian>().unwrap();
+        assert_eq!(num_dir_sectors, 2);
     }
 }
 

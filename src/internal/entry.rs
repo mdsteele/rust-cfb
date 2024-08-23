@@ -1,8 +1,7 @@
 use crate::internal::{consts, DirEntry, MiniAllocator, ObjType, Timestamp};
-use std::cell::RefCell;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 use uuid::Uuid;
 
@@ -125,14 +124,14 @@ pub struct Entries<'a, F: 'a> {
     // a reference to the Rc.  That would allow e.g. opening streams during
     // iteration.  But we'd need to think about how the iterator should behave
     // if the CFB tree structure is modified during iteration.
-    minialloc: &'a Rc<RefCell<MiniAllocator<F>>>,
+    minialloc: &'a Arc<RwLock<MiniAllocator<F>>>,
     stack: Vec<(PathBuf, u32, bool)>,
 }
 
 impl<'a, F> Entries<'a, F> {
     pub(crate) fn new(
         order: EntriesOrder,
-        minialloc: &'a Rc<RefCell<MiniAllocator<F>>>,
+        minialloc: &'a Arc<RwLock<MiniAllocator<F>>>,
         parent_path: PathBuf,
         start: u32,
     ) -> Entries<'a, F> {
@@ -149,7 +148,7 @@ impl<'a, F> Entries<'a, F> {
     }
 
     fn stack_left_spine(&mut self, parent_path: &Path, mut current_id: u32) {
-        let minialloc = self.minialloc.borrow();
+        let minialloc = self.minialloc.read().unwrap();
         while current_id != consts::NO_STREAM {
             self.stack.push((parent_path.to_path_buf(), current_id, true));
             current_id = minialloc.dir_entry(current_id).left_sibling;
@@ -162,7 +161,7 @@ impl<'a, F> Iterator for Entries<'a, F> {
 
     fn next(&mut self) -> Option<Entry> {
         if let Some((parent, stream_id, visit_siblings)) = self.stack.pop() {
-            let minialloc = self.minialloc.borrow();
+            let minialloc = self.minialloc.read().unwrap();
             let dir_entry = minialloc.dir_entry(stream_id);
             let path = join_path(&parent, dir_entry);
             if visit_siblings {
@@ -201,9 +200,8 @@ mod tests {
         Allocator, DirEntry, Directory, MiniAllocator, ObjType, Sectors,
         Timestamp, Validation, Version,
     };
-    use std::cell::RefCell;
     use std::path::{Path, PathBuf};
-    use std::rc::Rc;
+    use std::sync::{Arc, RwLock};
 
     fn make_entry(
         name: &str,
@@ -219,7 +217,7 @@ mod tests {
         dir_entry
     }
 
-    fn make_minialloc() -> Rc<RefCell<MiniAllocator<()>>> {
+    fn make_minialloc() -> Arc<RwLock<MiniAllocator<()>>> {
         // Root contains:      3 contains:
         //      5                  8
         //     / \                / \
@@ -261,7 +259,7 @@ mod tests {
             Validation::Strict,
         )
         .unwrap();
-        Rc::new(RefCell::new(minialloc))
+        Arc::new(RwLock::new(minialloc))
     }
 
     fn paths_for_entries(entries: &[Entry]) -> Vec<&Path> {
