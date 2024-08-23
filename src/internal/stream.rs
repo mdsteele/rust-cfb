@@ -1,6 +1,6 @@
 use crate::internal::{consts, MiniAllocator, ObjType, SectorInit};
 use std::cell::RefCell;
-use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::rc::{Rc, Weak};
 
 //===========================================================================//
@@ -272,6 +272,27 @@ impl<F: Read + Write + Seek> Flusher<F> for FlushBuffer {
 
 //===========================================================================//
 
+fn read_until_error<R: Read + ?Sized>(
+    this: &mut R,
+    mut buf: &mut [u8],
+) -> io::Result<usize> {
+    let mut read_amount = 0;
+
+    while !buf.is_empty() {
+        match this.read(buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf = &mut buf[n..];
+                read_amount += n;
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(read_amount)
+}
+
 fn read_data_from_stream<F: Read + Seek>(
     minialloc: &mut MiniAllocator<F>,
     stream_id: u32,
@@ -297,12 +318,14 @@ fn read_data_from_stream<F: Read + Seek>(
         if stream_len < consts::MINI_STREAM_CUTOFF as u64 {
             let mut chain = minialloc.open_mini_chain(start_sector)?;
             chain.seek(SeekFrom::Start(buf_offset_from_start))?;
-            chain.read_exact(&mut buf[..num_bytes])?;
+            return Ok(read_until_error(&mut chain, &mut buf[..num_bytes])
+                .unwrap_or(0));
         } else {
             let mut chain =
                 minialloc.open_chain(start_sector, SectorInit::Zero)?;
             chain.seek(SeekFrom::Start(buf_offset_from_start))?;
-            chain.read_exact(&mut buf[..num_bytes])?;
+            return Ok(read_until_error(&mut chain, &mut buf[..num_bytes])
+                .unwrap_or(0));
         }
     }
     Ok(num_bytes)
