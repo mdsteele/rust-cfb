@@ -1,7 +1,6 @@
 use crate::internal::{consts, MiniAllocator, ObjType, SectorInit};
-use std::cell::RefCell;
 use std::io::{self, BufRead, ErrorKind, Read, Seek, SeekFrom, Write};
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, RwLock, Weak};
 
 //===========================================================================//
 
