@@ -57,12 +57,12 @@ impl<F> Directory<F> {
     pub fn stream_id_for_name_chain(&self, names: &[&str]) -> Option<u32> {
         let mut stream_id = consts::ROOT_STREAM_ID;
         for name in names.iter() {
-            stream_id = self.dir_entry(stream_id).child;
+            stream_id = self.try_dir_entry(stream_id)?.child;
             loop {
                 if stream_id == consts::NO_STREAM {
                     return None;
                 }
-                let dir_entry = self.dir_entry(stream_id);
+                let dir_entry = self.try_dir_entry(stream_id)?;
                 match internal::path::compare_names(name, &dir_entry.name) {
                     Ordering::Equal => break,
                     Ordering::Less => stream_id = dir_entry.left_sibling,
@@ -83,6 +83,10 @@ impl<F> Directory<F> {
 
     pub fn root_dir_entry(&self) -> &DirEntry {
         self.dir_entry(consts::ROOT_STREAM_ID)
+    }
+
+    pub fn try_dir_entry(&self, stream_id: u32) -> Option<&DirEntry> {
+        self.dir_entries.get(stream_id as usize)
     }
 
     pub fn dir_entry(&self, stream_id: u32) -> &DirEntry {
@@ -138,58 +142,80 @@ impl<F> Directory<F> {
             if parent_is_red && node_is_red && validation.is_strict() {
                 malformed!("RB tree has adjacent red nodes");
             }
-            let left_sibling = dir_entry.left_sibling;
+            let mut left_sibling = dir_entry.left_sibling;
             if left_sibling != consts::NO_STREAM {
                 if left_sibling as usize >= self.dir_entries.len() {
-                    malformed!(
-                        "left sibling index is {}, but directory entry count \
-                         is {}",
-                        left_sibling,
-                        self.dir_entries.len()
-                    );
+                    if validation.is_strict() {
+                        malformed!(
+                            "left sibling index is {}, but directory entry count \
+                             is {}",
+                            left_sibling,
+                            self.dir_entries.len()
+                        );
+                    } else {
+                        left_sibling = consts::NO_STREAM;
+                    }
                 }
-                let entry = &self.dir_entry(left_sibling);
-                if internal::path::compare_names(&entry.name, &dir_entry.name)
-                    != Ordering::Less
-                {
-                    malformed!(
-                        "name ordering, {:?} vs {:?}",
-                        dir_entry.name,
-                        entry.name
-                    );
+                if left_sibling != consts::NO_STREAM {
+                    let entry = &self.dir_entry(left_sibling);
+                    if internal::path::compare_names(
+                        &entry.name,
+                        &dir_entry.name,
+                    ) != Ordering::Less
+                    {
+                        malformed!(
+                            "name ordering, {:?} vs {:?}",
+                            dir_entry.name,
+                            entry.name
+                        );
+                    }
+                    stack.push((left_sibling, node_is_red));
                 }
-                stack.push((left_sibling, node_is_red));
             }
-            let right_sibling = dir_entry.right_sibling;
+            let mut right_sibling = dir_entry.right_sibling;
             if right_sibling != consts::NO_STREAM {
                 if right_sibling as usize >= self.dir_entries.len() {
-                    malformed!(
-                        "right sibling index is {}, but directory entry count \
-                         is {}",
-                        right_sibling, self.dir_entries.len());
+                    if validation.is_strict() {
+                        malformed!(
+                            "right sibling index is {}, but directory entry count \
+                             is {}",
+                            right_sibling, self.dir_entries.len());
+                    } else {
+                        right_sibling = consts::NO_STREAM;
+                    }
                 }
-                let entry = &self.dir_entry(right_sibling);
-                if internal::path::compare_names(&dir_entry.name, &entry.name)
-                    != Ordering::Less
-                {
-                    malformed!(
-                        "name ordering, {:?} vs {:?}",
-                        dir_entry.name,
-                        entry.name
-                    );
+                if right_sibling != consts::NO_STREAM {
+                    let entry = &self.dir_entry(right_sibling);
+                    if internal::path::compare_names(
+                        &dir_entry.name,
+                        &entry.name,
+                    ) != Ordering::Less
+                    {
+                        malformed!(
+                            "name ordering, {:?} vs {:?}",
+                            dir_entry.name,
+                            entry.name
+                        );
+                    }
+                    stack.push((right_sibling, node_is_red));
                 }
-                stack.push((right_sibling, node_is_red));
             }
-            let child = dir_entry.child;
+            let mut child = dir_entry.child;
             if child != consts::NO_STREAM {
                 if child as usize >= self.dir_entries.len() {
-                    malformed!(
-                        "child index is {}, but directory entry count is {}",
-                        child,
-                        self.dir_entries.len()
-                    );
+                    if validation.is_strict() {
+                        malformed!(
+                            "child index is {}, but directory entry count is {}",
+                            child,
+                            self.dir_entries.len()
+                        );
+                    } else {
+                        child = consts::NO_STREAM;
+                    }
                 }
-                stack.push((child, false));
+                if child != consts::NO_STREAM {
+                    stack.push((child, false));
+                }
             }
         }
         Ok(())

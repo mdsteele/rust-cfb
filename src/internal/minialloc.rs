@@ -96,6 +96,10 @@ impl<F> MiniAllocator<F> {
         self.directory.root_dir_entry()
     }
 
+    pub fn try_dir_entry(&self, stream_id: u32) -> Option<&DirEntry> {
+        self.directory.try_dir_entry(stream_id)
+    }
+
     pub fn dir_entry(&self, stream_id: u32) -> &DirEntry {
         self.directory.dir_entry(stream_id)
     }

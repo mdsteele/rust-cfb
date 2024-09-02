@@ -511,12 +511,16 @@ impl<F: Read + Seek> CompoundFile<F> {
                     current_dir_sector
                 );
             } else if current_dir_sector >= num_sectors {
-                invalid_data!(
-                    "Directory chain includes sector index {}, but sector \
-                     count is only {}",
-                    current_dir_sector,
-                    num_sectors
-                );
+                if validation.is_strict() {
+                    invalid_data!(
+                        "Directory chain includes sector index {}, but sector \
+                         count is only {}",
+                        current_dir_sector,
+                        num_sectors
+                    );
+                } else {
+                    break;
+                }
             }
             if seen_dir_sectors.contains(&current_dir_sector) {
                 invalid_data!(
