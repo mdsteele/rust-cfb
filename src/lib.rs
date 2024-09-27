@@ -435,6 +435,19 @@ impl<F: Read + Seek> CompoundFile<F> {
                 difat_sector_ids.len()
             );
         }
+        // The DIFAT should be padded with FREE_SECTOR, but DIFAT sectors
+        // may instead instead be incorrectly zero padded (see
+        // https://github.com/mdsteele/rust-cfb/issues/41).
+        // In case num_fat_sectors is not reliable, only remove zeroes,
+        // and don't remove sectors from the header DIFAT.
+        if !validation.is_strict() {
+            while difat.len() > consts::NUM_DIFAT_ENTRIES_IN_HEADER
+                && difat.len() > header.num_fat_sectors as usize
+                && difat.last() == Some(&0)
+            {
+                difat.pop();
+            }
+        }
         while difat.last() == Some(&consts::FREE_SECTOR) {
             difat.pop();
         }
