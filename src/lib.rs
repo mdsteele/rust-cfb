@@ -435,6 +435,19 @@ impl<F: Read + Seek> CompoundFile<F> {
                 difat_sector_ids.len()
             );
         }
+        // The DIFAT should be padded with FREE_SECTOR, but DIFAT sectors
+        // may instead instead be incorrectly zero padded (see
+        // https://github.com/mdsteele/rust-cfb/issues/41).
+        // In case num_fat_sectors is not reliable, only remove zeroes,
+        // and don't remove sectors from the header DIFAT.
+        if !validation.is_strict() {
+            while difat.len() > consts::NUM_DIFAT_ENTRIES_IN_HEADER
+                && difat.len() > header.num_fat_sectors as usize
+                && difat.last() == Some(&0)
+            {
+                difat.pop();
+            }
+        }
         while difat.last() == Some(&consts::FREE_SECTOR) {
             difat.pop();
         }
@@ -1058,6 +1071,102 @@ mod tests {
     fn zero_padded_fat_permissive() {
         let data = make_cfb_file_with_zero_padded_fat().unwrap();
         // Despite the zero-padded FAT, we should be able to read this file
+        // under Permissive validation.
+        CompoundFile::open(Cursor::new(data)).expect("open");
+    }
+
+    fn make_cfb_file_with_zero_padded_difat() -> io::Result<Vec<u8>> {
+        let version = Version::V3;
+        let mut data = Vec::<u8>::new();
+
+        let dir_sector = 0;
+        let difat_sector = 1;
+        // The zero-padded DIFAT issue is only seen with a DIFAT sector
+        let num_fat_sectors = consts::NUM_DIFAT_ENTRIES_IN_HEADER + 1;
+        // Layout FAT sectors after the DIFAT sector
+        let first_fat_sector = difat_sector + 1;
+        let fat_sectors: Vec<u32> = (0..num_fat_sectors)
+            .map(|i| (first_fat_sector + i) as u32)
+            .collect();
+
+        // Construct header full of DIFAT entries
+        let header = Header {
+            version,
+            num_dir_sectors: 0,
+            num_fat_sectors: num_fat_sectors as u32,
+            first_dir_sector: dir_sector as u32,
+            first_minifat_sector: consts::END_OF_CHAIN,
+            num_minifat_sectors: 0,
+            first_difat_sector: difat_sector as u32,
+            num_difat_sectors: 1,
+            initial_difat_entries: std::array::from_fn(|difat_entry_i| {
+                fat_sectors[difat_entry_i]
+            }),
+        };
+        header.write_to(&mut data)?;
+
+        // Write the directory sector
+        DirEntry::empty_root_entry().write_to(&mut data)?;
+        for _ in 1..version.dir_entries_per_sector() {
+            DirEntry::unallocated().write_to(&mut data)?;
+        }
+
+        // Write the DIFAT sector
+        let num_difat_entries_in_sector =
+            version.sector_len() / size_of::<u32>() - 1;
+        for i in 0..num_difat_entries_in_sector {
+            let difat_entry_i = i + consts::NUM_DIFAT_ENTRIES_IN_HEADER;
+
+            let entry = if difat_entry_i < num_fat_sectors {
+                fat_sectors[difat_entry_i]
+            } else {
+                // Pad with zeroes instead of FREE_SECTOR, this is
+                // the point where it deviates from spec.
+                0
+            };
+            data.write_u32::<LittleEndian>(entry)?;
+        }
+        // End DIFAT chain
+        data.write_u32::<LittleEndian>(consts::END_OF_CHAIN)?;
+
+        // Write the first two FAT sectors, referencing the header data
+        let num_fat_entries_in_sector =
+            version.sector_len() / size_of::<u32>();
+        let mut fat = vec![consts::FREE_SECTOR; num_fat_entries_in_sector * 2];
+        fat[difat_sector] = consts::DIFAT_SECTOR;
+        fat[dir_sector] = consts::END_OF_CHAIN;
+        for fat_sector in fat_sectors {
+            fat[fat_sector as usize] = consts::FAT_SECTOR;
+        }
+        for entry in fat {
+            data.write_u32::<LittleEndian>(entry)?;
+        }
+
+        // Pad out the rest of the FAT sectors with FREE_SECTOR
+        for _fat_sector in 2..num_fat_sectors {
+            for _i in 0..num_fat_entries_in_sector {
+                data.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
+            }
+        }
+
+        Ok(data)
+    }
+
+    #[test]
+    fn zero_padded_difat_strict() {
+        let data = make_cfb_file_with_zero_padded_difat().unwrap();
+        let result = CompoundFile::open_strict(Cursor::new(data));
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "Incorrect number of FAT sectors (header says 110, DIFAT says 236)",
+        );
+    }
+
+    // Regression test for https://github.com/mdsteele/rust-cfb/issues/41.
+    #[test]
+    fn zero_padded_difat_permissive() {
+        let data = make_cfb_file_with_zero_padded_difat().unwrap();
+        // Despite the zero-padded DIFAT, we should be able to read this file
         // under Permissive validation.
         CompoundFile::open(Cursor::new(data)).expect("open");
     }
