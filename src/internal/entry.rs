@@ -150,8 +150,12 @@ impl<'a, F> Entries<'a, F> {
     fn stack_left_spine(&mut self, parent_path: &Path, mut current_id: u32) {
         let minialloc = self.minialloc.read().unwrap();
         while current_id != consts::NO_STREAM {
-            self.stack.push((parent_path.to_path_buf(), current_id, true));
-            current_id = minialloc.dir_entry(current_id).left_sibling;
+            if let Some(dir_entry) = minialloc.try_dir_entry(current_id) {
+                self.stack.push((parent_path.to_path_buf(), current_id, true));
+                current_id = dir_entry.left_sibling;
+            } else {
+                break;
+            }
         }
     }
 }
