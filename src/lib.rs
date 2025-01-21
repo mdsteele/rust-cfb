@@ -225,12 +225,10 @@ impl<F> CompoundFile<F> {
         let mut names = internal::path::name_chain_from_path(path)?;
         let stream_id = match self.stream_id_for_name_chain(&names) {
             Some(stream_id) => stream_id,
-            None => {
-                not_found!(
-                    "No such object: {:?}",
-                    internal::path::path_from_name_chain(&names)
-                );
-            }
+            None => not_found!(
+                "No such object: {:?}",
+                internal::path::path_from_name_chain(&names)
+            ),
         };
         names.pop();
         let parent_path = internal::path::path_from_name_chain(&names);
@@ -708,9 +706,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         let name = names.pop().unwrap();
         let parent_id = match self.stream_id_for_name_chain(&names) {
             Some(stream_id) => stream_id,
-            None => {
-                not_found!("Parent storage doesn't exist");
-            }
+            None => not_found!("Parent storage doesn't exist"),
         };
         self.minialloc_mut().insert_dir_entry(
             parent_id,
@@ -889,9 +885,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         let name = names.pop().unwrap();
         let parent_id = match self.stream_id_for_name_chain(&names) {
             Some(stream_id) => stream_id,
-            None => {
-                not_found!("Parent storage doesn't exist");
-            }
+            None => not_found!("Parent storage doesn't exist"),
         };
         let new_stream_id = self.minialloc_mut().insert_dir_entry(
             parent_id,
@@ -947,50 +941,57 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         path: P,
         bits: u32,
     ) -> io::Result<()> {
-        self.set_state_bits_with_path(path.as_ref(), bits)
-    }
-
-    fn set_state_bits_with_path(
-        &mut self,
-        path: &Path,
-        bits: u32,
-    ) -> io::Result<()> {
-        let names = internal::path::name_chain_from_path(path)?;
-        let stream_id = match self.stream_id_for_name_chain(&names) {
-            Some(stream_id) => stream_id,
-            None => not_found!(
-                "No such object: {:?}",
-                internal::path::path_from_name_chain(&names)
-            ),
-        };
-        self.minialloc_mut().with_dir_entry_mut(stream_id, |dir_entry| {
-            dir_entry.state_bits = bits;
+        self.set_entry_with_path(path.as_ref(), |dir_entry| {
+            dir_entry.state_bits = bits
         })
     }
 
     /// Sets the modified time for the object at the given path to now.  Has no
     /// effect when called on the root storage.
     pub fn touch<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
-        self.touch_with_path(path.as_ref())
+        self.set_modified_time(path, std::time::SystemTime::now())
     }
 
-    fn touch_with_path(&mut self, path: &Path) -> io::Result<()> {
+    /// Sets the modified time for the object at the given path.
+    /// Has no effect on streams due to requirements imposed by CFB spec.
+    pub fn set_modified_time<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        ts: std::time::SystemTime,
+    ) -> io::Result<()> {
+        self.set_entry_with_path(path.as_ref(), |dir_entry| {
+            if dir_entry.obj_type != ObjType::Stream {
+                dir_entry.modified_time = Timestamp::from_system_time(ts);
+            }
+        })
+    }
+
+    /// Sets the created time for the object at the given path.
+    /// Has no effect on streams due to requirements imposed by CFB spec.
+    pub fn set_created_time<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        ts: std::time::SystemTime,
+    ) -> io::Result<()> {
+        self.set_entry_with_path(path.as_ref(), |dir_entry| {
+            if dir_entry.obj_type != ObjType::Stream {
+                dir_entry.creation_time = Timestamp::from_system_time(ts);
+            }
+        })
+    }
+
+    fn set_entry_with_path<G: FnMut(&mut DirEntry)>(
+        &mut self,
+        path: &Path,
+        f: G,
+    ) -> io::Result<()> {
         let names = internal::path::name_chain_from_path(path)?;
         let path = internal::path::path_from_name_chain(&names);
         let stream_id = match self.stream_id_for_name_chain(&names) {
             Some(stream_id) => stream_id,
             None => not_found!("No such object: {:?}", path),
         };
-        if stream_id != consts::ROOT_STREAM_ID {
-            let mut minialloc = self.minialloc_mut();
-            debug_assert_ne!(
-                minialloc.dir_entry(stream_id).obj_type,
-                ObjType::Root
-            );
-            minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
-                dir_entry.modified_time = Timestamp::now();
-            })?;
-        }
+        self.minialloc_mut().with_dir_entry_mut(stream_id, f)?;
         Ok(())
     }
 
@@ -1054,6 +1055,26 @@ mod tests {
             DirEntry::unallocated().write_to(&mut data)?;
         }
         Ok(data)
+    }
+
+    fn make_cfb_with_ts(ts: std::time::SystemTime) -> Vec<u8> {
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        let mut cfb = CompoundFile::create(io::Cursor::new(&mut buf)).unwrap();
+
+        cfb.create_storage("/foo/").unwrap();
+        let mut stream = cfb.create_stream("/foo/bar").unwrap();
+        stream.write_all(b"data").unwrap();
+        drop(stream);
+
+        let entries: Vec<_> = cfb.walk().collect();
+        for entr in entries {
+            cfb.set_modified_time(entr.path(), ts).unwrap();
+            cfb.set_created_time(entr.path(), ts).unwrap();
+        }
+        cfb.flush().unwrap();
+        buf
     }
 
     #[test]
@@ -1191,6 +1212,28 @@ mod tests {
         cursor.seek(SeekFrom::Start(40)).unwrap();
         let num_dir_sectors = cursor.read_u32::<LittleEndian>().unwrap();
         assert_eq!(num_dir_sectors, 2);
+    }
+
+    #[test]
+    fn deterministic_cfbs() {
+        use super::Timestamp;
+        let ts = std::time::SystemTime::now();
+        let cfb1 = make_cfb_with_ts(ts);
+        let cfb2 = make_cfb_with_ts(ts);
+        let ts = Timestamp::from_system_time(ts);
+        assert_eq!(cfb1, cfb2);
+
+        let cfb = CompoundFile::open(Cursor::new(&cfb1)).unwrap();
+
+        let entry = cfb.entry("/foo").unwrap();
+        assert_eq!(Timestamp::from_system_time(entry.created()), ts);
+        assert_eq!(Timestamp::from_system_time(entry.modified()), ts);
+
+        let strict = CompoundFile::open_strict(Cursor::new(cfb1)).unwrap();
+
+        let entry = strict.entry("/foo").unwrap();
+        assert_eq!(Timestamp::from_system_time(entry.created()), ts);
+        assert_eq!(Timestamp::from_system_time(entry.modified()), ts);
     }
 }
 
