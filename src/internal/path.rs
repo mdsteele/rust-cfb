@@ -10,22 +10,17 @@ const CASE_MAPPER: CaseMapper = CaseMapper::new();
 
 // ========================================================================= //
 
-/// Converts a string to uppercase as defined in MS-CFB, 
+/// Converts a char to uppercase as defined in MS-CFB, 
 /// using simple capitalization and the ability to add exceptions.
 /// Used when two directory entry names need to be compared.
-pub fn cfb_uppercase(s: &str) -> String {
-    s
-    .chars()
-    .map(|c| 
-        match c {
-            // TODO: Edge cases can be added that appear 
-            // in the table from Appendix A, <3> Section 2.6.4
+pub fn cfb_uppercase_char(c: char) -> char {
+    match c {
+        // TODO: Edge cases can be added that appear 
+        // in the table from Appendix A, <3> Section 2.6.4
 
-            // Base case, just do a simple uppercase
-            _ => CASE_MAPPER.simple_uppercase(c)
-        }
-    )
-    .collect::<String>()
+        // Base case, just do a simple uppercase
+        _ => CASE_MAPPER.simple_uppercase(c)
+    }
 }
 
 /// Compares two directory entry names according to CFB ordering, which is
@@ -39,7 +34,11 @@ pub fn compare_names(name1: &str, name2: &str) -> Ordering {
         // particular way of doing the uppercasing on individual UTF-16 code
         // units, along with a list of weird exceptions and corner cases.  But
         // hopefully this is good enough for 99+% of the time.
-        Ordering::Equal => cfb_uppercase(name1).cmp(&cfb_uppercase(name2)),
+        Ordering::Equal => {
+            let n1 = name1.chars().map(cfb_uppercase_char);
+            let n2 = name2.chars().map(cfb_uppercase_char);
+            n1.cmp(n2)
+        },
         other => other,
     }
 }
@@ -103,8 +102,10 @@ pub fn path_from_name_chain(names: &[&str]) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use crate::internal::path::cfb_uppercase_char;
+
     use super::{
-        cfb_uppercase, compare_names, name_chain_from_path, path_from_name_chain,
+        compare_names, name_chain_from_path, path_from_name_chain,
         validate_name,
     };
     use std::cmp::Ordering;
@@ -118,14 +119,10 @@ mod tests {
     }
 
     #[test]
-    fn case_folding() {
-        //println!("Case Fold: {} -> {}", "\u{023A}", cfb_uppercase("\u{023A}"));
-        //println!("Case Fold: {} -> {}", "\u{2C65}", cfb_uppercase("\u{2C65}"));
-
-        //println!("Case Fold: {} -> {}", "\u{023A}", "\u{023A}".to_uppercase());
-        //println!("Case Fold: {} -> {}", "\u{2C65}", "\u{2C65}".to_uppercase());
-
-        assert_eq!("ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q==", cfb_uppercase("ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q=="));
+    fn test_uppercase() {
+        
+        let uppercase = "ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q==".chars().map(cfb_uppercase_char).collect::<String>();
+        assert_eq!("ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q==", uppercase);
 
         assert_eq!(compare_names("ÜL43ÁMÆÛÏEKZÅYWÚÓVDÙÄÀ==", "ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q=="), Ordering::Less);
     }
