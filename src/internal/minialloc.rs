@@ -1,9 +1,9 @@
 use std::io::{self, Seek, SeekFrom, Write};
 use std::mem::size_of;
 
-use byteorder::{LittleEndian, WriteBytesExt};
 use fnv::FnvHashSet;
 
+use crate::WriteLeNumber;
 use crate::internal::{
     consts, Chain, DirEntry, Directory, MiniChain, ObjType, Sector,
     SectorInit, Validation, Version,
@@ -253,8 +253,8 @@ impl<F: Write + Seek> MiniAllocator<F> {
             self.minifat_start_sector =
                 self.directory.begin_chain(SectorInit::Fat)?;
             let mut header = self.directory.seek_within_header(60)?;
-            header.write_u32::<LittleEndian>(self.minifat_start_sector)?;
-            header.write_u32::<LittleEndian>(1)?;
+            header.write_le_u32(self.minifat_start_sector)?;
+            header.write_le_u32(1)?;
         } else if self.minifat.len() % minifat_entries_per_sector == 0 {
             let start = self.minifat_start_sector;
             self.directory.extend_chain(start, SectorInit::Fat)?;
@@ -263,7 +263,7 @@ impl<F: Write + Seek> MiniAllocator<F> {
                 .open_chain(start, SectorInit::Fat)?
                 .num_sectors() as u32;
             let mut header = self.directory.seek_within_header(64)?;
-            header.write_u32::<LittleEndian>(num_minifat_sectors)?;
+            header.write_le_u32(num_minifat_sectors)?;
         }
         // Add a new mini sector to the end of the mini stream and return it.
         let new_mini_sector = self.minifat.len() as u32;
@@ -358,7 +358,7 @@ impl<F: Write + Seek> MiniAllocator<F> {
         let offset = (index as u64) * size_of::<u32>() as u64;
         debug_assert!(chain.len() >= offset + size_of::<u32>() as u64);
         chain.seek(SeekFrom::Start(offset))?;
-        chain.write_u32::<LittleEndian>(value)?;
+        chain.write_le_u32(value)?;
         if (index as usize) == self.minifat.len() {
             self.minifat.push(value);
         } else {

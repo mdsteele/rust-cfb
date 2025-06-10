@@ -1,7 +1,6 @@
 use std::io::{self, Read, Write};
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
+use crate::{ReadLeNumber, WriteLeNumber};
 use crate::internal::{consts, Validation, Version};
 
 //===========================================================================//
@@ -32,10 +31,10 @@ impl Header {
 
         // Read the version number, but don't try to interpret it until after
         // we've checked the byte order mark.
-        let _minor_version = reader.read_u16::<LittleEndian>()?;
-        let version_number = reader.read_u16::<LittleEndian>()?;
+        let _minor_version = reader.read_le_u16()?;
+        let version_number = reader.read_le_u16()?;
 
-        let byte_order_mark = reader.read_u16::<LittleEndian>()?;
+        let byte_order_mark = reader.read_le_u16()?;
         if byte_order_mark != consts::BYTE_ORDER_MARK {
             invalid_data!(
                 "Invalid CFB byte order mark (expected 0x{:04X}, found \
@@ -55,7 +54,7 @@ impl Header {
             }
         };
 
-        let sector_shift = reader.read_u16::<LittleEndian>()?;
+        let sector_shift = reader.read_le_u16()?;
         if sector_shift != version.sector_shift() {
             invalid_data!(
                 "Incorrect sector shift for CFB version {} (expected {}, \
@@ -66,7 +65,7 @@ impl Header {
             );
         }
 
-        let mini_sector_shift = reader.read_u16::<LittleEndian>()?;
+        let mini_sector_shift = reader.read_le_u16()?;
         if mini_sector_shift != consts::MINI_SECTOR_SHIFT {
             invalid_data!(
                 "Incorrect mini sector shift (expected {}, found {})",
@@ -82,7 +81,7 @@ impl Header {
         // the Number of Directory Sectors MUST be zero."  However, under
         // Permissive validation, we don't enforce this, but instead just treat
         // the field as though it were zero for V3 files.
-        let mut num_dir_sectors = reader.read_u32::<LittleEndian>()?;
+        let mut num_dir_sectors = reader.read_le_u32()?;
         if version == Version::V3 && num_dir_sectors != 0 {
             if validation.is_strict() {
                 invalid_data!(
@@ -94,11 +93,11 @@ impl Header {
             num_dir_sectors = 0;
         }
 
-        let num_fat_sectors = reader.read_u32::<LittleEndian>()?;
-        let first_dir_sector = reader.read_u32::<LittleEndian>()?;
-        let _transaction_signature = reader.read_u32::<LittleEndian>()?;
+        let num_fat_sectors = reader.read_le_u32()?;
+        let first_dir_sector = reader.read_le_u32()?;
+        let _transaction_signature = reader.read_le_u32()?;
 
-        let mini_stream_cutoff = reader.read_u32::<LittleEndian>()?;
+        let mini_stream_cutoff = reader.read_le_u32()?;
         if mini_stream_cutoff != consts::MINI_STREAM_CUTOFF {
             invalid_data!(
                 "Incorrect mini stream cutoff (expected {}, found {})",
@@ -107,10 +106,10 @@ impl Header {
             );
         }
 
-        let first_minifat_sector = reader.read_u32::<LittleEndian>()?;
-        let num_minifat_sectors = reader.read_u32::<LittleEndian>()?;
-        let mut first_difat_sector = reader.read_u32::<LittleEndian>()?;
-        let num_difat_sectors = reader.read_u32::<LittleEndian>()?;
+        let first_minifat_sector = reader.read_le_u32()?;
+        let num_minifat_sectors = reader.read_le_u32()?;
+        let mut first_difat_sector = reader.read_le_u32()?;
+        let num_difat_sectors = reader.read_le_u32()?;
 
         // Some CFB implementations use FREE_SECTOR to indicate END_OF_CHAIN.
         if first_difat_sector == consts::FREE_SECTOR {
@@ -120,7 +119,7 @@ impl Header {
         let mut initial_difat_entries =
             [consts::FREE_SECTOR; consts::NUM_DIFAT_ENTRIES_IN_HEADER];
         for entry in initial_difat_entries.iter_mut() {
-            let next = reader.read_u32::<LittleEndian>()?;
+            let next = reader.read_le_u32()?;
             if next == consts::FREE_SECTOR {
                 break;
             } else if next > consts::MAX_REGULAR_SECTOR {
@@ -149,23 +148,23 @@ impl Header {
     pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&consts::MAGIC_NUMBER)?;
         writer.write_all(&[0; 16])?; // reserved field
-        writer.write_u16::<LittleEndian>(consts::MINOR_VERSION)?;
-        writer.write_u16::<LittleEndian>(self.version.number())?;
-        writer.write_u16::<LittleEndian>(consts::BYTE_ORDER_MARK)?;
-        writer.write_u16::<LittleEndian>(self.version.sector_shift())?;
-        writer.write_u16::<LittleEndian>(consts::MINI_SECTOR_SHIFT)?;
+        writer.write_le_u16(consts::MINOR_VERSION)?;
+        writer.write_le_u16(self.version.number())?;
+        writer.write_le_u16(consts::BYTE_ORDER_MARK)?;
+        writer.write_le_u16(self.version.sector_shift())?;
+        writer.write_le_u16(consts::MINI_SECTOR_SHIFT)?;
         writer.write_all(&[0; 6])?; // reserved field
-        writer.write_u32::<LittleEndian>(self.num_dir_sectors)?;
-        writer.write_u32::<LittleEndian>(self.num_fat_sectors)?;
-        writer.write_u32::<LittleEndian>(self.first_dir_sector)?;
-        writer.write_u32::<LittleEndian>(0)?; // transaction signature (unused)
-        writer.write_u32::<LittleEndian>(consts::MINI_STREAM_CUTOFF)?;
-        writer.write_u32::<LittleEndian>(self.first_minifat_sector)?;
-        writer.write_u32::<LittleEndian>(self.num_minifat_sectors)?;
-        writer.write_u32::<LittleEndian>(self.first_difat_sector)?;
-        writer.write_u32::<LittleEndian>(self.num_difat_sectors)?;
+        writer.write_le_u32(self.num_dir_sectors)?;
+        writer.write_le_u32(self.num_fat_sectors)?;
+        writer.write_le_u32(self.first_dir_sector)?;
+        writer.write_le_u32(0)?; // transaction signature (unused)
+        writer.write_le_u32(consts::MINI_STREAM_CUTOFF)?;
+        writer.write_le_u32(self.first_minifat_sector)?;
+        writer.write_le_u32(self.num_minifat_sectors)?;
+        writer.write_le_u32(self.first_difat_sector)?;
+        writer.write_le_u32(self.num_difat_sectors)?;
         for &entry in self.initial_difat_entries.iter() {
-            writer.write_u32::<LittleEndian>(entry)?;
+            writer.write_le_u32(entry)?;
         }
         Ok(())
     }

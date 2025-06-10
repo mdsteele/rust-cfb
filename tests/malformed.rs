@@ -1,4 +1,3 @@
-use byteorder::{LittleEndian, WriteBytesExt};
 use cfb::CompoundFile;
 use std::{
     fs::read_dir,
@@ -75,7 +74,7 @@ fn invalid_mini_sector_issue_16() {
     // 128-byte directory entry in the third sector of the CFB file.
     let offset = 116 + 128 * 1 + (version.sector_len() as u64) * 2;
     cursor.seek(SeekFrom::Start(offset)).unwrap();
-    cursor.write_u32::<LittleEndian>(123456789).unwrap();
+    cursor.write_all(&123456789u32.to_le_bytes()).unwrap();
 
     // Re-open the CFB file and try to read the mini stream.
     let mut comp = CompoundFile::open(cursor).unwrap();
@@ -478,7 +477,7 @@ fn invalid_num_dir_sectors_issue_52() {
     // update the header and set num_dir_sectors = 1 instead of 2
     let mut cursor = comp.into_inner();
     cursor.seek(SeekFrom::Start(40)).unwrap();
-    cursor.write_u32::<LittleEndian>(1).unwrap();
+    cursor.write_all(&1u32.to_le_bytes()).unwrap();
     cursor.flush().unwrap();
 
     // Read the file back in.

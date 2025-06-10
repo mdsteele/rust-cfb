@@ -41,7 +41,7 @@ impl<F> Stream<F> {
 
     fn minialloc(&self) -> io::Result<Arc<RwLock<MiniAllocator<F>>>> {
         self.minialloc.upgrade().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "CompoundFile was dropped")
+            io::Error::other("CompoundFile was dropped")
         })
     }
 

@@ -52,7 +52,6 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use fnv::FnvHashSet;
 use uuid::Uuid;
 
@@ -402,7 +401,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             difat_sector_ids.push(current_difat_sector);
             let mut sector = sectors.seek_to_sector(current_difat_sector)?;
             for _ in 0..(sector_len / size_of::<u32>() - 1) {
-                let next = sector.read_u32::<LittleEndian>()?;
+                let next = sector.read_le_u32()?;
                 if next != consts::FREE_SECTOR
                     && next > consts::MAX_REGULAR_SECTOR
                 {
@@ -413,7 +412,7 @@ impl<F: Read + Seek> CompoundFile<F> {
                 }
                 difat.push(next);
             }
-            current_difat_sector = sector.read_u32::<LittleEndian>()?;
+            current_difat_sector = sector.read_le_u32()?;
             if validation.is_strict()
                 && current_difat_sector == consts::FREE_SECTOR
             {
@@ -472,7 +471,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             }
             let mut sector = sectors.seek_to_sector(sector_index)?;
             for _ in 0..(sector_len / size_of::<u32>()) {
-                fat.push(sector.read_u32::<LittleEndian>()?);
+                fat.push(sector.read_le_u32()?);
             }
         }
         // If the number of sectors in the file is not a multiple of the number
@@ -575,7 +574,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             let num_minifat_entries = (chain.len() / 4) as usize;
             let mut minifat = Vec::<u32>::with_capacity(num_minifat_entries);
             for _ in 0..num_minifat_entries {
-                minifat.push(chain.read_u32::<LittleEndian>()?);
+                minifat.push(chain.read_le_u32()?);
             }
             while minifat.last() == Some(&consts::FREE_SECTOR) {
                 minifat.pop();
@@ -633,10 +632,10 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         // Write FAT sector:
         let fat: Vec<u32> = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
         for &entry in fat.iter() {
-            inner.write_u32::<LittleEndian>(entry)?;
+            inner.write_le_u32(entry)?;
         }
         for _ in fat.len()..(sector_len / size_of::<u32>()) {
-            inner.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
+            inner.write_le_u32(consts::FREE_SECTOR)?;
         }
         let difat: Vec<u32> = vec![0];
         let difat_sector_ids: Vec<u32> = vec![];
@@ -1007,6 +1006,37 @@ impl<F: fmt::Debug> fmt::Debug for CompoundFile<F> {
     }
 }
 
+trait ReadLeNumber: Read {
+    fn read_le_u64(&mut self) -> Result<u64, std::io::Error> {
+        let mut buf = [0u8; 8];
+        self.read_exact(&mut buf)?;
+        Ok(u64::from_le_bytes(buf))
+    }
+    fn read_le_u32(&mut self) -> Result<u32, std::io::Error> {
+        let mut buf = [0u8; 4];
+        self.read_exact(&mut buf)?;
+        Ok(u32::from_le_bytes(buf))
+    }
+    fn read_le_u16(&mut self) -> Result<u16, std::io::Error> {
+        let mut buf = [0u8; 2];
+        self.read_exact(&mut buf)?;
+        Ok(u16::from_le_bytes(buf))
+    }
+}
+impl<T: Read> ReadLeNumber for T {}
+
+trait WriteLeNumber: Write {
+    fn write_le_u64(&mut self, num: u64) -> Result<(), std::io::Error> {
+        self.write_all(&num.to_le_bytes())
+    }
+    fn write_le_u32(&mut self, num: u32) -> Result<(), std::io::Error> {
+        self.write_all(&num.to_le_bytes())
+    }
+    fn write_le_u16(&mut self, num: u16) -> Result<(), std::io::Error> {
+        self.write_all(&num.to_le_bytes())
+    }
+}
+impl <T: Write> WriteLeNumber for T {}
 //===========================================================================//
 
 #[cfg(test)]
@@ -1015,9 +1045,8 @@ mod tests {
     use std::mem::size_of;
     use std::path::Path;
 
-    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
     use crate::internal::{consts, DirEntry, Header, Version};
+    use crate::{ReadLeNumber, WriteLeNumber};
 
     use super::CompoundFile;
 
@@ -1041,13 +1070,13 @@ mod tests {
         // Write FAT sector:
         let fat: Vec<u32> = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
         for &entry in fat.iter() {
-            data.write_u32::<LittleEndian>(entry)?;
+            data.write_le_u32(entry)?;
         }
         // Pad the FAT sector with zeros instead of FREE_SECTOR.  Technically
         // this violates the MS-CFB spec (section 2.3), but apparently some CFB
         // implementations do this.
         for _ in fat.len()..(version.sector_len() / size_of::<u32>()) {
-            data.write_u32::<LittleEndian>(0)?;
+            data.write_le_u32(0)?;
         }
         // Write directory sector:
         DirEntry::empty_root_entry().write_to(&mut data)?;
@@ -1145,10 +1174,10 @@ mod tests {
                 // the point where it deviates from spec.
                 0
             };
-            data.write_u32::<LittleEndian>(entry)?;
+            data.write_le_u32(entry)?;
         }
         // End DIFAT chain
-        data.write_u32::<LittleEndian>(consts::END_OF_CHAIN)?;
+        data.write_le_u32(consts::END_OF_CHAIN)?;
 
         // Write the first two FAT sectors, referencing the header data
         let num_fat_entries_in_sector =
@@ -1160,13 +1189,13 @@ mod tests {
             fat[fat_sector as usize] = consts::FAT_SECTOR;
         }
         for entry in fat {
-            data.write_u32::<LittleEndian>(entry)?;
+            data.write_le_u32(entry)?;
         }
 
         // Pad out the rest of the FAT sectors with FREE_SECTOR
         for _fat_sector in 2..num_fat_sectors {
             for _i in 0..num_fat_entries_in_sector {
-                data.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
+                data.write_le_u32(consts::FREE_SECTOR)?;
             }
         }
 
@@ -1210,7 +1239,7 @@ mod tests {
         // read num_dir_sectors from the header
         let mut cursor = comp.into_inner();
         cursor.seek(SeekFrom::Start(40)).unwrap();
-        let num_dir_sectors = cursor.read_u32::<LittleEndian>().unwrap();
+        let num_dir_sectors = cursor.read_le_u32().unwrap();
         assert_eq!(num_dir_sectors, 2);
     }
 

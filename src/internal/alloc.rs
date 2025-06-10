@@ -1,7 +1,7 @@
 use crate::internal::{
     consts, Chain, Sector, SectorInit, Sectors, Validation, Version,
 };
-use byteorder::{LittleEndian, WriteBytesExt};
+use crate::WriteLeNumber;
 use fnv::FnvHashSet;
 use std::io::{self, Seek, Write};
 use std::mem::size_of;
@@ -264,7 +264,7 @@ impl<F: Write + Seek> Allocator<F> {
             // This DIFAT entry goes in the file header.
             let offset = 76 + 4 * difat_index as u64;
             let mut header = self.sectors.seek_within_header(offset)?;
-            header.write_u32::<LittleEndian>(new_fat_sector_id)?;
+            header.write_le_u32(new_fat_sector_id)?;
         } else {
             // This DIFAT entry goes in a DIFAT sector.
             let difat_entries_per_sector = (self.sector_len() - 4) / 4;
@@ -284,13 +284,13 @@ impl<F: Write + Seek> Allocator<F> {
                     let mut sector = self
                         .sectors
                         .seek_within_sector(last_sector_id, offset)?;
-                    sector.write_u32::<LittleEndian>(new_difat_sector_id)?;
+                    sector.write_le_u32(new_difat_sector_id)?;
                 }
                 self.difat_sector_ids.push(new_difat_sector_id);
                 // Update DIFAT chain fields in header.
                 let mut header = self.sectors.seek_within_header(68)?;
-                header.write_u32::<LittleEndian>(self.difat_sector_ids[0])?;
-                header.write_u32::<LittleEndian>(
+                header.write_le_u32(self.difat_sector_ids[0])?;
+                header.write_le_u32(
                     self.difat_sector_ids.len() as u32,
                 )?;
             }
@@ -303,12 +303,12 @@ impl<F: Write + Seek> Allocator<F> {
                 difat_sector_id,
                 4 * index_within_difat_sector as u64,
             )?;
-            sector.write_u32::<LittleEndian>(new_fat_sector_id)?;
+            sector.write_le_u32(new_fat_sector_id)?;
         }
 
         // Update length of FAT chain in header.
         let mut header = self.sectors.seek_within_header(44)?;
-        header.write_u32::<LittleEndian>(self.difat.len() as u32)?;
+        header.write_le_u32(self.difat.len() as u32)?;
         Ok(())
     }
 
@@ -351,7 +351,7 @@ impl<F: Write + Seek> Allocator<F> {
         let mut sector = self
             .sectors
             .seek_within_sector(fat_sector_id, offset_within_sector)?;
-        sector.write_u32::<LittleEndian>(value)?;
+        sector.write_le_u32(value)?;
         if index == self.fat.len() {
             self.fat.push(value);
         } else {
