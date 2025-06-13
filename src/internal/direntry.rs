@@ -247,8 +247,7 @@ impl DirEntry {
         // don't enforce this; instead, for storage objects we just treat these
         // fields as though they were zero.
         let mut start_sector = reader.read_le_u32()?;
-        let mut stream_len =
-            reader.read_le_u64()? & version.stream_len_mask();
+        let mut stream_len = reader.read_le_u64()? & version.stream_len_mask();
         if obj_type == ObjType::Storage {
             if validation.is_strict() && start_sector != 0 {
                 malformed!("non-zero storage start sector: {}", start_sector);

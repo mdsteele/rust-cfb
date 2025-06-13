@@ -3,11 +3,11 @@ use std::mem::size_of;
 
 use fnv::FnvHashSet;
 
-use crate::WriteLeNumber;
 use crate::internal::{
     consts, Chain, DirEntry, Directory, MiniChain, ObjType, Sector,
     SectorInit, Validation, Version,
 };
+use crate::WriteLeNumber;
 
 //===========================================================================//
 

@@ -1036,7 +1036,7 @@ trait WriteLeNumber: Write {
         self.write_all(&num.to_le_bytes())
     }
 }
-impl <T: Write> WriteLeNumber for T {}
+impl<T: Write> WriteLeNumber for T {}
 //===========================================================================//
 
 #[cfg(test)]

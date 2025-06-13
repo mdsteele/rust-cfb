@@ -428,8 +428,7 @@ impl<F: Write + Seek> Directory<F> {
         if self.version() == Version::V4 {
             let num_dir_sectors =
                 self.count_directory_sectors(start_sector)?;
-            self.seek_within_header(40)?
-                .write_le_u32(num_dir_sectors)?;
+            self.seek_within_header(40)?.write_le_u32(num_dir_sectors)?;
         }
         Ok(())
     }

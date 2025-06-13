@@ -17,8 +17,7 @@ impl<F> Sectors<F> {
     pub fn new(version: Version, inner_len: u64, inner: F) -> Sectors<F> {
         let sector_len = version.sector_len() as u64;
         debug_assert!(inner_len >= sector_len);
-        let num_sectors =
-            inner_len.div_ceil(sector_len) as u32 - 1;
+        let num_sectors = inner_len.div_ceil(sector_len) as u32 - 1;
         Sectors { inner, version, num_sectors }
     }
 
@@ -342,25 +341,16 @@ mod tests {
             sectors.init_sector(1, SectorInit::Fat).unwrap();
             let mut sector = sectors.seek_to_sector(1).unwrap();
             for _ in 0..128 {
-                assert_eq!(
-                    sector.read_le_u32().unwrap(),
-                    consts::FREE_SECTOR
-                );
+                assert_eq!(sector.read_le_u32().unwrap(), consts::FREE_SECTOR);
             }
         }
         {
             sectors.init_sector(2, SectorInit::Difat).unwrap();
             let mut sector = sectors.seek_to_sector(2).unwrap();
             for _ in 0..127 {
-                assert_eq!(
-                    sector.read_le_u32().unwrap(),
-                    consts::FREE_SECTOR
-                );
+                assert_eq!(sector.read_le_u32().unwrap(), consts::FREE_SECTOR);
             }
-            assert_eq!(
-                sector.read_le_u32().unwrap(),
-                consts::END_OF_CHAIN
-            );
+            assert_eq!(sector.read_le_u32().unwrap(), consts::END_OF_CHAIN);
         }
         {
             sectors.init_sector(3, SectorInit::Dir).unwrap();

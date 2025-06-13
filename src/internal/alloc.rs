@@ -290,9 +290,7 @@ impl<F: Write + Seek> Allocator<F> {
                 // Update DIFAT chain fields in header.
                 let mut header = self.sectors.seek_within_header(68)?;
                 header.write_le_u32(self.difat_sector_ids[0])?;
-                header.write_le_u32(
-                    self.difat_sector_ids.len() as u32,
-                )?;
+                header.write_le_u32(self.difat_sector_ids.len() as u32)?;
             }
             // Write the new entry into the DIFAT sector.
             let difat_sector_id = self.difat_sector_ids[difat_sector_index];

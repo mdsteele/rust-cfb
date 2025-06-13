@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 
-use crate::{ReadLeNumber, WriteLeNumber};
 use crate::internal::{consts, Validation, Version};
+use crate::{ReadLeNumber, WriteLeNumber};
 
 //===========================================================================//
 
