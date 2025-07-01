@@ -8,6 +8,22 @@ const MAX_NAME_LEN: usize = 31;
 
 // ========================================================================= //
 
+// according to the spec, "For each UTF-16 code point, convert to uppercase by
+// using the Unicode Default Case Conversion Algorithm, simple case conversion
+// variant (simple case foldings)"
+// it's not clear what that means, since neither case folding nor strict upper
+// case conversion yields convert('Ö') < convert('ß'), see the test case
+fn uppercase(s: &str) -> String {
+    let mut upper = String::new();
+    for c in s.chars() {
+        match c {
+            'ß' => upper.push('ẞ'),
+            c => upper.extend(c.to_uppercase()),
+        }
+    }
+    upper
+}
+
 /// Compares two directory entry names according to CFB ordering, which is
 /// case-insensitive, and which always puts shorter names before longer names,
 /// as encoded in UTF-16 (i.e. [shortlex
@@ -19,7 +35,7 @@ pub fn compare_names(name1: &str, name2: &str) -> Ordering {
         // particular way of doing the uppercasing on individual UTF-16 code
         // units, along with a list of weird exceptions and corner cases.  But
         // hopefully this is good enough for 99+% of the time.
-        Ordering::Equal => name1.to_uppercase().cmp(&name2.to_uppercase()),
+        Ordering::Equal => uppercase(name1).cmp(&uppercase(name2)),
         other => other,
     }
 }
@@ -95,6 +111,21 @@ mod tests {
         assert_eq!(compare_names("foobar", "FOOBAR"), Ordering::Equal);
         assert_eq!(compare_names("foo", "barfoo"), Ordering::Less);
         assert_eq!(compare_names("Foo", "bar"), Ordering::Greater);
+        // testcases from real .doc files
+        assert_eq!(
+            compare_names(
+                "ÖÇÔÍÒÄÁØÐÔÞ3×ÆXVÔÄHMDQ==",
+                "ßYÜ0MÈÝEÄÄÂKÏÓÉDÀP5ÃÝA=="
+            ),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_names(
+                "É1EDAÉNÅPUOÈÒKÔÓCÓÇÇPÐ==",
+                "ßÕFÆRDÜÐNÔCÄ2PKQÃFAFMA=="
+            ),
+            Ordering::Less
+        );
     }
 
     #[test]
