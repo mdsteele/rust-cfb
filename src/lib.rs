@@ -355,7 +355,9 @@ impl<F: Read + Seek> CompoundFile<F> {
         }
         inner.seek(SeekFrom::Start(0))?;
 
+        // 2.2 Compound File Header
         let header = Header::read_from(&mut inner, validation)?;
+        // Major Version
         let sector_len = header.version.sector_len();
         if inner_len
             > (consts::MAX_REGULAR_SECTOR as u64 + 1) * (sector_len as u64)
