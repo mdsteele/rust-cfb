@@ -14,7 +14,7 @@ const CASE_MAPPER: CaseMapper = CaseMapper::new();
 /// Converts a char to uppercase as defined in MS-CFB, 
 /// using simple capitalization and the ability to add exceptions.
 /// Used when two directory entry names need to be compared.
-pub fn cfb_uppercase_char(c: char) -> char {
+fn cfb_uppercase_char(c: char) -> char {
     match c {
         // TODO: Edge cases can be added that appear 
         // in the table from Appendix A, <3> Section 2.6.4
@@ -104,10 +104,8 @@ pub fn path_from_name_chain(names: &[&str]) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use crate::internal::path::cfb_uppercase_char;
-
     use super::{
-        compare_names, name_chain_from_path, path_from_name_chain,
+        cfb_uppercase_char, compare_names, name_chain_from_path, path_from_name_chain,
         validate_name,
     };
     use std::cmp::Ordering;
@@ -133,11 +131,6 @@ mod tests {
             ),
             Ordering::Less
         );
-    }
-
-    #[test]
-    fn test_uppercase() {
-        
         let uppercase = "ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q==".chars().map(cfb_uppercase_char).collect::<String>();
         assert_eq!("ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q==", uppercase);
 
