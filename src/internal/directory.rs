@@ -77,7 +77,7 @@ impl<F> Directory<F> {
         &mut self,
         start_sector_id: u32,
         init: SectorInit,
-    ) -> io::Result<Chain<F>> {
+    ) -> io::Result<Chain<'_, F>> {
         self.allocator.open_chain(start_sector_id, init)
     }
 
@@ -200,11 +200,14 @@ impl<F: Seek> Directory<F> {
     pub fn seek_within_header(
         &mut self,
         offset_within_header: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         self.allocator.seek_within_header(offset_within_header)
     }
 
-    fn seek_to_dir_entry(&mut self, stream_id: u32) -> io::Result<Sector<F>> {
+    fn seek_to_dir_entry(
+        &mut self,
+        stream_id: u32,
+    ) -> io::Result<Sector<'_, F>> {
         self.seek_within_dir_entry(stream_id, 0)
     }
 
@@ -212,7 +215,7 @@ impl<F: Seek> Directory<F> {
         &mut self,
         stream_id: u32,
         offset_within_dir_entry: usize,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         let dir_entries_per_sector =
             self.version().dir_entries_per_sector() as u32;
         let index_within_sector = stream_id % dir_entries_per_sector;

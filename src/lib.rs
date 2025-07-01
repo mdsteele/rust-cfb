@@ -111,11 +111,11 @@ pub struct CompoundFile<F> {
 }
 
 impl<F> CompoundFile<F> {
-    fn minialloc(&self) -> RwLockReadGuard<MiniAllocator<F>> {
+    fn minialloc(&self) -> RwLockReadGuard<'_, MiniAllocator<F>> {
         self.minialloc.read().unwrap()
     }
 
-    fn minialloc_mut(&mut self) -> RwLockWriteGuard<MiniAllocator<F>> {
+    fn minialloc_mut(&mut self) -> RwLockWriteGuard<'_, MiniAllocator<F>> {
         self.minialloc.write().unwrap()
     }
 
@@ -153,7 +153,7 @@ impl<F> CompoundFile<F> {
     /// Returns an iterator over the entries within the root storage object.
     /// This is equivalent to `self.read_storage("/").unwrap()` (but always
     /// succeeds).
-    pub fn read_root_storage(&self) -> Entries<F> {
+    pub fn read_root_storage(&self) -> Entries<'_, F> {
         let start = self.minialloc().root_dir_entry().child;
         Entries::new(
             EntriesOrder::Nonrecursive,
@@ -167,11 +167,14 @@ impl<F> CompoundFile<F> {
     pub fn read_storage<P: AsRef<Path>>(
         &self,
         path: P,
-    ) -> io::Result<Entries<F>> {
+    ) -> io::Result<Entries<'_, F>> {
         self.read_storage_with_path(path.as_ref())
     }
 
-    fn read_storage_with_path(&self, path: &Path) -> io::Result<Entries<F>> {
+    fn read_storage_with_path(
+        &self,
+        path: &Path,
+    ) -> io::Result<Entries<'_, F>> {
         let names = internal::path::name_chain_from_path(path)?;
         let path = internal::path::path_from_name_chain(&names);
         let stream_id = match self.stream_id_for_name_chain(&names) {
@@ -202,7 +205,7 @@ impl<F> CompoundFile<F> {
     /// from and including the root entry.  The iterator walks the storage tree
     /// in a preorder traversal.  This is equivalent to
     /// `self.walk_storage("/").unwrap()` (but always succeeds).
-    pub fn walk(&self) -> Entries<F> {
+    pub fn walk(&self) -> Entries<'_, F> {
         Entries::new(
             EntriesOrder::Preorder,
             &self.minialloc,
@@ -217,11 +220,14 @@ impl<F> CompoundFile<F> {
     pub fn walk_storage<P: AsRef<Path>>(
         &self,
         path: P,
-    ) -> io::Result<Entries<F>> {
+    ) -> io::Result<Entries<'_, F>> {
         self.walk_storage_with_path(path.as_ref())
     }
 
-    fn walk_storage_with_path(&self, path: &Path) -> io::Result<Entries<F>> {
+    fn walk_storage_with_path(
+        &self,
+        path: &Path,
+    ) -> io::Result<Entries<'_, F>> {
         let mut names = internal::path::name_chain_from_path(path)?;
         let stream_id = match self.stream_id_for_name_chain(&names) {
             Some(stream_id) => stream_id,
@@ -352,7 +358,7 @@ impl<F: Read + Seek> CompoundFile<F> {
         let header = Header::read_from(&mut inner, validation)?;
         let sector_len = header.version.sector_len();
         if inner_len
-            > ((consts::MAX_REGULAR_SECTOR + 1) as u64) * (sector_len as u64)
+            > (consts::MAX_REGULAR_SECTOR as u64 + 1) * (sector_len as u64)
         {
             invalid_data!(
                 "Invalid CFB file ({} bytes is too large)",
@@ -1201,7 +1207,7 @@ mod tests {
         // root + 31 entries in the first sector
         // 1 stream entry in the second sector
         for i in 0..32 {
-            let path = format!("stream{}", i);
+            let path = format!("stream{i}");
             let path = Path::new(&path);
             comp.create_stream(path).unwrap();
         }

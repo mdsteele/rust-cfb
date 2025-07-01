@@ -78,7 +78,7 @@ impl<F> Allocator<F> {
         &mut self,
         start_sector_id: u32,
         init: SectorInit,
-    ) -> io::Result<Chain<F>> {
+    ) -> io::Result<Chain<'_, F>> {
         Chain::new(self, start_sector_id, init)
     }
 
@@ -157,11 +157,14 @@ impl<F: Seek> Allocator<F> {
     pub fn seek_within_header(
         &mut self,
         offset_within_header: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         self.sectors.seek_within_header(offset_within_header)
     }
 
-    pub fn seek_to_sector(&mut self, sector_id: u32) -> io::Result<Sector<F>> {
+    pub fn seek_to_sector(
+        &mut self,
+        sector_id: u32,
+    ) -> io::Result<Sector<'_, F>> {
         self.sectors.seek_to_sector(sector_id)
     }
 
@@ -169,7 +172,7 @@ impl<F: Seek> Allocator<F> {
         &mut self,
         sector_id: u32,
         offset_within_sector: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         self.sectors.seek_within_sector(sector_id, offset_within_sector)
     }
 
@@ -179,7 +182,7 @@ impl<F: Seek> Allocator<F> {
         subsector_index_within_sector: u32,
         subsector_len: usize,
         offset_within_subsector: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         let subsector_start =
             subsector_index_within_sector as usize * subsector_len;
         let offset_within_sector =

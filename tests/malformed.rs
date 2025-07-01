@@ -73,7 +73,7 @@ fn invalid_mini_sector_issue_16() {
     // Corrupt the starting mini sector ID of the stream.  Due to how we
     // constructed the CFB file, this will be at byte 116 of the second
     // 128-byte directory entry in the third sector of the CFB file.
-    let offset = 116 + 128 * 1 + (version.sector_len() as u64) * 2;
+    let offset = 116 + 128 + (version.sector_len() as u64) * 2;
     cursor.seek(SeekFrom::Start(offset)).unwrap();
     cursor.write_u32::<LittleEndian>(123456789).unwrap();
 
@@ -469,7 +469,7 @@ fn invalid_num_dir_sectors_issue_52() {
     // root + 31 entries in the first sector
     // 1 stream entry in the second sector
     for i in 0..32 {
-        let path = format!("stream{}", i);
+        let path = format!("stream{i}");
         let path = Path::new(&path);
         comp.create_stream(path).unwrap();
     }
