@@ -1,7 +1,7 @@
 use crate::internal::{
     consts, Chain, Sector, SectorInit, Sectors, Validation, Version,
 };
-use byteorder::{LittleEndian, WriteBytesExt};
+use crate::WriteLeNumber;
 use fnv::FnvHashSet;
 use std::io::{self, Seek, Write};
 use std::mem::size_of;
@@ -78,7 +78,7 @@ impl<F> Allocator<F> {
         &mut self,
         start_sector_id: u32,
         init: SectorInit,
-    ) -> io::Result<Chain<F>> {
+    ) -> io::Result<Chain<'_, F>> {
         Chain::new(self, start_sector_id, init)
     }
 
@@ -157,11 +157,14 @@ impl<F: Seek> Allocator<F> {
     pub fn seek_within_header(
         &mut self,
         offset_within_header: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         self.sectors.seek_within_header(offset_within_header)
     }
 
-    pub fn seek_to_sector(&mut self, sector_id: u32) -> io::Result<Sector<F>> {
+    pub fn seek_to_sector(
+        &mut self,
+        sector_id: u32,
+    ) -> io::Result<Sector<'_, F>> {
         self.sectors.seek_to_sector(sector_id)
     }
 
@@ -169,7 +172,7 @@ impl<F: Seek> Allocator<F> {
         &mut self,
         sector_id: u32,
         offset_within_sector: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         self.sectors.seek_within_sector(sector_id, offset_within_sector)
     }
 
@@ -179,7 +182,7 @@ impl<F: Seek> Allocator<F> {
         subsector_index_within_sector: u32,
         subsector_len: usize,
         offset_within_subsector: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         let subsector_start =
             subsector_index_within_sector as usize * subsector_len;
         let offset_within_sector =
@@ -264,7 +267,7 @@ impl<F: Write + Seek> Allocator<F> {
             // This DIFAT entry goes in the file header.
             let offset = 76 + 4 * difat_index as u64;
             let mut header = self.sectors.seek_within_header(offset)?;
-            header.write_u32::<LittleEndian>(new_fat_sector_id)?;
+            header.write_le_u32(new_fat_sector_id)?;
         } else {
             // This DIFAT entry goes in a DIFAT sector.
             let difat_entries_per_sector = (self.sector_len() - 4) / 4;
@@ -284,15 +287,13 @@ impl<F: Write + Seek> Allocator<F> {
                     let mut sector = self
                         .sectors
                         .seek_within_sector(last_sector_id, offset)?;
-                    sector.write_u32::<LittleEndian>(new_difat_sector_id)?;
+                    sector.write_le_u32(new_difat_sector_id)?;
                 }
                 self.difat_sector_ids.push(new_difat_sector_id);
                 // Update DIFAT chain fields in header.
                 let mut header = self.sectors.seek_within_header(68)?;
-                header.write_u32::<LittleEndian>(self.difat_sector_ids[0])?;
-                header.write_u32::<LittleEndian>(
-                    self.difat_sector_ids.len() as u32,
-                )?;
+                header.write_le_u32(self.difat_sector_ids[0])?;
+                header.write_le_u32(self.difat_sector_ids.len() as u32)?;
             }
             // Write the new entry into the DIFAT sector.
             let difat_sector_id = self.difat_sector_ids[difat_sector_index];
@@ -303,12 +304,12 @@ impl<F: Write + Seek> Allocator<F> {
                 difat_sector_id,
                 4 * index_within_difat_sector as u64,
             )?;
-            sector.write_u32::<LittleEndian>(new_fat_sector_id)?;
+            sector.write_le_u32(new_fat_sector_id)?;
         }
 
         // Update length of FAT chain in header.
         let mut header = self.sectors.seek_within_header(44)?;
-        header.write_u32::<LittleEndian>(self.difat.len() as u32)?;
+        header.write_le_u32(self.difat.len() as u32)?;
         Ok(())
     }
 
@@ -351,7 +352,7 @@ impl<F: Write + Seek> Allocator<F> {
         let mut sector = self
             .sectors
             .seek_within_sector(fat_sector_id, offset_within_sector)?;
-        sector.write_u32::<LittleEndian>(value)?;
+        sector.write_le_u32(value)?;
         if index == self.fat.len() {
             self.fat.push(value);
         } else {

@@ -52,7 +52,6 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use fnv::FnvHashSet;
 use uuid::Uuid;
 
@@ -111,11 +110,11 @@ pub struct CompoundFile<F> {
 }
 
 impl<F> CompoundFile<F> {
-    fn minialloc(&self) -> RwLockReadGuard<MiniAllocator<F>> {
+    fn minialloc(&self) -> RwLockReadGuard<'_, MiniAllocator<F>> {
         self.minialloc.read().unwrap()
     }
 
-    fn minialloc_mut(&mut self) -> RwLockWriteGuard<MiniAllocator<F>> {
+    fn minialloc_mut(&mut self) -> RwLockWriteGuard<'_, MiniAllocator<F>> {
         self.minialloc.write().unwrap()
     }
 
@@ -153,7 +152,7 @@ impl<F> CompoundFile<F> {
     /// Returns an iterator over the entries within the root storage object.
     /// This is equivalent to `self.read_storage("/").unwrap()` (but always
     /// succeeds).
-    pub fn read_root_storage(&self) -> Entries<F> {
+    pub fn read_root_storage(&self) -> Entries<'_, F> {
         let start = self.minialloc().root_dir_entry().child;
         Entries::new(
             EntriesOrder::Nonrecursive,
@@ -167,11 +166,14 @@ impl<F> CompoundFile<F> {
     pub fn read_storage<P: AsRef<Path>>(
         &self,
         path: P,
-    ) -> io::Result<Entries<F>> {
+    ) -> io::Result<Entries<'_, F>> {
         self.read_storage_with_path(path.as_ref())
     }
 
-    fn read_storage_with_path(&self, path: &Path) -> io::Result<Entries<F>> {
+    fn read_storage_with_path(
+        &self,
+        path: &Path,
+    ) -> io::Result<Entries<'_, F>> {
         let names = internal::path::name_chain_from_path(path)?;
         let path = internal::path::path_from_name_chain(&names);
         let stream_id = match self.stream_id_for_name_chain(&names) {
@@ -202,7 +204,7 @@ impl<F> CompoundFile<F> {
     /// from and including the root entry.  The iterator walks the storage tree
     /// in a preorder traversal.  This is equivalent to
     /// `self.walk_storage("/").unwrap()` (but always succeeds).
-    pub fn walk(&self) -> Entries<F> {
+    pub fn walk(&self) -> Entries<'_, F> {
         Entries::new(
             EntriesOrder::Preorder,
             &self.minialloc,
@@ -217,11 +219,14 @@ impl<F> CompoundFile<F> {
     pub fn walk_storage<P: AsRef<Path>>(
         &self,
         path: P,
-    ) -> io::Result<Entries<F>> {
+    ) -> io::Result<Entries<'_, F>> {
         self.walk_storage_with_path(path.as_ref())
     }
 
-    fn walk_storage_with_path(&self, path: &Path) -> io::Result<Entries<F>> {
+    fn walk_storage_with_path(
+        &self,
+        path: &Path,
+    ) -> io::Result<Entries<'_, F>> {
         let mut names = internal::path::name_chain_from_path(path)?;
         let stream_id = match self.stream_id_for_name_chain(&names) {
             Some(stream_id) => stream_id,
@@ -349,10 +354,12 @@ impl<F: Read + Seek> CompoundFile<F> {
         }
         inner.seek(SeekFrom::Start(0))?;
 
+        // 2.2 Compound File Header
         let header = Header::read_from(&mut inner, validation)?;
+        // Major Version
         let sector_len = header.version.sector_len();
         if inner_len
-            > ((consts::MAX_REGULAR_SECTOR + 1) as u64) * (sector_len as u64)
+            > (consts::MAX_REGULAR_SECTOR as u64 + 1) * (sector_len as u64)
         {
             invalid_data!(
                 "Invalid CFB file ({} bytes is too large)",
@@ -402,7 +409,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             difat_sector_ids.push(current_difat_sector);
             let mut sector = sectors.seek_to_sector(current_difat_sector)?;
             for _ in 0..(sector_len / size_of::<u32>() - 1) {
-                let next = sector.read_u32::<LittleEndian>()?;
+                let next = sector.read_le_u32()?;
                 if next != consts::FREE_SECTOR
                     && next > consts::MAX_REGULAR_SECTOR
                 {
@@ -413,7 +420,7 @@ impl<F: Read + Seek> CompoundFile<F> {
                 }
                 difat.push(next);
             }
-            current_difat_sector = sector.read_u32::<LittleEndian>()?;
+            current_difat_sector = sector.read_le_u32()?;
             if validation.is_strict()
                 && current_difat_sector == consts::FREE_SECTOR
             {
@@ -472,7 +479,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             }
             let mut sector = sectors.seek_to_sector(sector_index)?;
             for _ in 0..(sector_len / size_of::<u32>()) {
-                fat.push(sector.read_u32::<LittleEndian>()?);
+                fat.push(sector.read_le_u32()?);
             }
         }
         // If the number of sectors in the file is not a multiple of the number
@@ -575,7 +582,7 @@ impl<F: Read + Seek> CompoundFile<F> {
             let num_minifat_entries = (chain.len() / 4) as usize;
             let mut minifat = Vec::<u32>::with_capacity(num_minifat_entries);
             for _ in 0..num_minifat_entries {
-                minifat.push(chain.read_u32::<LittleEndian>()?);
+                minifat.push(chain.read_le_u32()?);
             }
             while minifat.last() == Some(&consts::FREE_SECTOR) {
                 minifat.pop();
@@ -633,10 +640,10 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         // Write FAT sector:
         let fat: Vec<u32> = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
         for &entry in fat.iter() {
-            inner.write_u32::<LittleEndian>(entry)?;
+            inner.write_le_u32(entry)?;
         }
         for _ in fat.len()..(sector_len / size_of::<u32>()) {
-            inner.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
+            inner.write_le_u32(consts::FREE_SECTOR)?;
         }
         let difat: Vec<u32> = vec![0];
         let difat_sector_ids: Vec<u32> = vec![];
@@ -1007,6 +1014,37 @@ impl<F: fmt::Debug> fmt::Debug for CompoundFile<F> {
     }
 }
 
+trait ReadLeNumber: Read {
+    fn read_le_u64(&mut self) -> Result<u64, std::io::Error> {
+        let mut buf = [0u8; 8];
+        self.read_exact(&mut buf)?;
+        Ok(u64::from_le_bytes(buf))
+    }
+    fn read_le_u32(&mut self) -> Result<u32, std::io::Error> {
+        let mut buf = [0u8; 4];
+        self.read_exact(&mut buf)?;
+        Ok(u32::from_le_bytes(buf))
+    }
+    fn read_le_u16(&mut self) -> Result<u16, std::io::Error> {
+        let mut buf = [0u8; 2];
+        self.read_exact(&mut buf)?;
+        Ok(u16::from_le_bytes(buf))
+    }
+}
+impl<T: Read> ReadLeNumber for T {}
+
+trait WriteLeNumber: Write {
+    fn write_le_u64(&mut self, num: u64) -> Result<(), std::io::Error> {
+        self.write_all(&num.to_le_bytes())
+    }
+    fn write_le_u32(&mut self, num: u32) -> Result<(), std::io::Error> {
+        self.write_all(&num.to_le_bytes())
+    }
+    fn write_le_u16(&mut self, num: u16) -> Result<(), std::io::Error> {
+        self.write_all(&num.to_le_bytes())
+    }
+}
+impl<T: Write> WriteLeNumber for T {}
 //===========================================================================//
 
 #[cfg(test)]
@@ -1015,9 +1053,8 @@ mod tests {
     use std::mem::size_of;
     use std::path::Path;
 
-    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
     use crate::internal::{consts, DirEntry, Header, Version};
+    use crate::{ReadLeNumber, WriteLeNumber};
 
     use super::CompoundFile;
 
@@ -1041,13 +1078,13 @@ mod tests {
         // Write FAT sector:
         let fat: Vec<u32> = vec![consts::FAT_SECTOR, consts::END_OF_CHAIN];
         for &entry in fat.iter() {
-            data.write_u32::<LittleEndian>(entry)?;
+            data.write_le_u32(entry)?;
         }
         // Pad the FAT sector with zeros instead of FREE_SECTOR.  Technically
         // this violates the MS-CFB spec (section 2.3), but apparently some CFB
         // implementations do this.
         for _ in fat.len()..(version.sector_len() / size_of::<u32>()) {
-            data.write_u32::<LittleEndian>(0)?;
+            data.write_le_u32(0)?;
         }
         // Write directory sector:
         DirEntry::empty_root_entry().write_to(&mut data)?;
@@ -1145,10 +1182,10 @@ mod tests {
                 // the point where it deviates from spec.
                 0
             };
-            data.write_u32::<LittleEndian>(entry)?;
+            data.write_le_u32(entry)?;
         }
         // End DIFAT chain
-        data.write_u32::<LittleEndian>(consts::END_OF_CHAIN)?;
+        data.write_le_u32(consts::END_OF_CHAIN)?;
 
         // Write the first two FAT sectors, referencing the header data
         let num_fat_entries_in_sector =
@@ -1160,13 +1197,13 @@ mod tests {
             fat[fat_sector as usize] = consts::FAT_SECTOR;
         }
         for entry in fat {
-            data.write_u32::<LittleEndian>(entry)?;
+            data.write_le_u32(entry)?;
         }
 
         // Pad out the rest of the FAT sectors with FREE_SECTOR
         for _fat_sector in 2..num_fat_sectors {
             for _i in 0..num_fat_entries_in_sector {
-                data.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
+                data.write_le_u32(consts::FREE_SECTOR)?;
             }
         }
 
@@ -1201,7 +1238,7 @@ mod tests {
         // root + 31 entries in the first sector
         // 1 stream entry in the second sector
         for i in 0..32 {
-            let path = format!("stream{}", i);
+            let path = format!("stream{i}");
             let path = Path::new(&path);
             comp.create_stream(path).unwrap();
         }
@@ -1210,7 +1247,7 @@ mod tests {
         // read num_dir_sectors from the header
         let mut cursor = comp.into_inner();
         cursor.seek(SeekFrom::Start(40)).unwrap();
-        let num_dir_sectors = cursor.read_u32::<LittleEndian>().unwrap();
+        let num_dir_sectors = cursor.read_le_u32().unwrap();
         assert_eq!(num_dir_sectors, 2);
     }
 

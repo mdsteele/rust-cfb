@@ -10,6 +10,7 @@ const CASE_MAPPER: CaseMapper = CaseMapper::new();
 
 // ========================================================================= //
 
+
 /// Converts a char to uppercase as defined in MS-CFB, 
 /// using simple capitalization and the ability to add exceptions.
 /// Used when two directory entry names need to be compared.
@@ -34,6 +35,7 @@ pub fn compare_names(name1: &str, name2: &str) -> Ordering {
         // particular way of doing the uppercasing on individual UTF-16 code
         // units, along with a list of weird exceptions and corner cases.  But
         // hopefully this is good enough for 99+% of the time.
+
         Ordering::Equal => {
             let n1 = name1.chars().map(cfb_uppercase_char);
             let n2 = name2.chars().map(cfb_uppercase_char);
@@ -116,6 +118,21 @@ mod tests {
         assert_eq!(compare_names("foobar", "FOOBAR"), Ordering::Equal);
         assert_eq!(compare_names("foo", "barfoo"), Ordering::Less);
         assert_eq!(compare_names("Foo", "bar"), Ordering::Greater);
+        // testcases from real .doc files
+        assert_eq!(
+            compare_names(
+                "ÖÇÔÍÒÄÁØÐÔÞ3×ÆXVÔÄHMDQ==",
+                "ßYÜ0MÈÝEÄÄÂKÏÓÉDÀP5ÃÝA=="
+            ),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_names(
+                "É1EDAÉNÅPUOÈÒKÔÓCÓÇÇPÐ==",
+                "ßÕFÆRDÜÐNÔCÄ2PKQÃFAFMA=="
+            ),
+            Ordering::Less
+        );
     }
 
     #[test]

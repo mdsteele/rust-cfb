@@ -1,6 +1,6 @@
 use crate::internal::consts::{self, MAX_REGULAR_STREAM_ID, NO_STREAM};
 use crate::internal::{self, Color, ObjType, Timestamp, Validation, Version};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use crate::{ReadLeNumber, WriteLeNumber};
 use std::io::{self, Read, Write};
 use uuid::Uuid;
 
@@ -16,7 +16,7 @@ macro_rules! malformed {
 
 //===========================================================================//
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     pub name: String,
     pub obj_type: ObjType,
@@ -86,9 +86,9 @@ impl DirEntry {
     }
 
     fn read_clsid<R: Read>(reader: &mut R) -> io::Result<Uuid> {
-        let d1 = reader.read_u32::<LittleEndian>()?;
-        let d2 = reader.read_u16::<LittleEndian>()?;
-        let d3 = reader.read_u16::<LittleEndian>()?;
+        let d1 = reader.read_le_u32()?;
+        let d2 = reader.read_le_u16()?;
+        let d3 = reader.read_le_u16()?;
         let mut d4 = [0u8; 8];
         reader.read_exact(&mut d4)?;
         Ok(Uuid::from_fields(d1, d2, d3, &d4))
@@ -96,9 +96,9 @@ impl DirEntry {
 
     fn write_clsid<W: Write>(writer: &mut W, clsid: &Uuid) -> io::Result<()> {
         let (d1, d2, d3, d4) = clsid.as_fields();
-        writer.write_u32::<LittleEndian>(d1)?;
-        writer.write_u16::<LittleEndian>(d2)?;
-        writer.write_u16::<LittleEndian>(d3)?;
+        writer.write_le_u32(d1)?;
+        writer.write_le_u16(d2)?;
+        writer.write_le_u16(d3)?;
         writer.write_all(d4)?;
         Ok(())
     }
@@ -111,9 +111,9 @@ impl DirEntry {
         let mut name: String = {
             let mut name_chars: Vec<u16> = Vec::with_capacity(32);
             for _ in 0..32 {
-                name_chars.push(reader.read_u16::<LittleEndian>()?);
+                name_chars.push(reader.read_le_u16()?);
             }
-            let name_len_bytes = reader.read_u16::<LittleEndian>()?;
+            let name_len_bytes = reader.read_le_u16()?;
             if name_len_bytes > 64 {
                 malformed!("name length too large: {}", name_len_bytes);
             } else if name_len_bytes % 2 != 0 {
@@ -142,7 +142,9 @@ impl DirEntry {
         };
 
         let obj_type = {
-            let obj_type_byte = reader.read_u8()?;
+            let mut buf = [0u8];
+            reader.read_exact(&mut buf)?;
+            let [obj_type_byte] = buf;
             match ObjType::from_byte(obj_type_byte) {
                 Some(obj_type) => obj_type,
                 None => malformed!("invalid object type: {}", obj_type_byte),
@@ -171,22 +173,24 @@ impl DirEntry {
         }
 
         let color = {
-            let color_byte = reader.read_u8()?;
+            let mut buf = [0u8];
+            reader.read_exact(&mut buf)?;
+            let [color_byte] = buf;
             match Color::from_byte(color_byte) {
                 Some(color) => color,
                 None => malformed!("invalid color: {}", color_byte),
             }
         };
-        let left_sibling = reader.read_u32::<LittleEndian>()?;
+        let left_sibling = reader.read_le_u32()?;
         if left_sibling != NO_STREAM && left_sibling > MAX_REGULAR_STREAM_ID {
             malformed!("invalid left sibling: {}", left_sibling);
         }
-        let right_sibling = reader.read_u32::<LittleEndian>()?;
+        let right_sibling = reader.read_le_u32()?;
         if right_sibling != NO_STREAM && right_sibling > MAX_REGULAR_STREAM_ID
         {
             malformed!("invalid right sibling: {}", right_sibling);
         }
-        let child = reader.read_u32::<LittleEndian>()?;
+        let child = reader.read_le_u32()?;
         if child != NO_STREAM {
             if obj_type == ObjType::Stream {
                 malformed!("non-empty stream child: {}", child);
@@ -208,7 +212,7 @@ impl DirEntry {
             clsid = Uuid::nil();
         }
 
-        let state_bits = reader.read_u32::<LittleEndian>()?;
+        let state_bits = reader.read_le_u32()?;
 
         // Section 2.6.1 of the MS-CFB spec states that "for a stream object,
         // [creation time and modified time] MUST be all zeroes."  However,
@@ -242,9 +246,8 @@ impl DirEntry {
         // with uninitialized garbage values, so under Permissive validation we
         // don't enforce this; instead, for storage objects we just treat these
         // fields as though they were zero.
-        let mut start_sector = reader.read_u32::<LittleEndian>()?;
-        let mut stream_len =
-            reader.read_u64::<LittleEndian>()? & version.stream_len_mask();
+        let mut start_sector = reader.read_le_u32()?;
+        let mut stream_len = reader.read_le_u64()? & version.stream_len_mask();
         if obj_type == ObjType::Storage {
             if validation.is_strict() && start_sector != 0 {
                 malformed!("non-zero storage start sector: {}", start_sector);
@@ -277,23 +280,23 @@ impl DirEntry {
         let name_utf16: Vec<u16> = self.name.encode_utf16().collect();
         debug_assert!(name_utf16.len() < 32);
         for &chr in name_utf16.iter() {
-            writer.write_u16::<LittleEndian>(chr)?;
+            writer.write_le_u16(chr)?;
         }
         for _ in name_utf16.len()..32 {
-            writer.write_u16::<LittleEndian>(0)?;
+            writer.write_le_u16(0)?;
         }
-        writer.write_u16::<LittleEndian>((name_utf16.len() as u16 + 1) * 2)?;
-        writer.write_u8(self.obj_type.as_byte())?;
-        writer.write_u8(self.color.as_byte())?;
-        writer.write_u32::<LittleEndian>(self.left_sibling)?;
-        writer.write_u32::<LittleEndian>(self.right_sibling)?;
-        writer.write_u32::<LittleEndian>(self.child)?;
+        writer.write_le_u16((name_utf16.len() as u16 + 1) * 2)?;
+        writer.write_all(&[self.obj_type.as_byte()])?;
+        writer.write_all(&[self.color.as_byte()])?;
+        writer.write_le_u32(self.left_sibling)?;
+        writer.write_le_u32(self.right_sibling)?;
+        writer.write_le_u32(self.child)?;
         DirEntry::write_clsid(writer, &self.clsid)?;
-        writer.write_u32::<LittleEndian>(self.state_bits)?;
+        writer.write_le_u32(self.state_bits)?;
         self.creation_time.write_to(writer)?;
         self.modified_time.write_to(writer)?;
-        writer.write_u32::<LittleEndian>(self.start_sector)?;
-        writer.write_u64::<LittleEndian>(self.stream_len)?;
+        writer.write_le_u32(self.start_sector)?;
+        writer.write_le_u64(self.stream_len)?;
         Ok(())
     }
 }

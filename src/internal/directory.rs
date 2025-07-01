@@ -2,7 +2,7 @@ use crate::internal::{
     self, consts, Allocator, Chain, Color, DirEntry, ObjType, Sector,
     SectorInit, Timestamp, Validation, Version,
 };
-use byteorder::{LittleEndian, WriteBytesExt};
+use crate::WriteLeNumber;
 use fnv::FnvHashSet;
 use std::cmp::Ordering;
 use std::io::{self, Seek, SeekFrom, Write};
@@ -77,7 +77,7 @@ impl<F> Directory<F> {
         &mut self,
         start_sector_id: u32,
         init: SectorInit,
-    ) -> io::Result<Chain<F>> {
+    ) -> io::Result<Chain<'_, F>> {
         self.allocator.open_chain(start_sector_id, init)
     }
 
@@ -200,11 +200,14 @@ impl<F: Seek> Directory<F> {
     pub fn seek_within_header(
         &mut self,
         offset_within_header: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         self.allocator.seek_within_header(offset_within_header)
     }
 
-    fn seek_to_dir_entry(&mut self, stream_id: u32) -> io::Result<Sector<F>> {
+    fn seek_to_dir_entry(
+        &mut self,
+        stream_id: u32,
+    ) -> io::Result<Sector<'_, F>> {
         self.seek_within_dir_entry(stream_id, 0)
     }
 
@@ -212,7 +215,7 @@ impl<F: Seek> Directory<F> {
         &mut self,
         stream_id: u32,
         offset_within_dir_entry: usize,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         let dir_entries_per_sector =
             self.version().dir_entries_per_sector() as u32;
         let index_within_sector = stream_id % dir_entries_per_sector;
@@ -292,19 +295,19 @@ impl<F: Write + Seek> Directory<F> {
                 self.dir_entry_mut(prev_sibling_id).left_sibling = stream_id;
                 let mut sector =
                     self.seek_within_dir_entry(prev_sibling_id, 68)?;
-                sector.write_u32::<LittleEndian>(stream_id)?;
+                sector.write_le_u32(stream_id)?;
             }
             Ordering::Greater => {
                 self.dir_entry_mut(prev_sibling_id).right_sibling = stream_id;
                 let mut sector =
                     self.seek_within_dir_entry(prev_sibling_id, 72)?;
-                sector.write_u32::<LittleEndian>(stream_id)?;
+                sector.write_le_u32(stream_id)?;
             }
             Ordering::Equal => {
                 debug_assert_eq!(prev_sibling_id, parent_id);
                 self.dir_entry_mut(parent_id).child = stream_id;
                 let mut sector = self.seek_within_dir_entry(parent_id, 76)?;
-                sector.write_u32::<LittleEndian>(stream_id)?;
+                sector.write_le_u32(stream_id)?;
             }
         }
         // TODO: rebalance tree
@@ -378,7 +381,7 @@ impl<F: Write + Seek> Directory<F> {
             if self.dir_entry(sibling_id).left_sibling == stream_id {
                 self.dir_entry_mut(sibling_id).left_sibling = replacement_id;
                 let mut sector = self.seek_within_dir_entry(sibling_id, 68)?;
-                sector.write_u32::<LittleEndian>(replacement_id)?;
+                sector.write_le_u32(replacement_id)?;
             } else {
                 debug_assert_eq!(
                     self.dir_entry(sibling_id).right_sibling,
@@ -386,12 +389,12 @@ impl<F: Write + Seek> Directory<F> {
                 );
                 self.dir_entry_mut(sibling_id).right_sibling = replacement_id;
                 let mut sector = self.seek_within_dir_entry(sibling_id, 72)?;
-                sector.write_u32::<LittleEndian>(replacement_id)?;
+                sector.write_le_u32(replacement_id)?;
             }
         } else {
             self.dir_entry_mut(parent_id).child = replacement_id;
             let mut sector = self.seek_within_dir_entry(parent_id, 76)?;
-            sector.write_u32::<LittleEndian>(replacement_id)?;
+            sector.write_le_u32(replacement_id)?;
         }
         self.free_dir_entry(stream_id)?;
         Ok(())
@@ -428,8 +431,7 @@ impl<F: Write + Seek> Directory<F> {
         if self.version() == Version::V4 {
             let num_dir_sectors =
                 self.count_directory_sectors(start_sector)?;
-            self.seek_within_header(40)?
-                .write_u32::<LittleEndian>(num_dir_sectors)?;
+            self.seek_within_header(40)?.write_le_u32(num_dir_sectors)?;
         }
         Ok(())
     }
