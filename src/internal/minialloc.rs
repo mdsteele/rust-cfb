@@ -81,14 +81,14 @@ impl<F> MiniAllocator<F> {
         &mut self,
         start_sector_id: u32,
         init: SectorInit,
-    ) -> io::Result<Chain<F>> {
+    ) -> io::Result<Chain<'_, F>> {
         self.directory.open_chain(start_sector_id, init)
     }
 
     pub fn open_mini_chain(
         &mut self,
         start_sector_id: u32,
-    ) -> io::Result<MiniChain<F>> {
+    ) -> io::Result<MiniChain<'_, F>> {
         MiniChain::new(self, start_sector_id)
     }
 
@@ -148,7 +148,7 @@ impl<F: Seek> MiniAllocator<F> {
         &mut self,
         mini_sector: u32,
         offset_within_mini_sector: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         debug_assert!(
             offset_within_mini_sector < consts::MINI_SECTOR_LEN as u64
         );

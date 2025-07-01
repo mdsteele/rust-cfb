@@ -17,8 +17,7 @@ impl<F> Sectors<F> {
     pub fn new(version: Version, inner_len: u64, inner: F) -> Sectors<F> {
         let sector_len = version.sector_len() as u64;
         debug_assert!(inner_len >= sector_len);
-        let num_sectors =
-            ((inner_len + sector_len - 1) / sector_len) as u32 - 1;
+        let num_sectors = inner_len.div_ceil(sector_len) as u32 - 1;
         Sectors { inner, version, num_sectors }
     }
 
@@ -47,7 +46,7 @@ impl<F: Seek> Sectors<F> {
     pub fn seek_within_header(
         &mut self,
         offset_within_header: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         debug_assert!(offset_within_header < consts::HEADER_LEN as u64);
         self.inner.seek(SeekFrom::Start(offset_within_header))?;
         Ok(Sector {
@@ -57,7 +56,10 @@ impl<F: Seek> Sectors<F> {
         })
     }
 
-    pub fn seek_to_sector(&mut self, sector_id: u32) -> io::Result<Sector<F>> {
+    pub fn seek_to_sector(
+        &mut self,
+        sector_id: u32,
+    ) -> io::Result<Sector<'_, F>> {
         self.seek_within_sector(sector_id, 0)
     }
 
@@ -65,7 +67,7 @@ impl<F: Seek> Sectors<F> {
         &mut self,
         sector_id: u32,
         offset_within_sector: u64,
-    ) -> io::Result<Sector<F>> {
+    ) -> io::Result<Sector<'_, F>> {
         debug_assert!(offset_within_sector <= self.sector_len() as u64);
         if sector_id >= self.num_sectors {
             invalid_data!(
@@ -207,7 +209,10 @@ pub enum SectorInit {
 }
 
 impl SectorInit {
-    fn initialize<F: Write>(self, sector: &mut Sector<F>) -> io::Result<()> {
+    fn initialize<F: Write>(
+        self,
+        sector: &mut Sector<'_, F>,
+    ) -> io::Result<()> {
         debug_assert_eq!(sector.offset_within_sector, 0);
         match self {
             SectorInit::Zero => {
