@@ -6,6 +6,7 @@ use crate::internal::{consts, Validation, Version};
 
 //===========================================================================//
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
     pub version: Version,
     pub num_dir_sectors: u32,
