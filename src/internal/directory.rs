@@ -2,7 +2,7 @@ use crate::internal::{
     self, consts, Allocator, Chain, Color, DirEntry, ObjType, Sector,
     SectorInit, Timestamp, Validation, Version,
 };
-use byteorder::{LittleEndian, WriteBytesExt};
+use crate::WriteLeNumber;
 use fnv::FnvHashSet;
 use std::cmp::Ordering;
 use std::io::{self, Seek, SeekFrom, Write};
@@ -295,19 +295,19 @@ impl<F: Write + Seek> Directory<F> {
                 self.dir_entry_mut(prev_sibling_id).left_sibling = stream_id;
                 let mut sector =
                     self.seek_within_dir_entry(prev_sibling_id, 68)?;
-                sector.write_u32::<LittleEndian>(stream_id)?;
+                sector.write_le_u32(stream_id)?;
             }
             Ordering::Greater => {
                 self.dir_entry_mut(prev_sibling_id).right_sibling = stream_id;
                 let mut sector =
                     self.seek_within_dir_entry(prev_sibling_id, 72)?;
-                sector.write_u32::<LittleEndian>(stream_id)?;
+                sector.write_le_u32(stream_id)?;
             }
             Ordering::Equal => {
                 debug_assert_eq!(prev_sibling_id, parent_id);
                 self.dir_entry_mut(parent_id).child = stream_id;
                 let mut sector = self.seek_within_dir_entry(parent_id, 76)?;
-                sector.write_u32::<LittleEndian>(stream_id)?;
+                sector.write_le_u32(stream_id)?;
             }
         }
         // TODO: rebalance tree
@@ -381,7 +381,7 @@ impl<F: Write + Seek> Directory<F> {
             if self.dir_entry(sibling_id).left_sibling == stream_id {
                 self.dir_entry_mut(sibling_id).left_sibling = replacement_id;
                 let mut sector = self.seek_within_dir_entry(sibling_id, 68)?;
-                sector.write_u32::<LittleEndian>(replacement_id)?;
+                sector.write_le_u32(replacement_id)?;
             } else {
                 debug_assert_eq!(
                     self.dir_entry(sibling_id).right_sibling,
@@ -389,12 +389,12 @@ impl<F: Write + Seek> Directory<F> {
                 );
                 self.dir_entry_mut(sibling_id).right_sibling = replacement_id;
                 let mut sector = self.seek_within_dir_entry(sibling_id, 72)?;
-                sector.write_u32::<LittleEndian>(replacement_id)?;
+                sector.write_le_u32(replacement_id)?;
             }
         } else {
             self.dir_entry_mut(parent_id).child = replacement_id;
             let mut sector = self.seek_within_dir_entry(parent_id, 76)?;
-            sector.write_u32::<LittleEndian>(replacement_id)?;
+            sector.write_le_u32(replacement_id)?;
         }
         self.free_dir_entry(stream_id)?;
         Ok(())
@@ -431,8 +431,7 @@ impl<F: Write + Seek> Directory<F> {
         if self.version() == Version::V4 {
             let num_dir_sectors =
                 self.count_directory_sectors(start_sector)?;
-            self.seek_within_header(40)?
-                .write_u32::<LittleEndian>(num_dir_sectors)?;
+            self.seek_within_header(40)?.write_le_u32(num_dir_sectors)?;
         }
         Ok(())
     }

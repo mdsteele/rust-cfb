@@ -1,4 +1,4 @@
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use crate::{ReadLeNumber, WriteLeNumber};
 use std::io::{self, Read, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -37,11 +37,11 @@ impl Timestamp {
     }
 
     pub fn read_from<R: Read>(reader: &mut R) -> io::Result<Timestamp> {
-        Ok(Timestamp(reader.read_u64::<LittleEndian>()?))
+        Ok(Timestamp(reader.read_le_u64()?))
     }
 
     pub fn write_to<W: Write>(self, writer: &mut W) -> io::Result<()> {
-        writer.write_u64::<LittleEndian>(self.0)
+        writer.write_le_u64(self.0)
     }
 }
 

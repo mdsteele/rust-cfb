@@ -1,5 +1,5 @@
 use crate::internal::{consts, DirEntry, Version};
-use byteorder::{LittleEndian, WriteBytesExt};
+use crate::WriteLeNumber;
 use std::cmp;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -224,16 +224,16 @@ impl SectorInit {
             SectorInit::Fat => {
                 debug_assert_eq!(sector.len() % 4, 0);
                 for _ in 0..(sector.len() / 4) {
-                    sector.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
+                    sector.write_le_u32(consts::FREE_SECTOR)?;
                 }
             }
             SectorInit::Difat => {
                 debug_assert_eq!(sector.len() % 4, 0);
                 debug_assert!(sector.len() >= 4);
                 for _ in 0..((sector.len() - 4) / 4) {
-                    sector.write_u32::<LittleEndian>(consts::FREE_SECTOR)?;
+                    sector.write_le_u32(consts::FREE_SECTOR)?;
                 }
-                sector.write_u32::<LittleEndian>(consts::END_OF_CHAIN)?;
+                sector.write_le_u32(consts::END_OF_CHAIN)?;
             }
             SectorInit::Dir => {
                 debug_assert_eq!(sector.len() % consts::DIR_ENTRY_LEN, 0);
@@ -253,7 +253,7 @@ impl SectorInit {
 mod tests {
     use super::{SectorInit, Sectors};
     use crate::internal::{consts, DirEntry, ObjType, Validation, Version};
-    use byteorder::{LittleEndian, ReadBytesExt};
+    use crate::ReadLeNumber;
     use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
     #[test]
@@ -347,25 +347,16 @@ mod tests {
             sectors.init_sector(1, SectorInit::Fat).unwrap();
             let mut sector = sectors.seek_to_sector(1).unwrap();
             for _ in 0..128 {
-                assert_eq!(
-                    sector.read_u32::<LittleEndian>().unwrap(),
-                    consts::FREE_SECTOR
-                );
+                assert_eq!(sector.read_le_u32().unwrap(), consts::FREE_SECTOR);
             }
         }
         {
             sectors.init_sector(2, SectorInit::Difat).unwrap();
             let mut sector = sectors.seek_to_sector(2).unwrap();
             for _ in 0..127 {
-                assert_eq!(
-                    sector.read_u32::<LittleEndian>().unwrap(),
-                    consts::FREE_SECTOR
-                );
+                assert_eq!(sector.read_le_u32().unwrap(), consts::FREE_SECTOR);
             }
-            assert_eq!(
-                sector.read_u32::<LittleEndian>().unwrap(),
-                consts::END_OF_CHAIN
-            );
+            assert_eq!(sector.read_le_u32().unwrap(), consts::END_OF_CHAIN);
         }
         {
             sectors.init_sector(3, SectorInit::Dir).unwrap();
