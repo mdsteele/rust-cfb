@@ -83,7 +83,9 @@ impl<F> Allocator<F> {
     }
 
     fn validate(&mut self, validation: Validation) -> io::Result<()> {
-        if self.fat.len() > self.sectors.num_sectors() as usize {
+        let non_free =
+            self.fat.iter().filter(|&&i| i != consts::FREE_SECTOR).count();
+        if non_free > self.sectors.num_sectors() as usize {
             malformed!(
                 "FAT has {} entries, but file has only {} sectors",
                 self.fat.len(),
