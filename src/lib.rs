@@ -1053,7 +1053,9 @@ mod tests {
     use std::mem::size_of;
     use std::path::Path;
 
-    use crate::internal::{consts, DirEntry, Header, Version};
+    use crate::internal::{
+        consts, DirEntry, Header, ObjType, Timestamp, Version,
+    };
     use crate::{ReadLeNumber, WriteLeNumber};
 
     use super::CompoundFile;
@@ -1253,7 +1255,6 @@ mod tests {
 
     #[test]
     fn deterministic_cfbs() {
-        use super::Timestamp;
         let ts = std::time::SystemTime::now();
         let cfb1 = make_cfb_with_ts(ts);
         let cfb2 = make_cfb_with_ts(ts);
@@ -1271,6 +1272,53 @@ mod tests {
         let entry = strict.entry("/foo").unwrap();
         assert_eq!(Timestamp::from_system_time(entry.created()), ts);
         assert_eq!(Timestamp::from_system_time(entry.modified()), ts);
+    }
+    fn make_cfb_with_inconsistent_difat_entries() -> io::Result<Vec<u8>> {
+        let mut data = Vec::new();
+        // cfb has spare DIFAT_SECTOR entries in FAT not accounted for in header
+        let mut hdr = Header {
+            version: Version::V3,
+            num_dir_sectors: 0,
+            num_fat_sectors: 1,
+            first_dir_sector: 0,
+            first_minifat_sector: consts::END_OF_CHAIN,
+            num_minifat_sectors: 0,
+            first_difat_sector: consts::END_OF_CHAIN,
+            num_difat_sectors: 0,
+            initial_difat_entries: [consts::FREE_SECTOR;
+                consts::NUM_DIFAT_ENTRIES_IN_HEADER],
+        };
+        hdr.initial_difat_entries[0] = 1;
+
+        hdr.write_to(&mut data)?;
+
+        // write dir sector
+        for entr in [
+            DirEntry::new("Root Entry", ObjType::Root, Timestamp::now()),
+            DirEntry::unallocated(),
+            DirEntry::unallocated(),
+            DirEntry::unallocated(),
+        ] {
+            entr.write_to(&mut data)?;
+        }
+
+        // write FAT sector
+        data.extend(&consts::END_OF_CHAIN.to_le_bytes());
+        data.extend(&consts::FAT_SECTOR.to_le_bytes());
+        // add a DIFAT_SECTOR to FAT, although inconsistent with header
+        data.extend(&consts::DIFAT_SECTOR.to_le_bytes());
+        for _ in (0..128).skip(3) {
+            data.extend(&consts::FREE_SECTOR.to_le_bytes());
+        }
+
+        Ok(data)
+    }
+
+    #[test]
+    fn too_many_fat_entries() {
+        let cfb = make_cfb_with_inconsistent_difat_entries().unwrap();
+
+        CompoundFile::open(Cursor::new(cfb)).unwrap();
     }
 }
 
