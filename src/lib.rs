@@ -1320,9 +1320,13 @@ mod tests {
 
     #[test]
     fn too_many_fat_entries() {
+        use std::io::Write;
+
         let cfb = make_cfb_with_inconsistent_difat_entries().unwrap();
 
-        CompoundFile::open(Cursor::new(cfb)).unwrap();
+        let mut cfb = CompoundFile::open(Cursor::new(cfb)).unwrap();
+        let mut f = cfb.create_stream("stream").unwrap();
+        f.write_all(&vec![0; 1024 * 1024]).unwrap();
     }
 }
 
