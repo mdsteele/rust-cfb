@@ -14,13 +14,11 @@ const CASE_MAPPER: CaseMapper = CaseMapper::new();
 /// using simple capitalization and the ability to add exceptions.
 /// Used when two directory entry names need to be compared.
 fn cfb_uppercase_char(c: char) -> char {
-    match c {
-        // TODO: Edge cases can be added that appear
-        // in the table from Appendix A, <3> Section 2.6.4
+    // TODO: Edge cases can be added that appear
+    // in the table from Appendix A, <3> Section 2.6.4
 
-        // Base case, just do a simple uppercase
-        _ => CASE_MAPPER.simple_uppercase(c),
-    }
+    // Base case, just do a simple uppercase
+    CASE_MAPPER.simple_uppercase(c)
 }
 
 /// Compares two directory entry names according to CFB ordering, which is
