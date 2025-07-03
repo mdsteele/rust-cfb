@@ -83,11 +83,12 @@ impl<F> Allocator<F> {
     }
 
     fn validate(&mut self, validation: Validation) -> io::Result<()> {
-        if self.fat.len() > self.sectors.num_sectors() as usize {
+        let num_sectors = self.sectors.num_sectors() as usize;
+        if self.fat.len() > num_sectors && validation.is_strict() {
             malformed!(
                 "FAT has {} entries, but file has only {} sectors",
                 self.fat.len(),
-                self.sectors.num_sectors()
+                num_sectors
             );
         }
         for &difat_sector in self.difat_sector_ids.iter() {
@@ -133,7 +134,9 @@ impl<F> Allocator<F> {
         let mut pointees = FnvHashSet::default();
         for (from_sector, &to_sector) in self.fat.iter().enumerate() {
             if to_sector <= consts::MAX_REGULAR_SECTOR {
-                if to_sector as usize >= self.fat.len() {
+                if to_sector as usize >= self.fat.len()
+                    && validation.is_strict()
+                {
                     malformed!(
                         "FAT has {} entries, but sector {} points to {}",
                         self.fat.len(),
@@ -505,7 +508,7 @@ mod tests {
     fn pointee_out_of_range() {
         let difat = vec![0];
         let fat = vec![consts::FAT_SECTOR, 2];
-        make_allocator(difat, fat, Validation::Permissive);
+        make_allocator(difat, fat, Validation::Strict);
     }
 
     #[test]
