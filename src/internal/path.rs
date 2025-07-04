@@ -1,3 +1,4 @@
+use icu_casemap::CaseMapper;
 use std::cmp::Ordering;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -5,23 +6,19 @@ use std::path::{Component, Path, PathBuf};
 // ========================================================================= //
 
 const MAX_NAME_LEN: usize = 31;
+const CASE_MAPPER: CaseMapper = CaseMapper::new();
 
 // ========================================================================= //
 
-// according to the spec, "For each UTF-16 code point, convert to uppercase by
-// using the Unicode Default Case Conversion Algorithm, simple case conversion
-// variant (simple case foldings)"
-// it's not clear what that means, since neither case folding nor strict upper
-// case conversion yields convert('Ö') < convert('ß'), see the test case
-fn uppercase(s: &str) -> String {
-    let mut upper = String::new();
-    for c in s.chars() {
-        match c {
-            'ß' => upper.push('ẞ'),
-            c => upper.extend(c.to_uppercase()),
-        }
-    }
-    upper
+/// Converts a char to uppercase as defined in MS-CFB,
+/// using simple capitalization and the ability to add exceptions.
+/// Used when two directory entry names need to be compared.
+fn cfb_uppercase_char(c: char) -> char {
+    // TODO: Edge cases can be added that appear
+    // in the table from Appendix A, <3> Section 2.6.4
+
+    // Base case, just do a simple uppercase
+    CASE_MAPPER.simple_uppercase(c)
 }
 
 /// Compares two directory entry names according to CFB ordering, which is
@@ -35,7 +32,11 @@ pub fn compare_names(name1: &str, name2: &str) -> Ordering {
         // particular way of doing the uppercasing on individual UTF-16 code
         // units, along with a list of weird exceptions and corner cases.  But
         // hopefully this is good enough for 99+% of the time.
-        Ordering::Equal => uppercase(name1).cmp(&uppercase(name2)),
+        Ordering::Equal => {
+            let n1 = name1.chars().map(cfb_uppercase_char);
+            let n2 = name2.chars().map(cfb_uppercase_char);
+            n1.cmp(n2)
+        }
         other => other,
     }
 }
@@ -100,8 +101,8 @@ pub fn path_from_name_chain(names: &[&str]) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_names, name_chain_from_path, path_from_name_chain,
-        validate_name,
+        cfb_uppercase_char, compare_names, name_chain_from_path,
+        path_from_name_chain, validate_name,
     };
     use std::cmp::Ordering;
     use std::path::{Path, PathBuf};
@@ -123,6 +124,21 @@ mod tests {
             compare_names(
                 "É1EDAÉNÅPUOÈÒKÔÓCÓÇÇPÐ==",
                 "ßÕFÆRDÜÐNÔCÄ2PKQÃFAFMA=="
+            ),
+            Ordering::Less
+        );
+
+        let uppercase = "ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q=="
+            .chars()
+            .map(cfb_uppercase_char)
+            .collect::<String>();
+
+        assert_eq!("ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q==", uppercase);
+
+        assert_eq!(
+            compare_names(
+                "ÜL43ÁMÆÛÏEKZÅYWÚÓVDÙÄÀ==",
+                "ßQÑ52Ç4ÅÁÔÂFÛCWCÙÂNË5Q=="
             ),
             Ordering::Less
         );
