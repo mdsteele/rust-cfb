@@ -500,7 +500,11 @@ impl<F: Read + Seek> CompoundFile<F> {
         // case above, we can remove these even if it makes the number of FAT
         // entries less than the number of sectors in the file; the allocator
         // will implicitly treat these extra sectors as free.
-        while fat.last() == Some(&consts::FREE_SECTOR) {
+        while fat.last() == Some(&consts::FREE_SECTOR)
+            // strip DIFAT_SECTOR from the end
+            || !validation.is_strict()
+                && fat.len() > sectors.num_sectors() as usize && fat.last() == Some(&consts::DIFAT_SECTOR)
+        {
             fat.pop();
         }
 
