@@ -99,16 +99,13 @@ impl<F> Allocator<F> {
                     difat_sector
                 );
             };
-            if *sector != consts::DIFAT_SECTOR {
-                if validation.is_strict() {
-                    malformed!(
-                        "DIFAT sector {} is not marked as such in the FAT",
-                        difat_sector
-                    );
-                } else {
-                    *sector = consts::DIFAT_SECTOR;
-                }
+            if *sector != consts::DIFAT_SECTOR && validation.is_strict() {
+                malformed!(
+                    "DIFAT sector {} is not marked as such in the FAT",
+                    difat_sector
+                );
             }
+            *sector = consts::DIFAT_SECTOR;
         }
         for &fat_sector in self.difat.iter() {
             let fat_sector_index = fat_sector as usize;
@@ -119,16 +116,13 @@ impl<F> Allocator<F> {
                     fat_sector
                 );
             };
-            if *sector != consts::FAT_SECTOR {
-                if validation.is_strict() {
-                    malformed!(
-                        "FAT sector {} is not marked as such in the FAT",
-                        fat_sector
-                    );
-                } else {
-                    *sector = consts::FAT_SECTOR;
-                }
+            if *sector != consts::FAT_SECTOR && validation.is_strict() {
+                malformed!(
+                    "FAT sector {} is not marked as such in the FAT",
+                    fat_sector
+                );
             }
+            *sector = consts::FAT_SECTOR;
         }
         let mut pointees = FnvHashSet::default();
         for (from_sector, &to_sector) in self.fat.iter().enumerate() {
