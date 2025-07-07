@@ -33,4 +33,75 @@ pub const ROOT_STREAM_ID: u32 = 0;
 pub const MAX_REGULAR_STREAM_ID: u32 = 0xfffffffa;
 pub const NO_STREAM: u32 = 0xffffffff;
 
+pub(crate) fn prettify(sectors: &[u32]) -> Vec<Ty> {
+    let mut fmt = Vec::new();
+    for s in sectors.iter() {
+        match *s {
+            END_OF_CHAIN => fmt.push(Ty::End),
+            FREE_SECTOR => fmt.push(Ty::Free),
+            DIFAT_SECTOR => fmt.push(Ty::Difat),
+            FAT_SECTOR => fmt.push(Ty::Fat),
+            i => {
+                if let Some(Ty::Range(_, end)) = fmt.last_mut() {
+                    if *end + 1 == i {
+                        *end += 1;
+                        continue;
+                    }
+                }
+                fmt.push(Ty::Range(i, i));
+            }
+        };
+    }
+    fmt
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum Ty {
+    Free,
+    End,
+    Fat,
+    Difat,
+    Range(u32, u32),
+}
+
+impl std::fmt::Debug for Ty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Ty::Range(start, end) if *start == *end => write!(f, "{start}"),
+            Ty::Range(start, end) => write!(f, "{start}-{end}"),
+            Ty::Free => f.write_str("FREE"),
+            Ty::End => f.write_str("EOC"),
+            Ty::Fat => f.write_str("FAT"),
+            Ty::Difat => f.write_str("DIFAT"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prettify_sectors() {
+        let sectors = [
+            END_OF_CHAIN,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            END_OF_CHAIN,
+            23,
+            25,
+            18,
+            FREE_SECTOR,
+        ];
+        let s = prettify(&sectors);
+        assert_eq!("[EOC, 0-7, EOC, 23, 25, 18, FREE]", format!("{s:?}"));
+    }
+}
+
 // ========================================================================= //
