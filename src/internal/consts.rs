@@ -33,22 +33,22 @@ pub const ROOT_STREAM_ID: u32 = 0;
 pub const MAX_REGULAR_STREAM_ID: u32 = 0xfffffffa;
 pub const NO_STREAM: u32 = 0xffffffff;
 
-pub(crate) fn prettify(sectors: &[u32]) -> Vec<Ty> {
+pub(crate) fn prettify(sectors: &[u32]) -> Vec<Type> {
     let mut fmt = Vec::new();
     for s in sectors.iter() {
         match *s {
-            END_OF_CHAIN => fmt.push(Ty::End),
-            FREE_SECTOR => fmt.push(Ty::Free),
-            DIFAT_SECTOR => fmt.push(Ty::Difat),
-            FAT_SECTOR => fmt.push(Ty::Fat),
+            END_OF_CHAIN => fmt.push(Type::End),
+            FREE_SECTOR => fmt.push(Type::Free),
+            DIFAT_SECTOR => fmt.push(Type::Difat),
+            FAT_SECTOR => fmt.push(Type::Fat),
             i => {
-                if let Some(Ty::Range(_, end)) = fmt.last_mut() {
+                if let Some(Type::Range(_, end)) = fmt.last_mut() {
                     if *end + 1 == i {
                         *end += 1;
                         continue;
                     }
                 }
-                fmt.push(Ty::Range(i, i));
+                fmt.push(Type::Range(i, i));
             }
         };
     }
@@ -56,7 +56,7 @@ pub(crate) fn prettify(sectors: &[u32]) -> Vec<Ty> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) enum Ty {
+pub(crate) enum Type {
     Free,
     End,
     Fat,
@@ -64,15 +64,15 @@ pub(crate) enum Ty {
     Range(u32, u32),
 }
 
-impl std::fmt::Debug for Ty {
+impl std::fmt::Debug for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Ty::Range(start, end) if *start == *end => write!(f, "{start}"),
-            Ty::Range(start, end) => write!(f, "{start}-{end}"),
-            Ty::Free => f.write_str("FREE"),
-            Ty::End => f.write_str("EOC"),
-            Ty::Fat => f.write_str("FAT"),
-            Ty::Difat => f.write_str("DIFAT"),
+            Type::Range(start, end) if *start == *end => write!(f, "{start}"),
+            Type::Range(start, end) => write!(f, "{start}-{end}"),
+            Type::Free => f.write_str("FREE"),
+            Type::End => f.write_str("EOC"),
+            Type::Fat => f.write_str("FAT"),
+            Type::Difat => f.write_str("DIFAT"),
         }
     }
 }
