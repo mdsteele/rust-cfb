@@ -92,43 +92,37 @@ impl<F> Allocator<F> {
         }
         for &difat_sector in self.difat_sector_ids.iter() {
             let difat_sector_index = difat_sector as usize;
-            if difat_sector_index >= self.fat.len() {
+            let Some(sector) = self.fat.get_mut(difat_sector_index) else {
                 malformed!(
                     "FAT has {} entries, but DIFAT lists {} as a DIFAT sector",
                     self.fat.len(),
                     difat_sector
                 );
+            };
+            if *sector != consts::DIFAT_SECTOR && validation.is_strict() {
+                malformed!(
+                    "DIFAT sector {} is not marked as such in the FAT",
+                    difat_sector
+                );
             }
-            if self.fat[difat_sector_index] != consts::DIFAT_SECTOR {
-                if validation.is_strict() {
-                    malformed!(
-                        "DIFAT sector {} is not marked as such in the FAT",
-                        difat_sector
-                    );
-                } else {
-                    self.fat[difat_sector_index] = consts::DIFAT_SECTOR;
-                }
-            }
+            *sector = consts::DIFAT_SECTOR;
         }
         for &fat_sector in self.difat.iter() {
             let fat_sector_index = fat_sector as usize;
-            if fat_sector_index >= self.fat.len() {
+            let Some(sector) = self.fat.get_mut(fat_sector_index) else {
                 malformed!(
                     "FAT has {} entries, but DIFAT lists {} as a FAT sector",
                     self.fat.len(),
                     fat_sector
                 );
+            };
+            if *sector != consts::FAT_SECTOR && validation.is_strict() {
+                malformed!(
+                    "FAT sector {} is not marked as such in the FAT",
+                    fat_sector
+                );
             }
-            if self.fat[fat_sector_index] != consts::FAT_SECTOR {
-                if validation.is_strict() {
-                    malformed!(
-                        "FAT sector {} is not marked as such in the FAT",
-                        fat_sector
-                    );
-                } else {
-                    self.fat[fat_sector_index] = consts::FAT_SECTOR;
-                }
-            }
+            *sector = consts::FAT_SECTOR;
         }
         let mut pointees = FnvHashSet::default();
         for (from_sector, &to_sector) in self.fat.iter().enumerate() {
