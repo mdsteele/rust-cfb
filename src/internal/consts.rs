@@ -33,22 +33,22 @@ pub const ROOT_STREAM_ID: u32 = 0;
 pub const MAX_REGULAR_STREAM_ID: u32 = 0xfffffffa;
 pub const NO_STREAM: u32 = 0xffffffff;
 
-pub(crate) fn prettify(sectors: &[u32]) -> Vec<Type> {
+pub(crate) fn prettify(sectors: &[u32]) -> Vec<Sector> {
     let mut fmt = Vec::new();
     for s in sectors.iter() {
         match *s {
-            END_OF_CHAIN => fmt.push(Type::End),
-            FREE_SECTOR => fmt.push(Type::Free),
-            DIFAT_SECTOR => fmt.push(Type::Difat),
-            FAT_SECTOR => fmt.push(Type::Fat),
+            END_OF_CHAIN => fmt.push(Sector::End),
+            FREE_SECTOR => fmt.push(Sector::Free),
+            DIFAT_SECTOR => fmt.push(Sector::Difat),
+            FAT_SECTOR => fmt.push(Sector::Fat),
             i => {
-                if let Some(Type::Range(_, end)) = fmt.last_mut() {
+                if let Some(Sector::Range(_, end)) = fmt.last_mut() {
                     if *end + 1 == i {
                         *end += 1;
                         continue;
                     }
                 }
-                fmt.push(Type::Range(i, i));
+                fmt.push(Sector::Range(i, i));
             }
         };
     }
@@ -56,7 +56,7 @@ pub(crate) fn prettify(sectors: &[u32]) -> Vec<Type> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) enum Type {
+pub(crate) enum Sector {
     Free,
     End,
     Fat,
@@ -64,15 +64,17 @@ pub(crate) enum Type {
     Range(u32, u32),
 }
 
-impl std::fmt::Debug for Type {
+impl std::fmt::Debug for Sector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Type::Range(start, end) if *start == *end => write!(f, "{start}"),
-            Type::Range(start, end) => write!(f, "{start}-{end}"),
-            Type::Free => f.write_str("FREE"),
-            Type::End => f.write_str("EOC"),
-            Type::Fat => f.write_str("FAT"),
-            Type::Difat => f.write_str("DIFAT"),
+            Sector::Range(start, end) if *start == *end => {
+                write!(f, "{start}")
+            }
+            Sector::Range(start, end) => write!(f, "{start}-{end}"),
+            Sector::Free => f.write_str("FREE"),
+            Sector::End => f.write_str("EOC"),
+            Sector::Fat => f.write_str("FAT"),
+            Sector::Difat => f.write_str("DIFAT"),
         }
     }
 }
