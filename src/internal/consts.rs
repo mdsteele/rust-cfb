@@ -64,6 +64,18 @@ pub(crate) enum Sector {
     Range(u32, u32),
 }
 
+impl Sector {
+    pub(crate) fn new(i: u32) -> Sector {
+        match i {
+            END_OF_CHAIN => Sector::End,
+            FREE_SECTOR => Sector::Free,
+            DIFAT_SECTOR => Sector::Difat,
+            FAT_SECTOR => Sector::Fat,
+            i => Sector::Range(i, i),
+        }
+    }
+}
+
 impl std::fmt::Debug for Sector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

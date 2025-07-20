@@ -19,22 +19,9 @@ pub struct Header {
     pub initial_difat_entries: [u32; consts::NUM_DIFAT_ENTRIES_IN_HEADER],
 }
 
-struct Sector(u32);
-
-impl fmt::Debug for Sector {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            consts::FREE_SECTOR => f.write_str("FREE"),
-            consts::END_OF_CHAIN => f.write_str("EOC"),
-            consts::DIFAT_SECTOR => f.write_str("DIFAT"),
-            consts::FAT_SECTOR => f.write_str("FAT"),
-            i => write!(f, "{i}"),
-        }
-    }
-}
-
 impl fmt::Debug for Header {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use consts::Sector;
         let start_nonfree = self
             .initial_difat_entries
             .iter()
@@ -45,10 +32,13 @@ impl fmt::Debug for Header {
             .field("version", &self.version)
             .field("num_dir_sectors", &self.num_dir_sectors)
             .field("num_fat_sectors", &self.num_fat_sectors)
-            .field("first_dir_sector", &Sector(self.first_dir_sector))
-            .field("first_minifat_sector", &Sector(self.first_minifat_sector))
+            .field("first_dir_sector", &Sector::new(self.first_dir_sector))
+            .field(
+                "first_minifat_sector",
+                &Sector::new(self.first_minifat_sector),
+            )
             .field("num_minifat_sectors", &self.num_minifat_sectors)
-            .field("first_difat_sector", &Sector(self.first_difat_sector))
+            .field("first_difat_sector", &Sector::new(self.first_difat_sector))
             .field("num_difat_sectors", &self.num_difat_sectors)
             .field(
                 "initial_difat_entries",
