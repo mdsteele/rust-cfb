@@ -324,6 +324,7 @@ mod tests {
             Header::read_from(&mut data.as_slice(), Validation::Permissive)
                 .unwrap();
         assert_eq!(header.num_dir_sectors, 0);
+        assert_eq!(format!("{header:?}"), "Header { version: V3, num_dir_sectors: 0, num_fat_sectors: 1, first_dir_sector: 1, first_minifat_sector: 2, num_minifat_sectors: 3, first_difat_sector: EOC, num_difat_sectors: 0, initial_difat_entries: [0] }");
     }
 
     #[test]
