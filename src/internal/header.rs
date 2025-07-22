@@ -22,12 +22,12 @@ pub struct Header {
 impl fmt::Debug for Header {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use consts::Sector;
-        let start_nonfree = self
-            .initial_difat_entries
-            .iter()
-            .rev()
-            .skip_while(|elt| **elt == consts::FREE_SECTOR)
-            .count();
+        let mut stripped_of_free = &self.initial_difat_entries[..];
+        while let Some(stripped) =
+            stripped_of_free.strip_suffix(&[consts::FREE_SECTOR])
+        {
+            stripped_of_free = stripped;
+        }
         f.debug_struct("Header")
             .field("version", &self.version)
             .field("num_dir_sectors", &self.num_dir_sectors)
@@ -42,9 +42,7 @@ impl fmt::Debug for Header {
             .field("num_difat_sectors", &self.num_difat_sectors)
             .field(
                 "initial_difat_entries",
-                &consts::prettify(
-                    &self.initial_difat_entries[..start_nonfree],
-                ),
+                &consts::prettify(stripped_of_free),
             )
             .finish()
     }
