@@ -56,7 +56,10 @@ impl Header {
         let mut magic = [0u8; 8];
         reader.read_exact(&mut magic)?;
         if magic != consts::MAGIC_NUMBER {
-            invalid_data!("Invalid CFB file (wrong magic number)");
+            invalid_data!(
+                "Invalid CFB file (wrong magic number): {:x?}",
+                magic
+            );
         }
         reader.read_exact(&mut [0u8; 16])?; // reserved field
 
@@ -256,7 +259,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Invalid CFB file (wrong magic number)")]
+    #[should_panic(
+        expected = "Invalid CFB file (wrong magic number): [d0, cf, ff, e0, a1, b1, 1a, e1]"
+    )]
     fn invalid_magic_number() {
         let mut data = make_valid_header_data();
         data[2] = 255;
