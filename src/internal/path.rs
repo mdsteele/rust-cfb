@@ -1,12 +1,26 @@
-use icu_casemap::CaseMapper;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use once_cell::sync::Lazy;
+
 // ========================================================================= //
 
+pub struct CaseMapper(HashMap<char, char>);
+
+impl CaseMapper {
+    fn new() -> CaseMapper {
+        // extracted exceptional uppercase characters from icu_casemap library
+        CaseMapper(include!("uppercase.txt").iter().copied().collect())
+    }
+    fn simple_uppercase(&self, c: char) -> char {
+        self.0.get(&c).copied().or(c.to_uppercase().next()).unwrap_or_default()
+    }
+}
+
 const MAX_NAME_LEN: usize = 31;
-const CASE_MAPPER: CaseMapper = CaseMapper::new();
+static CASE_MAPPER: Lazy<CaseMapper> = Lazy::new(CaseMapper::new);
 
 // ========================================================================= //
 
@@ -18,6 +32,7 @@ fn cfb_uppercase_char(c: char) -> char {
     // in the table from Appendix A, <3> Section 2.6.4
 
     // Base case, just do a simple uppercase
+    // equivalent to icu_casemap::CaseMapper::new().simple_uppercase(c)
     CASE_MAPPER.simple_uppercase(c)
 }
 
@@ -202,6 +217,44 @@ mod tests {
         let path = Path::new("foo/bar/../baz");
         let names = name_chain_from_path(path).unwrap();
         assert_eq!(path_from_name_chain(&names), PathBuf::from("/foo/baz"));
+    }
+
+    // we use this to output the exceptional unicode uppercase mappings from the icu_casemap crate
+    struct AsArray(Vec<(char, char)>);
+
+    impl std::fmt::Display for AsArray {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("[")?;
+            let s = self
+                .0
+                .iter()
+                .map(|(input, output)| format!("('{input}', '{output}')"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            f.write_str(&s)?;
+            f.write_str("]")
+        }
+    }
+    #[ignore = "uncomment icu_casemap line to extract exceptional uppercase chars from icu_casemap crate"]
+    #[test]
+    fn uppercase_generation() {
+        // let case_mapper = icu_casemap::CaseMapper::new();
+        let case_mapper = &super::CASE_MAPPER;
+        let mut nonequal = Vec::new();
+        for i in 0..u32::MAX {
+            let Some(c) = char::from_u32(i) else {
+                continue;
+            };
+            let u1 = case_mapper.simple_uppercase(c);
+            let mut uppers = c.to_uppercase();
+            let u2 = uppers.next().unwrap();
+            if u1 != u2 || uppers.next().is_some() {
+                nonequal.push((c, u1));
+            }
+        }
+        let array = AsArray(nonequal);
+        std::fs::write("src/internal/uppercase.txt", array.to_string())
+            .unwrap();
     }
 }
 
