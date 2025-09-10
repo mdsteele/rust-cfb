@@ -235,11 +235,12 @@ mod tests {
             f.write_str("]")
         }
     }
-    #[ignore = "uncomment icu_casemap line to extract exceptional uppercase chars from icu_casemap crate"]
+    #[ignore = "add icu_casemap to dependencies to regenerate exceptional uppercase chars"]
     #[test]
     fn uppercase_generation() {
-        // let case_mapper = icu_casemap::CaseMapper::new();
         let case_mapper = &super::CASE_MAPPER;
+        // uncomment line to regenerate exceptions
+        // let case_mapper = icu_casemap::CaseMapper::new();
         let mut nonequal = Vec::new();
         for i in 0..u32::MAX {
             let Some(c) = char::from_u32(i) else {
