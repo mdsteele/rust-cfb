@@ -219,25 +219,27 @@ mod tests {
         assert_eq!(path_from_name_chain(&names), PathBuf::from("/foo/baz"));
     }
 
-    // we use this to output the exceptional unicode uppercase mappings from the icu_casemap crate
-    struct AsArray(Vec<(char, char)>);
-
-    impl std::fmt::Display for AsArray {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("[")?;
-            let s = self
-                .0
-                .iter()
-                .map(|(input, output)| format!("('{input}', '{output}')"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            f.write_str(&s)?;
-            f.write_str("]")
-        }
-    }
     #[ignore = "add icu_casemap to dependencies to regenerate exceptional uppercase chars"]
     #[test]
     fn uppercase_generation() {
+        use std::fmt;
+
+        struct AsArray(Vec<(char, char)>);
+
+        impl fmt::Display for AsArray {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("[")?;
+                let s = self
+                    .0
+                    .iter()
+                    .map(|(input, output)| format!("('{input}', '{output}')"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                f.write_str(&s)?;
+                f.write_str("]")
+            }
+        }
+
         let case_mapper = &super::CASE_MAPPER;
         // uncomment line to regenerate exceptions
         // let case_mapper = icu_casemap::CaseMapper::new();
