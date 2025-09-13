@@ -2,8 +2,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-
-use once_cell::sync::Lazy;
+use std::sync::OnceLock;
 
 // ========================================================================= //
 
@@ -20,7 +19,6 @@ impl CaseMapper {
 }
 
 const MAX_NAME_LEN: usize = 31;
-static CASE_MAPPER: Lazy<CaseMapper> = Lazy::new(CaseMapper::new);
 
 // ========================================================================= //
 
@@ -28,12 +26,15 @@ static CASE_MAPPER: Lazy<CaseMapper> = Lazy::new(CaseMapper::new);
 /// using simple capitalization and the ability to add exceptions.
 /// Used when two directory entry names need to be compared.
 fn cfb_uppercase_char(c: char) -> char {
+    static CASE_MAPPER: OnceLock<CaseMapper> = OnceLock::new();
+    let case_mapper = CASE_MAPPER.get_or_init(CaseMapper::new);
+
     // TODO: Edge cases can be added that appear
     // in the table from Appendix A, <3> Section 2.6.4
 
     // Base case, just do a simple uppercase
     // equivalent to icu_casemap::CaseMapper::new().simple_uppercase(c)
-    CASE_MAPPER.simple_uppercase(c)
+    case_mapper.simple_uppercase(c)
 }
 
 /// Compares two directory entry names according to CFB ordering, which is
@@ -240,7 +241,7 @@ mod tests {
             }
         }
 
-        let case_mapper = &super::CASE_MAPPER;
+        let case_mapper = super::CaseMapper::new();
         // uncomment line to regenerate exceptions
         // let case_mapper = icu_casemap::CaseMapper::new();
         let mut nonequal = Vec::new();
