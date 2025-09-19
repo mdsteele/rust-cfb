@@ -1,12 +1,24 @@
-use icu_casemap::CaseMapper;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 // ========================================================================= //
 
+pub struct CaseMapper(HashMap<char, char>);
+
+impl CaseMapper {
+    fn new() -> CaseMapper {
+        // extracted exceptional uppercase characters from icu_casemap library
+        CaseMapper(include!("uppercase.txt").iter().copied().collect())
+    }
+    fn simple_uppercase(&self, c: char) -> char {
+        self.0.get(&c).copied().or(c.to_uppercase().next()).unwrap_or_default()
+    }
+}
+
 const MAX_NAME_LEN: usize = 31;
-const CASE_MAPPER: CaseMapper = CaseMapper::new();
 
 // ========================================================================= //
 
@@ -14,11 +26,15 @@ const CASE_MAPPER: CaseMapper = CaseMapper::new();
 /// using simple capitalization and the ability to add exceptions.
 /// Used when two directory entry names need to be compared.
 fn cfb_uppercase_char(c: char) -> char {
+    static CASE_MAPPER: OnceLock<CaseMapper> = OnceLock::new();
+    let case_mapper = CASE_MAPPER.get_or_init(CaseMapper::new);
+
     // TODO: Edge cases can be added that appear
     // in the table from Appendix A, <3> Section 2.6.4
 
     // Base case, just do a simple uppercase
-    CASE_MAPPER.simple_uppercase(c)
+    // equivalent to icu_casemap::CaseMapper::new().simple_uppercase(c)
+    case_mapper.simple_uppercase(c)
 }
 
 /// Compares two directory entry names according to CFB ordering, which is
@@ -202,6 +218,47 @@ mod tests {
         let path = Path::new("foo/bar/../baz");
         let names = name_chain_from_path(path).unwrap();
         assert_eq!(path_from_name_chain(&names), PathBuf::from("/foo/baz"));
+    }
+
+    #[ignore = "add icu_casemap to dependencies to regenerate exceptional uppercase chars"]
+    #[test]
+    fn uppercase_generation() {
+        use std::fmt;
+
+        struct AsArray(Vec<(char, char)>);
+
+        impl fmt::Display for AsArray {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("[")?;
+                let s = self
+                    .0
+                    .iter()
+                    .map(|(input, output)| format!("('{input}', '{output}')"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                f.write_str(&s)?;
+                f.write_str("]")
+            }
+        }
+
+        let case_mapper = super::CaseMapper::new();
+        // uncomment line to regenerate exceptions
+        // let case_mapper = icu_casemap::CaseMapper::new();
+        let mut nonequal = Vec::new();
+        for i in 0..u32::MAX {
+            let Some(c) = char::from_u32(i) else {
+                continue;
+            };
+            let u1 = case_mapper.simple_uppercase(c);
+            let mut uppers = c.to_uppercase();
+            let u2 = uppers.next().unwrap();
+            if u1 != u2 || uppers.next().is_some() {
+                nonequal.push((c, u1));
+            }
+        }
+        let array = AsArray(nonequal);
+        std::fs::write("src/internal/uppercase.txt", array.to_string())
+            .unwrap();
     }
 }
 

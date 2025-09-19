@@ -8,10 +8,10 @@ keywords = ["cfb", "storage", "structured"]
 license = "MIT"
 readme = "README.md"
 edition = "2018"
+rust-version = "1.74"
 
 [dependencies]
 fnv = "1.0"
-icu_casemap = "1.5"
 uuid = "1"
 
 [dev-dependencies]
