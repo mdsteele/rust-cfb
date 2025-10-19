@@ -76,8 +76,10 @@ fn partial_final_sector() {
     let mut cfb_data = comp.into_inner().into_inner();
     assert_eq!(cfb_data.len(), 6 * 4096);
     let mut expected_final_sector = vec![b'\0'; 4096];
-    for i in 0..(stream_data.len() % 4096) {
-        expected_final_sector[i] = b'x';
+    for sector in
+        expected_final_sector[..(stream_data.len() % 4096)].iter_mut()
+    {
+        *sector = b'x';
     }
     assert_eq!(&cfb_data[(5 * 4096)..], expected_final_sector.as_slice());
     // Now, truncate the raw CFB data so that the final sector only
