@@ -506,10 +506,7 @@ impl<F: Read + Seek> CompoundFile<F> {
                 }
             }
         }
-        // Strip FREE_SECTOR entries from the end of the FAT.  Unlike the zero
-        // case above, we can remove these even if it makes the number of FAT
-        // entries less than the number of sectors in the file; the allocator
-        // will implicitly treat these extra sectors as free.
+        // Strip FREE_SECTOR entries from the end of the FAT.
         while fat.len() > num_sectors as usize
             && fat.last() == Some(&consts::FREE_SECTOR)
         {
