@@ -103,7 +103,7 @@ impl std::fmt::Debug for Sector {
             Sector::Range(start, end) if *start == *end => {
                 write!(f, "{start}")
             }
-            Sector::Range(start, end) => write!(f, "{start}-{end}"),
+            Sector::Range(start, end) => write!(f, "{start}..={end}"),
             Sector::Free(1) => f.write_str("FREE"),
             Sector::Free(n) => write!(f, "{n} FREE"),
             Sector::End => f.write_str("EOC"),
@@ -141,7 +141,10 @@ mod tests {
             FREE_SECTOR,
         ];
         let s = prettify(&sectors);
-        assert_eq!("[EOC, 0-7, EOC, 23, 25, 18, 2 FREE, 27, FREE]", format!("{s:?}"));
+        assert_eq!(
+            "[EOC, 0..=7, EOC, 23, 25, 18, 2 FREE, 27, FREE]",
+            format!("{s:?}")
+        );
     }
 }
 
