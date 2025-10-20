@@ -491,22 +491,27 @@ impl<F: Read + Seek> CompoundFile<F> {
         // meaningful FAT entry (referring to sector 0), we only want to strip
         // zeros from the end of the FAT if they are beyond the number of
         // sectors in the file.
+        // Files have been seen with erroneous other types of sectors beyond
+        // EOF, so strip those as well.
         if !validation.is_strict() {
-            while fat.len() > num_sectors as usize && fat.last() == Some(&0) {
-                fat.pop();
+            while fat.len() > num_sectors as usize {
+                if fat.last() == Some(&0)
+                    || fat.last() == Some(&consts::DIFAT_SECTOR)
+                    || fat.last() == Some(&consts::FAT_SECTOR)
+                    || fat.last() == Some(&consts::FREE_SECTOR)
+                {
+                    fat.pop();
+                } else {
+                    break;
+                }
             }
         }
         // Strip FREE_SECTOR entries from the end of the FAT.  Unlike the zero
         // case above, we can remove these even if it makes the number of FAT
         // entries less than the number of sectors in the file; the allocator
         // will implicitly treat these extra sectors as free.
-        while fat.len() > num_sectors as usize && fat.last() == Some(&consts::FREE_SECTOR)
-            // strip DIFAT_SECTOR from the end
-            || !validation.is_strict()
-                && fat.len() > num_sectors as usize && fat.last() == Some(&consts::DIFAT_SECTOR)
-            // strip FAT_SECTOR from the end
-            || !validation.is_strict()
-                && fat.len() > num_sectors as usize && fat.last() == Some(&consts::FAT_SECTOR)
+        while fat.len() > num_sectors as usize
+            && fat.last() == Some(&consts::FREE_SECTOR)
         {
             fat.pop();
         }
