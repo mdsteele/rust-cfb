@@ -504,6 +504,9 @@ impl<F: Read + Seek> CompoundFile<F> {
             // strip DIFAT_SECTOR from the end
             || !validation.is_strict()
                 && fat.len() > num_sectors as usize && fat.last() == Some(&consts::DIFAT_SECTOR)
+            // strip FAT_SECTOR from the end
+            || !validation.is_strict()
+                && fat.len() > num_sectors as usize && fat.last() == Some(&consts::FAT_SECTOR)
         {
             fat.pop();
         }
