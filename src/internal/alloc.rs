@@ -24,6 +24,7 @@ pub struct Allocator<F> {
     difat_sector_ids: Vec<u32>,
     difat: Vec<u32>,
     fat: Vec<u32>,
+    free_sectors: Vec<u32>,
 }
 
 impl<F> Allocator<F> {
@@ -34,7 +35,13 @@ impl<F> Allocator<F> {
         fat: Vec<u32>,
         validation: Validation,
     ) -> io::Result<Allocator<F>> {
-        let mut alloc = Allocator { sectors, difat_sector_ids, difat, fat };
+        let mut alloc = Allocator {
+            sectors,
+            difat_sector_ids,
+            difat,
+            fat,
+            free_sectors: Vec::new(),
+        };
         alloc.validate(validation)?;
         Ok(alloc)
     }
@@ -143,6 +150,14 @@ impl<F> Allocator<F> {
                 malformed!("0x{:08X} is not a valid FAT entry", to_sector);
             }
         }
+
+        self.free_sectors.clear();
+        for (idx, &entry) in self.fat.iter().enumerate() {
+            if entry == consts::FREE_SECTOR {
+                self.free_sectors.push(idx as u32);
+            }
+        }
+
         Ok(())
     }
 }
@@ -221,15 +236,13 @@ impl<F: Write + Seek> Allocator<F> {
     /// returns the new sector number.
     fn allocate_sector(&mut self, init: SectorInit) -> io::Result<u32> {
         // If there's an existing free sector, use that.
-        for sector_id in 0..self.fat.len() {
-            if self.fat[sector_id] == consts::FREE_SECTOR {
-                let sector_id = sector_id as u32;
-                self.set_fat(sector_id, consts::END_OF_CHAIN)?;
-                self.sectors.init_sector(sector_id, init)?;
-                return Ok(sector_id);
-            }
+        if let Some(free_sector_idx) = self.free_sectors.pop() {
+            let sector_id = free_sector_idx;
+            self.set_fat(sector_id, consts::END_OF_CHAIN)?;
+            self.sectors.init_sector(sector_id, init)?;
+            return Ok(sector_id);
         }
-        // Otherwise, we need a new sector; if there's not room in the FAT to
+        // Otherwise, we need a new sector; if there's no room in the FAT to
         // add it, then first we need to allocate a new FAT sector.
         let fat_entries_per_sector =
             self.sectors.sector_len() / size_of::<u32>();
@@ -330,6 +343,7 @@ impl<F: Write + Seek> Allocator<F> {
     /// Deallocates the specified sector.
     fn free_sector(&mut self, sector_id: u32) -> io::Result<()> {
         self.set_fat(sector_id, consts::FREE_SECTOR)?;
+        self.free_sectors.push(sector_id);
         // TODO: Truncate FAT if last FAT sector is now all free.
         Ok(())
     }
