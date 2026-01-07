@@ -3,8 +3,10 @@ use crate::internal::{
 };
 use crate::WriteLeNumber;
 use fnv::FnvHashSet;
+use std::collections::HashMap;
 use std::io::{self, Seek, Write};
 use std::mem::size_of;
+use std::sync::Arc;
 
 //===========================================================================//
 
@@ -25,6 +27,10 @@ pub struct Allocator<F> {
     difat: Vec<u32>,
     fat: Vec<u32>,
     free_sectors: Vec<u32>,
+    /// Cache of fully-resolved sector id chains keyed by start sector.
+    ///
+    /// Stored as `Arc<[u32]>` to allow reuse without cloning on every open.
+    chain_cache: HashMap<u32, Arc<[u32]>>,
 }
 
 impl<F> Allocator<F> {
@@ -41,6 +47,7 @@ impl<F> Allocator<F> {
             difat,
             fat,
             free_sectors: Vec::new(),
+            chain_cache: HashMap::new(),
         };
         alloc.validate(validation)?;
         Ok(alloc)
@@ -160,6 +167,55 @@ impl<F> Allocator<F> {
 
         Ok(())
     }
+
+    pub(crate) fn cached_chain_sector_ids(
+        &self,
+        start_sector_id: u32,
+    ) -> Option<Arc<[u32]>> {
+        self.chain_cache.get(&start_sector_id).cloned()
+    }
+
+    pub(crate) fn put_cached_chain_sector_ids(
+        &mut self,
+        start_sector_id: u32,
+        sector_ids: &[u32],
+    ) {
+        // Only cache real chains.
+        if start_sector_id != consts::END_OF_CHAIN {
+            self.chain_cache.insert(start_sector_id, Arc::from(sector_ids));
+        }
+    }
+
+    fn invalidate_chain_cache_for_sector(&mut self, sector_id: u32) {
+        // Conservative: remove any cached chain that contains `sector_id`.
+        // This is O(num_cached_chains), but the cache is expected to be small.
+        self.chain_cache.retain(|_, ids| !ids.as_ref().contains(&sector_id));
+    }
+
+    /// Returns the raw FAT entry for `sector_id` with range checking.
+    ///
+    /// This is a small internal helper for hot paths like `Chain::new` that
+    /// want to implement their own traversal without reaching into private
+    /// fields or using unsafe.
+    #[inline]
+    pub(crate) fn fat_entry(&self, sector_id: u32) -> io::Result<u32> {
+        let idx = sector_id as usize;
+        self.fat.get(idx).copied().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Found reference to sector {}, but FAT has only {} entries",
+                    idx,
+                    self.fat.len()
+                ),
+            )
+        })
+    }
+
+    #[inline]
+    pub(crate) fn fat_len(&self) -> usize {
+        self.fat.len()
+    }
 }
 
 impl<F: Seek> Allocator<F> {
@@ -207,7 +263,10 @@ impl<F: Write + Seek> Allocator<F> {
     /// Allocates a new chain with one sector, and returns the starting sector
     /// number.
     pub fn begin_chain(&mut self, init: SectorInit) -> io::Result<u32> {
-        self.allocate_sector(init)
+        let start = self.allocate_sector(init)?;
+        // Seed a cache entry for the new chain.
+        self.chain_cache.insert(start, Arc::from([start]));
+        Ok(start)
     }
 
     /// Given the starting sector (or any internal sector) of a chain, extends
@@ -228,7 +287,21 @@ impl<F: Write + Seek> Allocator<F> {
             last_sector_id = next;
         }
         let new_sector_id = self.allocate_sector(init)?;
+
+        // Link it into the chain.
         self.set_fat(last_sector_id, new_sector_id)?;
+
+        // Update cache for this chain, if we have it.
+        if let Some(old) = self.chain_cache.get(&start_sector_id).cloned() {
+            let mut v: Vec<u32> = old.as_ref().to_vec();
+            v.push(new_sector_id);
+            self.chain_cache.insert(start_sector_id, Arc::from(v));
+        } else {
+            // If we don't have this chain cached, fall back to invalidation of
+            // any cached chains that might have included the modified sector.
+            self.invalidate_chain_cache_for_sector(last_sector_id);
+        }
+
         Ok(new_sector_id)
     }
 
@@ -351,6 +424,11 @@ impl<F: Write + Seek> Allocator<F> {
     /// Sets `self.fat[index] = value`, and also writes that change to the
     /// underlying file.  The `index` must be <= `self.fat.len()`.
     fn set_fat(&mut self, index: u32, value: u32) -> io::Result<()> {
+        // FAT updates can change chain topology. Instead of always dropping
+        // the entire chain cache, invalidate only entries impacted by this
+        // particular FAT cell.
+        self.invalidate_chain_cache_for_sector(index);
+
         let index = index as usize;
         debug_assert!(index <= self.fat.len());
         let fat_entries_per_sector =

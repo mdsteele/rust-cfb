@@ -107,6 +107,7 @@ fn create_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
 /// [`Cursor`](https://doc.rust-lang.org/std/io/struct.Cursor.html)).
 pub struct CompoundFile<F> {
     minialloc: Arc<RwLock<MiniAllocator<F>>>,
+    stream_buffer_size: usize,
 }
 
 impl<F> CompoundFile<F> {
@@ -298,6 +299,22 @@ impl<F> CompoundFile<F> {
             Err(_) => unreachable!(),
         }
     }
+
+    /// Sets the internal per-stream read/write buffer size (in bytes) used by
+    /// streams opened or created from this `CompoundFile`.
+    ///
+    /// This can significantly affect performance for in-memory workloads:
+    /// larger buffers mean fewer flushes and fewer sector seeks.
+    ///
+    /// The default is 8192 bytes.
+    pub fn set_stream_buffer_size(&mut self, bytes: usize) {
+        self.stream_buffer_size = bytes.max(1);
+    }
+
+    /// Returns the current per-stream buffer size (in bytes).
+    pub fn stream_buffer_size(&self) -> usize {
+        self.stream_buffer_size
+    }
 }
 
 impl<F: Seek> CompoundFile<F> {
@@ -320,7 +337,7 @@ impl<F: Seek> CompoundFile<F> {
         if self.minialloc().dir_entry(stream_id).obj_type != ObjType::Stream {
             invalid_input!("Not a stream: {:?}", path);
         }
-        Ok(Stream::new(&self.minialloc, stream_id))
+        Ok(Stream::new(&self.minialloc, stream_id, self.stream_buffer_size))
     }
 }
 
@@ -609,7 +626,10 @@ impl<F: Read + Seek> CompoundFile<F> {
             validation,
         )?;
 
-        Ok(CompoundFile { minialloc: Arc::new(RwLock::new(minialloc)) })
+        Ok(CompoundFile {
+            minialloc: Arc::new(RwLock::new(minialloc)),
+            stream_buffer_size: Stream::<F>::default_buffer_size(),
+        })
     }
 }
 
@@ -687,7 +707,10 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             consts::END_OF_CHAIN,
             Validation::Strict,
         )?;
-        Ok(CompoundFile { minialloc: Arc::new(RwLock::new(minialloc)) })
+        Ok(CompoundFile {
+            minialloc: Arc::new(RwLock::new(minialloc)),
+            stream_buffer_size: Stream::<F>::default_buffer_size(),
+        })
     }
 
     /// Creates a new, empty storage object (i.e. "directory") at the provided
@@ -871,10 +894,57 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         self.create_stream_with_path(path.as_ref(), false)
     }
 
+    /// Creates and returns a new, empty stream object at the provided path,
+    /// using a custom per-stream buffer size.
+    ///
+    /// This is equivalent to `create_stream()`, except the returned `Stream`
+    /// uses `buffer_size` bytes for its internal read/write buffer.
+    pub fn create_stream_with_buffer_size<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        buffer_size: usize,
+    ) -> io::Result<Stream<F>> {
+        self.create_stream_with_path_and_buffer_size(
+            path.as_ref(),
+            true,
+            buffer_size,
+        )
+    }
+
+    /// Creates and returns a new, empty stream object at the provided path,
+    /// using a custom per-stream buffer size.
+    ///
+    /// This is equivalent to `create_new_stream()`, except the returned
+    /// `Stream` uses `buffer_size` bytes for its internal read/write buffer.
+    pub fn create_new_stream_with_buffer_size<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        buffer_size: usize,
+    ) -> io::Result<Stream<F>> {
+        self.create_stream_with_path_and_buffer_size(
+            path.as_ref(),
+            false,
+            buffer_size,
+        )
+    }
+
     fn create_stream_with_path(
         &mut self,
         path: &Path,
         overwrite: bool,
+    ) -> io::Result<Stream<F>> {
+        self.create_stream_with_path_and_buffer_size(
+            path,
+            overwrite,
+            self.stream_buffer_size,
+        )
+    }
+
+    fn create_stream_with_path_and_buffer_size(
+        &mut self,
+        path: &Path,
+        overwrite: bool,
+        buffer_size: usize,
     ) -> io::Result<Stream<F>> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
@@ -893,7 +963,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                     internal::path::path_from_name_chain(&names)
                 );
             } else {
-                let mut stream = Stream::new(&self.minialloc, stream_id);
+                let mut stream =
+                    Stream::new(&self.minialloc, stream_id, buffer_size);
                 stream.set_len(0)?;
                 return Ok(stream);
             }
@@ -911,7 +982,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             name,
             ObjType::Stream,
         )?;
-        Ok(Stream::new(&self.minialloc, new_stream_id))
+        Ok(Stream::new(&self.minialloc, new_stream_id, buffer_size))
     }
 
     /// Removes the stream object at the provided path.
@@ -1335,6 +1406,28 @@ mod tests {
         let mut cfb = CompoundFile::open(Cursor::new(cfb)).unwrap();
         let mut f = cfb.create_stream("stream").unwrap();
         f.write_all(&vec![0; 1024 * 1024]).unwrap();
+    }
+
+    #[test]
+    fn configurable_stream_buffer_size() {
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        let mut cfb =
+            CompoundFile::create(std::io::Cursor::new(&mut buf)).unwrap();
+
+        // Create a stream with a larger buffer to reduce flush frequency.
+        let mut s =
+            cfb.create_stream_with_buffer_size("/big", 256 * 1024).unwrap();
+        s.write_all(&vec![0u8; 1024 * 1024]).unwrap(); // 1 MiB
+        drop(s);
+
+        cfb.flush().unwrap();
+
+        // Re-open and validate length.
+        let mut cfb = CompoundFile::open(std::io::Cursor::new(buf)).unwrap();
+        let s = cfb.open_stream("/big").unwrap();
+        assert_eq!(s.len(), 1024 * 1024);
     }
 }
 

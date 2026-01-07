@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock, Weak};
 
 //===========================================================================//
 
-const BUFFER_SIZE: usize = 8192;
+const DEFAULT_BUFFER_SIZE: usize = 8192;
 
 //===========================================================================//
 
@@ -13,30 +13,126 @@ pub struct Stream<F> {
     minialloc: Weak<RwLock<MiniAllocator<F>>>,
     stream_id: u32,
     total_len: u64,
-    buffer: Box<[u8; BUFFER_SIZE]>,
+    buffer: Vec<u8>,
     buf_pos: usize,
     buf_cap: usize,
     buf_offset_from_start: u64,
     flusher: Option<Box<dyn Flusher<F>>>,
+    /// Cached cursor for sequential writes into an existing regular chain.
+    cached_regular_cursor: Option<RegularChainCursor>,
+}
+
+struct RegularChainCursor {
+    start_sector: u32,
+    sector_ids: Arc<[u32]>,
+    offset: u64,
+}
+
+impl RegularChainCursor {
+    fn new(start_sector: u32, sector_ids: Arc<[u32]>, offset: u64) -> Self {
+        Self { start_sector, sector_ids, offset }
+    }
+
+    fn can_write_at(&self, start_sector: u32, offset: u64) -> bool {
+        self.start_sector == start_sector && self.offset == offset
+    }
+
+    fn ensure_sector_available<F: Read + Write + Seek>(
+        &mut self,
+        minialloc: &mut MiniAllocator<F>,
+        sector_index: usize,
+    ) -> io::Result<()> {
+        if sector_index < self.sector_ids.len() {
+            return Ok(());
+        }
+
+        // We need to grow the chain by at least one sector.
+        if self.start_sector == consts::END_OF_CHAIN {
+            // Shouldn't happen for regular-chain cursor use, but handle
+            // defensively.
+            self.start_sector = minialloc.begin_chain(SectorInit::Zero)?;
+        } else {
+            minialloc.extend_chain(self.start_sector, SectorInit::Zero)?;
+        }
+
+        // With the smarter allocator cache, a subsequent lookup should
+        // generally succeed without rebuilding.
+        if let Some(ids) = minialloc.cached_chain_sector_ids(self.start_sector)
+        {
+            self.sector_ids = ids;
+        } else {
+            // Extremely conservative fallback.
+            let chain =
+                minialloc.open_chain(self.start_sector, SectorInit::Zero)?;
+            self.sector_ids = std::sync::Arc::from(chain.sector_ids());
+        }
+
+        if sector_index >= self.sector_ids.len() {
+            invalid_data!("failed to extend chain");
+        }
+        Ok(())
+    }
+
+    fn write_all<F: Read + Write + Seek>(
+        &mut self,
+        minialloc: &mut MiniAllocator<F>,
+        buf: &[u8],
+    ) -> io::Result<()> {
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let sector_len = minialloc.sector_len() as u64;
+        let mut remaining = buf;
+        while !remaining.is_empty() {
+            let sector_index = (self.offset / sector_len) as usize;
+            self.ensure_sector_available(minialloc, sector_index)?;
+
+            let offset_within_sector = self.offset % sector_len;
+            let sector_id = self.sector_ids[sector_index];
+            let mut sector = minialloc
+                .seek_within_sector(sector_id, offset_within_sector)?;
+            let n = sector.write(remaining)?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write to sector",
+                ));
+            }
+            self.offset += n as u64;
+            remaining = &remaining[n..];
+        }
+        Ok(())
+    }
 }
 
 impl<F> Stream<F> {
     pub(crate) fn new(
         minialloc: &Arc<RwLock<MiniAllocator<F>>>,
         stream_id: u32,
+        buffer_size: usize,
     ) -> Stream<F> {
         let total_len =
             minialloc.read().unwrap().dir_entry(stream_id).stream_len;
+        let buffer_size = buffer_size.max(1);
         Stream {
             minialloc: Arc::downgrade(minialloc),
             stream_id,
             total_len,
-            buffer: Box::new([0; BUFFER_SIZE]),
+            buffer: vec![0; buffer_size],
             buf_pos: 0,
             buf_cap: 0,
             buf_offset_from_start: 0,
             flusher: None,
+            cached_regular_cursor: None,
         }
+    }
+
+    pub(crate) fn default_buffer_size() -> usize {
+        DEFAULT_BUFFER_SIZE
+    }
+
+    fn invalidate_cached_chain(&mut self) {
+        self.cached_regular_cursor = None;
     }
 
     fn minialloc(&self) -> io::Result<Arc<RwLock<MiniAllocator<F>>>> {
@@ -92,6 +188,7 @@ impl<F: Read + Write + Seek> Stream<F> {
             self.buf_offset_from_start = new_position;
             self.buf_pos = 0;
             self.buf_cap = 0;
+            self.invalidate_cached_chain();
         }
         Ok(())
     }
@@ -205,6 +302,7 @@ impl<F: Read + Seek> Seek for Stream<F> {
             self.buf_offset_from_start = new_pos;
             self.buf_pos = 0;
             self.buf_cap = 0;
+            self.invalidate_cached_chain();
         } else {
             self.buf_pos = (new_pos - self.buf_offset_from_start) as usize;
         }
@@ -258,12 +356,19 @@ struct FlushBuffer;
 impl<F: Read + Write + Seek> Flusher<F> for FlushBuffer {
     fn flush_changes(&self, stream: &mut Stream<F>) -> io::Result<()> {
         let minialloc = stream.minialloc()?;
+
+        let offset = stream.buf_offset_from_start;
+        let cap = stream.buf_cap;
+        // Borrow the buffer slice only briefly to avoid aliasing with `&mut Stream`.
+        let tmp: Vec<u8> = stream.buffer[..cap].to_vec();
+
         write_data_to_stream(
             &mut minialloc.write().unwrap(),
-            stream.stream_id,
-            stream.buf_offset_from_start,
-            &stream.buffer[..stream.buf_cap],
+            stream,
+            offset,
+            &tmp,
         )?;
+
         debug_assert_eq!(
             minialloc.read().unwrap().dir_entry(stream.stream_id).stream_len,
             stream.total_len
@@ -312,18 +417,58 @@ fn read_data_from_stream<F: Read + Seek>(
 
 fn write_data_to_stream<F: Read + Write + Seek>(
     minialloc: &mut MiniAllocator<F>,
-    stream_id: u32,
+    stream: &mut Stream<F>,
     buf_offset_from_start: u64,
     buf: &[u8],
 ) -> io::Result<()> {
     let (old_start_sector, old_stream_len) = {
-        let dir_entry = minialloc.dir_entry(stream_id);
+        let dir_entry = minialloc.dir_entry(stream.stream_id);
         debug_assert_eq!(dir_entry.obj_type, ObjType::Stream);
         (dir_entry.start_sector, dir_entry.stream_len)
     };
     debug_assert!(buf_offset_from_start <= old_stream_len);
     let new_stream_len =
         old_stream_len.max(buf_offset_from_start + buf.len() as u64);
+
+    // Fast path: sequential writes into an existing regular chain using cursor.
+    if old_start_sector != consts::END_OF_CHAIN
+        && old_stream_len >= consts::MINI_STREAM_CUTOFF as u64
+        && new_stream_len >= consts::MINI_STREAM_CUTOFF as u64
+    {
+        if let Some(cursor) = &mut stream.cached_regular_cursor {
+            if cursor.can_write_at(old_start_sector, buf_offset_from_start) {
+                cursor.write_all(minialloc, buf)?;
+                minialloc.with_dir_entry_mut(
+                    stream.stream_id,
+                    |dir_entry| {
+                        dir_entry.start_sector = old_start_sector;
+                        dir_entry.stream_len = new_stream_len;
+                    },
+                )?;
+                return Ok(());
+            }
+        }
+
+        // If no usable cursor, try to seed one from allocator cache.
+        if let Some(sector_ids) =
+            minialloc.cached_chain_sector_ids(old_start_sector)
+        {
+            let mut cursor = RegularChainCursor::new(
+                old_start_sector,
+                sector_ids,
+                buf_offset_from_start,
+            );
+            cursor.write_all(minialloc, buf)?;
+            minialloc.with_dir_entry_mut(stream.stream_id, |dir_entry| {
+                dir_entry.start_sector = old_start_sector;
+                dir_entry.stream_len = new_stream_len;
+            })?;
+            stream.cached_regular_cursor = Some(cursor);
+            return Ok(());
+        }
+    }
+
+    // Slow path: fall back to existing logic.
     let new_start_sector = if old_start_sector == consts::END_OF_CHAIN {
         // Case 1: The stream has no existing chain.  The stream is empty, and
         // we are writing at the start.
@@ -341,7 +486,19 @@ fn write_data_to_stream<F: Read + Write + Seek>(
             let mut chain = minialloc
                 .open_chain(consts::END_OF_CHAIN, SectorInit::Zero)?;
             chain.write_all(buf)?;
-            chain.start_sector_id()
+            let start = chain.start_sector_id();
+
+            // Seed cursor immediately for the new regular chain.
+            if let Some(sector_ids) = minialloc.cached_chain_sector_ids(start)
+            {
+                stream.cached_regular_cursor = Some(RegularChainCursor::new(
+                    start,
+                    sector_ids,
+                    buf.len() as u64,
+                ));
+            }
+
+            start
         }
     } else if old_stream_len < consts::MINI_STREAM_CUTOFF as u64 {
         // Case 2: The stream currently exists in a mini chain.
@@ -383,11 +540,33 @@ fn write_data_to_stream<F: Read + Write + Seek>(
         debug_assert_eq!(chain.start_sector_id(), old_start_sector);
         old_start_sector
     };
+
     // Update the directory entry for this stream.
-    minialloc.with_dir_entry_mut(stream_id, |dir_entry| {
+    minialloc.with_dir_entry_mut(stream.stream_id, |dir_entry| {
         dir_entry.start_sector = new_start_sector;
         dir_entry.stream_len = new_stream_len;
-    })
+    })?;
+
+    // Update or invalidate the cached regular chain state.
+    if new_start_sector != consts::END_OF_CHAIN
+        && new_stream_len >= consts::MINI_STREAM_CUTOFF as u64
+    {
+        if let Some(sector_ids) =
+            minialloc.cached_chain_sector_ids(new_start_sector)
+        {
+            stream.cached_regular_cursor = Some(RegularChainCursor::new(
+                new_start_sector,
+                sector_ids,
+                buf_offset_from_start + buf.len() as u64,
+            ));
+        } else {
+            stream.invalidate_cached_chain();
+        }
+    } else {
+        stream.invalidate_cached_chain();
+    }
+
+    Ok(())
 }
 
 /// If `new_stream_len` is less than the stream's current length, then the

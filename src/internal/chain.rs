@@ -1,28 +1,121 @@
 use crate::internal::{consts, Allocator, Sector, SectorInit};
 use std::cmp;
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::sync::Arc;
 
 //===========================================================================//
+
+enum SectorIds {
+    Shared(Arc<[u32]>),
+    Owned(Vec<u32>),
+}
+
+impl SectorIds {
+    fn len(&self) -> usize {
+        match self {
+            SectorIds::Shared(s) => s.len(),
+            SectorIds::Owned(v) => v.len(),
+        }
+    }
+
+    fn first(&self) -> Option<u32> {
+        match self {
+            SectorIds::Shared(s) => s.first().copied(),
+            SectorIds::Owned(v) => v.first().copied(),
+        }
+    }
+
+    fn last(&self) -> Option<u32> {
+        match self {
+            SectorIds::Shared(s) => s.last().copied(),
+            SectorIds::Owned(v) => v.last().copied(),
+        }
+    }
+
+    fn get(&self, idx: usize) -> Option<u32> {
+        match self {
+            SectorIds::Shared(s) => s.get(idx).copied(),
+            SectorIds::Owned(v) => v.get(idx).copied(),
+        }
+    }
+
+    fn to_vec(&self) -> Vec<u32> {
+        match self {
+            SectorIds::Shared(s) => s.as_ref().to_vec(),
+            SectorIds::Owned(v) => v.clone(),
+        }
+    }
+
+    fn push(&mut self, value: u32) {
+        match self {
+            SectorIds::Owned(v) => v.push(value),
+            SectorIds::Shared(_) => {
+                let mut v = self.to_vec();
+                v.push(value);
+                *self = SectorIds::Owned(v);
+            }
+        }
+    }
+
+    fn as_slice(&self) -> &[u32] {
+        match self {
+            SectorIds::Shared(s) => s.as_ref(),
+            SectorIds::Owned(v) => v.as_slice(),
+        }
+    }
+}
 
 pub struct Chain<'a, F: 'a> {
     allocator: &'a mut Allocator<F>,
     init: SectorInit,
-    sector_ids: Vec<u32>,
+    sector_ids: SectorIds,
     offset_from_start: u64,
 }
 
 impl<'a, F> Chain<'a, F> {
+    pub fn from_sector_ids(
+        allocator: &'a mut Allocator<F>,
+        sector_ids: Arc<[u32]>,
+        init: SectorInit,
+    ) -> Chain<'a, F> {
+        Chain {
+            allocator,
+            init,
+            sector_ids: SectorIds::Shared(sector_ids),
+            offset_from_start: 0,
+        }
+    }
+
     pub fn new(
         allocator: &'a mut Allocator<F>,
         start_sector_id: u32,
         init: SectorInit,
     ) -> io::Result<Chain<'a, F>> {
+        if start_sector_id != consts::END_OF_CHAIN {
+            if let Some(sector_ids) =
+                allocator.cached_chain_sector_ids(start_sector_id)
+            {
+                return Ok(Chain::from_sector_ids(
+                    allocator, sector_ids, init,
+                ));
+            }
+        }
+
         let mut sector_ids = Vec::<u32>::new();
         let mut current_sector_id = start_sector_id;
         let first_sector_id = start_sector_id;
+
         while current_sector_id != consts::END_OF_CHAIN {
             sector_ids.push(current_sector_id);
-            current_sector_id = allocator.next(current_sector_id)?;
+            let next_id = allocator.fat_entry(current_sector_id)?;
+            if next_id != consts::END_OF_CHAIN
+                && (next_id > consts::MAX_REGULAR_SECTOR
+                    || next_id as usize >= allocator.fat_len())
+            {
+                invalid_data!("next_id ({}) is invalid", next_id);
+            }
+
+            current_sector_id = next_id;
             if current_sector_id == first_sector_id {
                 invalid_data!(
                     "Chain contained duplicate sector id {}",
@@ -30,11 +123,22 @@ impl<'a, F> Chain<'a, F> {
                 );
             }
         }
-        Ok(Chain { allocator, init, sector_ids, offset_from_start: 0 })
+
+        if start_sector_id != consts::END_OF_CHAIN {
+            allocator
+                .put_cached_chain_sector_ids(start_sector_id, &sector_ids);
+        }
+
+        Ok(Chain {
+            allocator,
+            init,
+            sector_ids: SectorIds::Owned(sector_ids),
+            offset_from_start: 0,
+        })
     }
 
     pub fn start_sector_id(&self) -> u32 {
-        self.sector_ids.first().copied().unwrap_or(consts::END_OF_CHAIN)
+        self.sector_ids.first().unwrap_or(consts::END_OF_CHAIN)
     }
 
     pub fn num_sectors(&self) -> usize {
@@ -43,6 +147,10 @@ impl<'a, F> Chain<'a, F> {
 
     pub fn len(&self) -> u64 {
         (self.allocator.sector_len() as u64) * (self.sector_ids.len() as u64)
+    }
+
+    pub(crate) fn sector_ids(&self) -> &[u32] {
+        self.sector_ids.as_slice()
     }
 }
 
@@ -61,7 +169,7 @@ impl<'a, F: Seek> Chain<'a, F> {
             subsector_index as usize / subsectors_per_sector;
         let subsector_index_within_sector =
             subsector_index % (subsectors_per_sector as u32);
-        let sector_id = *self
+        let sector_id = self
             .sector_ids
             .get(sector_index_within_chain)
             .ok_or_else(|| {
@@ -84,18 +192,21 @@ impl<'a, F: Write + Seek> Chain<'a, F> {
         let new_num_sectors =
             ((sector_len + new_len - 1) / sector_len) as usize;
         if new_num_sectors == 0 {
-            if let Some(&start_sector) = self.sector_ids.first() {
+            if let Some(start_sector) = self.sector_ids.first() {
                 self.allocator.free_chain(start_sector)?;
             }
         } else if new_num_sectors <= self.sector_ids.len() {
             if new_num_sectors < self.sector_ids.len() {
-                self.allocator
-                    .free_chain_after(self.sector_ids[new_num_sectors - 1])?;
+                let last_kept = self
+                    .sector_ids
+                    .get(new_num_sectors - 1)
+                    .expect("sector id should exist");
+                self.allocator.free_chain_after(last_kept)?;
             }
             // TODO: init remainder of final sector
         } else {
             for _ in self.sector_ids.len()..new_num_sectors {
-                let new_sector_id = if let Some(&last_sector_id) =
+                let new_sector_id = if let Some(last_sector_id) =
                     self.sector_ids.last()
                 {
                     self.allocator.extend_chain(last_sector_id, self.init)?
@@ -146,7 +257,10 @@ impl<'a, F: Read + Seek> Read for Chain<'a, F> {
         let current_sector_index =
             (self.offset_from_start / sector_len) as usize;
         debug_assert!(current_sector_index < self.sector_ids.len());
-        let current_sector_id = self.sector_ids[current_sector_index];
+        let current_sector_id = self
+            .sector_ids
+            .get(current_sector_index)
+            .expect("sector id should exist");
         let offset_within_sector = self.offset_from_start % sector_len;
         let mut sector = self
             .allocator
@@ -167,7 +281,7 @@ impl<'a, F: Write + Seek> Write for Chain<'a, F> {
         let sector_len = self.allocator.sector_len() as u64;
         if self.offset_from_start == total_len {
             let new_sector_id =
-                if let Some(&last_sector_id) = self.sector_ids.last() {
+                if let Some(last_sector_id) = self.sector_ids.last() {
                     self.allocator.extend_chain(last_sector_id, self.init)?
                 } else {
                     self.allocator.begin_chain(self.init)?
@@ -179,7 +293,10 @@ impl<'a, F: Write + Seek> Write for Chain<'a, F> {
         let current_sector_index =
             (self.offset_from_start / sector_len) as usize;
         debug_assert!(current_sector_index < self.sector_ids.len());
-        let current_sector_id = self.sector_ids[current_sector_index];
+        let current_sector_id = self
+            .sector_ids
+            .get(current_sector_index)
+            .expect("sector id should exist");
         let offset_within_sector = self.offset_from_start % sector_len;
         let mut sector = self
             .allocator

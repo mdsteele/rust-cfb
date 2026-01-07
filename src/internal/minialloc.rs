@@ -100,6 +100,28 @@ impl<F> MiniAllocator<F> {
         self.directory.dir_entry(stream_id)
     }
 
+    pub(crate) fn sector_len(&self) -> usize {
+        self.directory.sector_len()
+    }
+
+    pub(crate) fn cached_chain_sector_ids(
+        &self,
+        start_sector_id: u32,
+    ) -> Option<std::sync::Arc<[u32]>> {
+        self.directory.cached_chain_sector_ids(start_sector_id)
+    }
+
+    pub(crate) fn seek_within_sector(
+        &mut self,
+        sector_id: u32,
+        offset_within_sector: u64,
+    ) -> io::Result<Sector<'_, F>>
+    where
+        F: Seek,
+    {
+        self.directory.seek_within_sector(sector_id, offset_within_sector)
+    }
+
     fn validate(&mut self, validation: Validation) -> io::Result<()> {
         let root_entry = self.directory.root_dir_entry();
         let root_stream_mini_sectors =
@@ -370,6 +392,18 @@ impl<F: Write + Seek> MiniAllocator<F> {
     /// Flushes all changes to the underlying file.
     pub fn flush(&mut self) -> io::Result<()> {
         self.directory.flush()
+    }
+
+    pub(crate) fn begin_chain(&mut self, init: SectorInit) -> io::Result<u32> {
+        self.directory.begin_chain(init)
+    }
+
+    pub(crate) fn extend_chain(
+        &mut self,
+        start_sector_id: u32,
+        init: SectorInit,
+    ) -> io::Result<u32> {
+        self.directory.extend_chain(start_sector_id, init)
     }
 }
 

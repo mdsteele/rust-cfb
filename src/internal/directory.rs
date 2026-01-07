@@ -50,6 +50,13 @@ impl<F> Directory<F> {
         self.allocator.sector_len()
     }
 
+    pub(crate) fn cached_chain_sector_ids(
+        &self,
+        start_sector_id: u32,
+    ) -> Option<std::sync::Arc<[u32]>> {
+        self.allocator.cached_chain_sector_ids(start_sector_id)
+    }
+
     pub fn into_inner(self) -> F {
         self.allocator.into_inner()
     }
@@ -230,6 +237,17 @@ impl<F: Seek> Directory<F> {
             consts::DIR_ENTRY_LEN,
             offset_within_dir_entry as u64,
         )
+    }
+
+    /// Seeks to a regular sector at a byte offset within that sector.
+    ///
+    /// Crate-private helper for stream write cursors.
+    pub(crate) fn seek_within_sector(
+        &mut self,
+        sector_id: u32,
+        offset_within_sector: u64,
+    ) -> io::Result<Sector<'_, F>> {
+        self.allocator.seek_within_sector(sector_id, offset_within_sector)
     }
 }
 
