@@ -309,8 +309,8 @@ mod tests {
     use crate::internal::{
         consts, Color, ObjType, Timestamp, Validation, Version,
     };
-    use std::time::UNIX_EPOCH;
     use uuid::Uuid;
+    use web_time::UNIX_EPOCH;
 
     #[test]
     fn parse_valid_storage_entry_with_end_of_chain_start() {

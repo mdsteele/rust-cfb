@@ -13,6 +13,7 @@ rust-version = "1.74"
 [dependencies]
 fnv = "1.0"
 uuid = "1"
+web-time = "1"
 
 [dev-dependencies]
 clap = { version = "4.4", features = ["derive"] }

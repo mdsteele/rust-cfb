@@ -1,6 +1,6 @@
 use crate::{ReadLeNumber, WriteLeNumber};
 use std::io::{self, Read, Write};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use web_time::{Duration, SystemTime, UNIX_EPOCH};
 
 //===========================================================================//
 
@@ -110,7 +110,7 @@ mod tests {
         timestamp_delta_to_duration, timestamp_from_system_time,
         UNIX_EPOCH_TIMESTAMP,
     };
-    use std::time::{Duration, UNIX_EPOCH};
+    use web_time::{Duration, UNIX_EPOCH};
 
     #[test]
     fn extreme_timestamp_delta() {

@@ -2,8 +2,8 @@ use crate::internal::{consts, DirEntry, MiniAllocator, ObjType, Timestamp};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::SystemTime;
 use uuid::Uuid;
+use web_time::SystemTime;
 
 //===========================================================================//
 

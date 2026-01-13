@@ -968,7 +968,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     /// Sets the modified time for the object at the given path to now.  Has no
     /// effect when called on the root storage.
     pub fn touch<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
-        self.set_modified_time(path, std::time::SystemTime::now())
+        self.set_modified_time(path, web_time::SystemTime::now())
     }
 
     /// Sets the modified time for the object at the given path.
@@ -976,7 +976,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     pub fn set_modified_time<P: AsRef<Path>>(
         &mut self,
         path: P,
-        ts: std::time::SystemTime,
+        ts: web_time::SystemTime,
     ) -> io::Result<()> {
         self.set_entry_with_path(path.as_ref(), |dir_entry| {
             if dir_entry.obj_type != ObjType::Stream {
@@ -990,7 +990,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     pub fn set_created_time<P: AsRef<Path>>(
         &mut self,
         path: P,
-        ts: std::time::SystemTime,
+        ts: web_time::SystemTime,
     ) -> io::Result<()> {
         self.set_entry_with_path(path.as_ref(), |dir_entry| {
             if dir_entry.obj_type != ObjType::Stream {
@@ -1108,7 +1108,7 @@ mod tests {
         Ok(data)
     }
 
-    fn make_cfb_with_ts(ts: std::time::SystemTime) -> Vec<u8> {
+    fn make_cfb_with_ts(ts: web_time::SystemTime) -> Vec<u8> {
         use std::io::Write;
 
         let mut buf = Vec::new();
@@ -1267,7 +1267,7 @@ mod tests {
 
     #[test]
     fn deterministic_cfbs() {
-        let ts = std::time::SystemTime::now();
+        let ts = web_time::SystemTime::now();
         let cfb1 = make_cfb_with_ts(ts);
         let cfb2 = make_cfb_with_ts(ts);
         let ts = Timestamp::from_system_time(ts);
