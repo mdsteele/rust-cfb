@@ -1,4 +1,4 @@
-use cfb::CompoundFile;
+use cfb::{CompoundFile, CreateStreamOptions};
 use criterion::{
     criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
 };
@@ -21,9 +21,13 @@ fn write_many_streams(
         for i in 0..n {
             let name = format!("test{i}");
             let mut stream = match stream_buffer_size {
-                Some(buf_size) => test_comp
-                    .create_stream_with_buffer_size(name, buf_size)
-                    .unwrap(),
+                Some(buf_size) => {
+                    let options =
+                        CreateStreamOptions::new().buffer_size(buf_size);
+                    test_comp
+                        .create_stream_with_options(name, options)
+                        .unwrap()
+                }
                 None => test_comp.create_stream(name).unwrap(),
             };
             stream.write_all(&data).unwrap();
@@ -51,9 +55,13 @@ fn write_many_streams_disk(
         for i in 0..n {
             let name = format!("test{i}");
             let mut stream = match stream_buffer_size {
-                Some(buf_size) => test_comp
-                    .create_stream_with_buffer_size(name, buf_size)
-                    .unwrap(),
+                Some(buf_size) => {
+                    let options =
+                        CreateStreamOptions::new().buffer_size(buf_size);
+                    test_comp
+                        .create_stream_with_options(name, options)
+                        .unwrap()
+                }
                 None => test_comp.create_stream(name).unwrap(),
             };
             stream.write_all(&data).unwrap();
