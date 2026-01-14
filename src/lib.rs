@@ -113,10 +113,7 @@ pub struct CreateStreamOptions {
 impl CreateStreamOptions {
     /// Creates a new `CreateStreamOptions` with default settings.
     pub fn new() -> Self {
-        CreateStreamOptions {
-            buffer_size: DEFAULT_STREAM_BUFFER_SIZE,
-            overwrite: false,
-        }
+        CreateStreamOptions::default()
     }
 
     /// Sets the buffer size to use when reading/writing the stream.
@@ -142,6 +139,15 @@ impl CreateStreamOptions {
     }
 }
 
+impl Default for CreateStreamOptions {
+    fn default() -> Self {
+        CreateStreamOptions {
+            buffer_size: DEFAULT_STREAM_BUFFER_SIZE,
+            overwrite: false,
+        }
+    }
+}
+
 /// Options for opening a stream within a compound file.
 pub struct OpenStreamOptions {
     pub(crate) buffer_size: usize,
@@ -150,7 +156,7 @@ pub struct OpenStreamOptions {
 impl OpenStreamOptions {
     /// Creates a new `StreamOptions` with default settings.
     pub fn new() -> Self {
-        OpenStreamOptions { buffer_size: DEFAULT_STREAM_BUFFER_SIZE }
+        OpenStreamOptions::default()
     }
 
     /// Sets the buffer size to use when reading/writing the stream.
@@ -161,6 +167,12 @@ impl OpenStreamOptions {
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
         self
+    }
+}
+
+impl Default for OpenStreamOptions {
+    fn default() -> Self {
+        OpenStreamOptions { buffer_size: DEFAULT_STREAM_BUFFER_SIZE }
     }
 }
 
