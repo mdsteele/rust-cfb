@@ -65,6 +65,8 @@ pub use crate::internal::{Entries, Entry, Stream, Version};
 #[macro_use]
 mod internal;
 
+const DEFAULT_STREAM_BUFFER_SIZE: usize = 8192;
+
 //===========================================================================//
 
 /// Opens an existing compound file at the given path in read-only mode.
@@ -101,6 +103,78 @@ fn create_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
 }
 
 //===========================================================================//
+
+/// Options for creating a stream within a compound file.
+pub struct CreateStreamOptions {
+    pub(crate) buffer_size: usize,
+    pub(crate) overwrite: bool,
+}
+
+impl CreateStreamOptions {
+    /// Creates a new `CreateStreamOptions` with default settings.
+    pub fn new() -> Self {
+        CreateStreamOptions::default()
+    }
+
+    /// Sets the buffer size to use when reading/writing the stream.
+    ///
+    /// The buffer size determines how much data is read/written at a time when
+    /// accessing the stream. A larger buffer size can improve performance for
+    /// large streams, while a smaller buffer size can reduce memory usage.
+    pub fn buffer_size(mut self, size: usize) -> Self {
+        self.buffer_size = size;
+        self
+    }
+
+    /// Sets whether to overwrite an existing stream at the given path when
+    /// creating the stream.
+    ///
+    /// If `overwrite` is set to `true`, and a stream already exists at the
+    /// given path, the existing stream will be truncated to zero length.
+    /// If `overwrite` is set to `false`, and a stream already exists at the
+    /// given path, an error will be returned.
+    pub fn overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
+    }
+}
+
+impl Default for CreateStreamOptions {
+    fn default() -> Self {
+        CreateStreamOptions {
+            buffer_size: DEFAULT_STREAM_BUFFER_SIZE,
+            overwrite: false,
+        }
+    }
+}
+
+/// Options for opening a stream within a compound file.
+pub struct OpenStreamOptions {
+    pub(crate) buffer_size: usize,
+}
+
+impl OpenStreamOptions {
+    /// Creates a new `StreamOptions` with default settings.
+    pub fn new() -> Self {
+        OpenStreamOptions::default()
+    }
+
+    /// Sets the buffer size to use when reading/writing the stream.
+    ///
+    /// The buffer size determines how much data is read/written at a time when
+    /// accessing the stream. A larger buffer size can improve performance for
+    /// large streams, while a smaller buffer size can reduce memory usage.
+    pub fn buffer_size(mut self, size: usize) -> Self {
+        self.buffer_size = size;
+        self
+    }
+}
+
+impl Default for OpenStreamOptions {
+    fn default() -> Self {
+        OpenStreamOptions { buffer_size: DEFAULT_STREAM_BUFFER_SIZE }
+    }
+}
 
 /// A compound file, backed by an underlying reader/writer (such as a
 /// [`File`](https://doc.rust-lang.org/std/fs/struct.File.html) or
@@ -307,10 +381,28 @@ impl<F: Seek> CompoundFile<F> {
         &mut self,
         path: P,
     ) -> io::Result<Stream<F>> {
-        self.open_stream_with_path(path.as_ref())
+        self.open_stream_with_path(path.as_ref(), DEFAULT_STREAM_BUFFER_SIZE)
     }
 
-    fn open_stream_with_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
+    /// Opens an existing stream in the compound file for reading and/or
+    /// writing (depending on what the underlying file supports), with a specified buffer size.
+    ///
+    /// The buffer size determines how much data is read/written at a time when
+    /// accessing the stream. A larger buffer size can improve performance for
+    /// large streams, while a smaller buffer size can reduce memory usage.
+    pub fn open_stream_with_options<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        options: OpenStreamOptions,
+    ) -> io::Result<Stream<F>> {
+        self.open_stream_with_path(path.as_ref(), options.buffer_size)
+    }
+
+    fn open_stream_with_path(
+        &mut self,
+        path: &Path,
+        buffer_size: usize,
+    ) -> io::Result<Stream<F>> {
         let names = internal::path::name_chain_from_path(path)?;
         let path = internal::path::path_from_name_chain(&names);
         let stream_id = match self.stream_id_for_name_chain(&names) {
@@ -320,7 +412,7 @@ impl<F: Seek> CompoundFile<F> {
         if self.minialloc().dir_entry(stream_id).obj_type != ObjType::Stream {
             invalid_input!("Not a stream: {:?}", path);
         }
-        Ok(Stream::new(&self.minialloc, stream_id))
+        Ok(Stream::new(&self.minialloc, stream_id, buffer_size))
     }
 }
 
@@ -858,7 +950,11 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         &mut self,
         path: P,
     ) -> io::Result<Stream<F>> {
-        self.create_stream_with_path(path.as_ref(), true)
+        self.create_stream_with_path_and_buffer_size(
+            path.as_ref(),
+            true,
+            DEFAULT_STREAM_BUFFER_SIZE,
+        )
     }
 
     /// Creates and returns a new, empty stream object at the provided path.
@@ -868,13 +964,35 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         &mut self,
         path: P,
     ) -> io::Result<Stream<F>> {
-        self.create_stream_with_path(path.as_ref(), false)
+        self.create_stream_with_path_and_buffer_size(
+            path.as_ref(),
+            false,
+            DEFAULT_STREAM_BUFFER_SIZE,
+        )
     }
 
-    fn create_stream_with_path(
+    /// Creates and returns a new, empty stream object at the provided path,
+    /// using a custom per-stream buffer size.
+    ///
+    /// This is equivalent to `create_stream()`, except the returned `Stream`
+    /// uses `buffer_size` bytes for its internal read/write buffer.
+    pub fn create_stream_with_options<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        options: CreateStreamOptions,
+    ) -> io::Result<Stream<F>> {
+        self.create_stream_with_path_and_buffer_size(
+            path.as_ref(),
+            options.overwrite,
+            options.buffer_size,
+        )
+    }
+
+    fn create_stream_with_path_and_buffer_size(
         &mut self,
         path: &Path,
         overwrite: bool,
+        buffer_size: usize,
     ) -> io::Result<Stream<F>> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
@@ -893,7 +1011,8 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                     internal::path::path_from_name_chain(&names)
                 );
             } else {
-                let mut stream = Stream::new(&self.minialloc, stream_id);
+                let mut stream =
+                    Stream::new(&self.minialloc, stream_id, buffer_size);
                 stream.set_len(0)?;
                 return Ok(stream);
             }
@@ -911,7 +1030,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             name,
             ObjType::Stream,
         )?;
-        Ok(Stream::new(&self.minialloc, new_stream_id))
+        Ok(Stream::new(&self.minialloc, new_stream_id, buffer_size))
     }
 
     /// Removes the stream object at the provided path.

@@ -4,16 +4,12 @@ use std::sync::{Arc, RwLock, Weak};
 
 //===========================================================================//
 
-const BUFFER_SIZE: usize = 8192;
-
-//===========================================================================//
-
 /// A stream entry in a compound file, much like a filesystem file.
 pub struct Stream<F> {
     minialloc: Weak<RwLock<MiniAllocator<F>>>,
     stream_id: u32,
     total_len: u64,
-    buffer: Box<[u8; BUFFER_SIZE]>,
+    buffer: Vec<u8>,
     buf_pos: usize,
     buf_cap: usize,
     buf_offset_from_start: u64,
@@ -24,14 +20,16 @@ impl<F> Stream<F> {
     pub(crate) fn new(
         minialloc: &Arc<RwLock<MiniAllocator<F>>>,
         stream_id: u32,
+        buffer_size: usize,
     ) -> Stream<F> {
         let total_len =
             minialloc.read().unwrap().dir_entry(stream_id).stream_len;
+        let buffer_size = buffer_size.max(1);
         Stream {
             minialloc: Arc::downgrade(minialloc),
             stream_id,
             total_len,
-            buffer: Box::new([0; BUFFER_SIZE]),
+            buffer: vec![0; buffer_size],
             buf_pos: 0,
             buf_cap: 0,
             buf_offset_from_start: 0,
