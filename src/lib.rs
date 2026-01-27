@@ -148,6 +148,8 @@ impl Default for CreateStreamOptions {
     }
 }
 
+//===========================================================================//
+
 /// Options for opening a stream within a compound file.
 pub struct OpenStreamOptions {
     pub(crate) buffer_size: usize,
@@ -175,6 +177,8 @@ impl Default for OpenStreamOptions {
         OpenStreamOptions { buffer_size: DEFAULT_STREAM_BUFFER_SIZE }
     }
 }
+
+//===========================================================================//
 
 /// A compound file, backed by an underlying reader/writer (such as a
 /// [`File`](https://doc.rust-lang.org/std/fs/struct.File.html) or
