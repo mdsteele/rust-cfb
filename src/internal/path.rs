@@ -43,17 +43,51 @@ fn cfb_uppercase_char(c: char) -> char {
 /// order](https://en.wikipedia.org/wiki/Shortlex_order), rather than
 /// dictionary order).
 pub fn compare_names(name1: &str, name2: &str) -> Ordering {
-    match name1.encode_utf16().count().cmp(&name2.encode_utf16().count()) {
-        // This is actually not 100% correct -- the MS-CFB spec specifies a
-        // particular way of doing the uppercasing on individual UTF-16 code
-        // units, along with a list of weird exceptions and corner cases.  But
-        // hopefully this is good enough for 99+% of the time.
-        Ordering::Equal => {
-            let n1 = name1.chars().map(cfb_uppercase_char);
-            let n2 = name2.chars().map(cfb_uppercase_char);
-            n1.cmp(n2)
+    if name1 == name2 {
+        return Ordering::Equal;
+    }
+    if name1.is_ascii() && name2.is_ascii() {
+        match name1.len().cmp(&name2.len()) {
+            Ordering::Equal => {
+                for (left, right) in name1.bytes().zip(name2.bytes()) {
+                    let left = left.to_ascii_uppercase();
+                    let right = right.to_ascii_uppercase();
+                    match left.cmp(&right) {
+                        Ordering::Equal => {}
+                        other => return other,
+                    }
+                }
+                Ordering::Equal
+            }
+            other => other,
         }
-        other => other,
+    } else {
+        match name1.encode_utf16().count().cmp(&name2.encode_utf16().count()) {
+            // This is actually not 100% correct -- the MS-CFB spec specifies a
+            // particular way of doing the uppercasing on individual UTF-16 code
+            // units, along with a list of weird exceptions and corner cases.  But
+            // hopefully this is good enough for 99+% of the time.
+            Ordering::Equal => {
+                let mut left_iter = name1.chars();
+                let mut right_iter = name2.chars();
+                loop {
+                    match (left_iter.next(), right_iter.next()) {
+                        (Some(left), Some(right)) => {
+                            let left = cfb_uppercase_char(left);
+                            let right = cfb_uppercase_char(right);
+                            match left.cmp(&right) {
+                                Ordering::Equal => {}
+                                other => return other,
+                            }
+                        }
+                        (None, None) => return Ordering::Equal,
+                        (None, Some(_)) => return Ordering::Less,
+                        (Some(_), None) => return Ordering::Greater,
+                    }
+                }
+            }
+            other => other,
+        }
     }
 }
 
