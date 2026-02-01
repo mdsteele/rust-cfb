@@ -26,6 +26,7 @@ pub struct MiniAllocator<F> {
     directory: Directory<F>,
     minifat: Vec<u32>,
     minifat_start_sector: u32,
+    free_mini_sectors: Vec<u32>,
 }
 
 impl<F> MiniAllocator<F> {
@@ -35,8 +36,12 @@ impl<F> MiniAllocator<F> {
         minifat_start_sector: u32,
         validation: Validation,
     ) -> io::Result<MiniAllocator<F>> {
-        let mut minialloc =
-            MiniAllocator { directory, minifat, minifat_start_sector };
+        let mut minialloc = MiniAllocator {
+            directory,
+            minifat,
+            minifat_start_sector,
+            free_mini_sectors: Vec::new(),
+        };
         minialloc.validate(validation)?;
         Ok(minialloc)
     }
@@ -139,6 +144,13 @@ impl<F> MiniAllocator<F> {
                 pointees.insert(to_mini_sector);
             }
         }
+
+        self.free_mini_sectors.clear();
+        for (idx, &entry) in self.minifat.iter().enumerate() {
+            if entry == consts::FREE_SECTOR {
+                self.free_mini_sectors.push(idx as u32);
+            }
+        }
         Ok(())
     }
 }
@@ -237,11 +249,10 @@ impl<F: Write + Seek> MiniAllocator<F> {
     /// returns the new mini sector number.
     fn allocate_mini_sector(&mut self, value: u32) -> io::Result<u32> {
         // If there's an existing free mini sector, use that.
-        for mini_sector in 0..self.minifat.len() {
-            if self.minifat[mini_sector] == consts::FREE_SECTOR {
-                let mini_sector = mini_sector as u32;
-                self.set_minifat(mini_sector, value)?;
-                return Ok(mini_sector);
+        while let Some(free_idx) = self.free_mini_sectors.pop() {
+            if self.minifat[free_idx as usize] == consts::FREE_SECTOR {
+                self.set_minifat(free_idx, value)?;
+                return Ok(free_idx);
             }
         }
         // Otherwise, we need a new mini sector; if there's not room in the
@@ -305,7 +316,11 @@ impl<F: Write + Seek> MiniAllocator<F> {
 
     /// Deallocates the specified mini sector.
     fn free_mini_sector(&mut self, mini_sector: u32) -> io::Result<()> {
+        if self.minifat[mini_sector as usize] == consts::FREE_SECTOR {
+            invalid_input!("sector {} freed twice", mini_sector);
+        }
         self.set_minifat(mini_sector, consts::FREE_SECTOR)?;
+        self.free_mini_sectors.push(mini_sector);
         let mut mini_stream_len = self.directory.root_dir_entry().stream_len;
         debug_assert_eq!(mini_stream_len % consts::MINI_SECTOR_LEN as u64, 0);
         while self.minifat.last() == Some(&consts::FREE_SECTOR) {
@@ -313,6 +328,8 @@ impl<F: Write + Seek> MiniAllocator<F> {
             self.minifat.pop();
             // TODO: Truncate MiniFAT if last MiniFAT sector is now all free.
         }
+        let minifat_len = self.minifat.len();
+        self.free_mini_sectors.retain(|&idx| (idx as usize) < minifat_len);
 
         if mini_stream_len != self.directory.root_dir_entry().stream_len {
             self.directory.with_root_dir_entry_mut(|dir_entry| {

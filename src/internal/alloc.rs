@@ -342,6 +342,9 @@ impl<F: Write + Seek> Allocator<F> {
 
     /// Deallocates the specified sector.
     fn free_sector(&mut self, sector_id: u32) -> io::Result<()> {
+        if self.fat.get(sector_id as usize) == Some(&consts::FREE_SECTOR) {
+            invalid_input!("sector {} freed twice", sector_id);
+        }
         self.set_fat(sector_id, consts::FREE_SECTOR)?;
         self.free_sectors.push(sector_id);
         // TODO: Truncate FAT if last FAT sector is now all free.
