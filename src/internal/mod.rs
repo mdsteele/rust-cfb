@@ -32,6 +32,7 @@ pub use self::minichain::MiniChain;
 pub use self::objtype::ObjType;
 pub use self::sector::{Sector, SectorInit, Sectors};
 pub use self::stream::Stream;
+pub(crate) use self::stream_buffer::DEFAULT_STREAM_MAX_BUFFER_SIZE;
 pub use self::timestamp::Timestamp;
 pub use self::validate::Validation;
 pub use self::version::Version;

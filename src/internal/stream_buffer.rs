@@ -1,6 +1,8 @@
 const STREAM_BUFFER_MIN: usize = 1024;
 const STREAM_BUFFER_GROWTH_FACTOR: usize = 4;
 
+pub(crate) const DEFAULT_STREAM_MAX_BUFFER_SIZE: usize = 1024 * 1024;
+
 use std::io::{self, Write};
 
 /// A buffer for stream data that grows up to a configurable maximum.
@@ -16,7 +18,7 @@ pub(crate) struct StreamBuffer {
 
 impl Default for StreamBuffer {
     fn default() -> Self {
-        StreamBuffer::new(1024 * 1024)
+        StreamBuffer::new(DEFAULT_STREAM_MAX_BUFFER_SIZE)
     }
 }
 

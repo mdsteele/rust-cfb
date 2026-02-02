@@ -56,6 +56,7 @@ use fnv::FnvHashSet;
 use uuid::Uuid;
 
 use crate::internal::consts;
+use crate::internal::DEFAULT_STREAM_MAX_BUFFER_SIZE;
 use crate::internal::{
     Allocator, DirEntry, Directory, EntriesOrder, Header, MiniAllocator,
     ObjType, SectorInit, Sectors, Timestamp, Validation,
@@ -64,8 +65,6 @@ pub use crate::internal::{Entries, Entry, Stream, Version};
 
 #[macro_use]
 mod internal;
-
-const DEFAULT_STREAM_MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1 MiB
 
 //===========================================================================//
 
