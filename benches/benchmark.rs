@@ -107,6 +107,32 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
     small.finish();
 
+    // streams just below the MiniFAT cutoff
+    let mut cutoff = c.benchmark_group("write MiniFAT max streams");
+    let size = (4 * 1024) - 1;
+    let n = 500;
+    let total_bytes = (n * size) as u64;
+    cutoff.sample_size(10);
+    cutoff.throughput(Throughput::Bytes(total_bytes));
+
+    for (buf, label) in buffer_sizes {
+        cutoff.bench_with_input(
+            BenchmarkId::new("total", *label),
+            &size,
+            |b, &s| {
+                b.iter(|| {
+                    let out = write_many_streams(
+                        black_box(n),
+                        black_box(s),
+                        buf.map(black_box),
+                    );
+                    black_box(out);
+                })
+            },
+        );
+    }
+    cutoff.finish();
+
     // several medium streams with throughput reporting
     let mut medium = c.benchmark_group("write several medium streams");
     let size = 1024 * 1024usize;
