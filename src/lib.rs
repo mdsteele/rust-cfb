@@ -65,7 +65,7 @@ pub use crate::internal::{Entries, Entry, Stream, Version};
 #[macro_use]
 mod internal;
 
-const DEFAULT_STREAM_BUFFER_SIZE: usize = 8192;
+const DEFAULT_STREAM_MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1 MiB
 
 //===========================================================================//
 
@@ -106,7 +106,7 @@ fn create_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
 
 /// Options for creating a stream within a compound file.
 pub struct CreateStreamOptions {
-    pub(crate) buffer_size: usize,
+    pub(crate) max_buffer_size: usize,
     pub(crate) overwrite: bool,
 }
 
@@ -116,13 +116,13 @@ impl CreateStreamOptions {
         CreateStreamOptions::default()
     }
 
-    /// Sets the buffer size to use when reading/writing the stream.
+    /// Sets the maximum size of the stream's internal buffer.
     ///
-    /// The buffer size determines how much data is read/written at a time when
-    /// accessing the stream. A larger buffer size can improve performance for
-    /// large streams, while a smaller buffer size can reduce memory usage.
-    pub fn buffer_size(mut self, size: usize) -> Self {
-        self.buffer_size = size;
+    /// The buffer grows dynamically up to this limit. Larger limits can improve
+    /// throughput for large streams, while smaller limits reduce peak memory
+    /// usage. Values below the internal minimum are clamped up to that minimum.
+    pub fn max_buffer_size(mut self, size: usize) -> Self {
+        self.max_buffer_size = size;
         self
     }
 
@@ -142,7 +142,7 @@ impl CreateStreamOptions {
 impl Default for CreateStreamOptions {
     fn default() -> Self {
         CreateStreamOptions {
-            buffer_size: DEFAULT_STREAM_BUFFER_SIZE,
+            max_buffer_size: DEFAULT_STREAM_MAX_BUFFER_SIZE,
             overwrite: false,
         }
     }
@@ -152,7 +152,7 @@ impl Default for CreateStreamOptions {
 
 /// Options for opening a stream within a compound file.
 pub struct OpenStreamOptions {
-    pub(crate) buffer_size: usize,
+    pub(crate) max_buffer_size: usize,
 }
 
 impl OpenStreamOptions {
@@ -161,20 +161,20 @@ impl OpenStreamOptions {
         OpenStreamOptions::default()
     }
 
-    /// Sets the buffer size to use when reading/writing the stream.
+    /// Sets the maximum size of the stream's internal buffer.
     ///
-    /// The buffer size determines how much data is read/written at a time when
-    /// accessing the stream. A larger buffer size can improve performance for
-    /// large streams, while a smaller buffer size can reduce memory usage.
-    pub fn buffer_size(mut self, size: usize) -> Self {
-        self.buffer_size = size;
+    /// The buffer grows dynamically up to this limit. Larger limits can improve
+    /// throughput for large streams, while smaller limits reduce peak memory
+    /// usage. Values below the internal minimum are clamped up to that minimum.
+    pub fn max_buffer_size(mut self, size: usize) -> Self {
+        self.max_buffer_size = size;
         self
     }
 }
 
 impl Default for OpenStreamOptions {
     fn default() -> Self {
-        OpenStreamOptions { buffer_size: DEFAULT_STREAM_BUFFER_SIZE }
+        OpenStreamOptions { max_buffer_size: DEFAULT_STREAM_MAX_BUFFER_SIZE }
     }
 }
 
@@ -385,7 +385,10 @@ impl<F: Seek> CompoundFile<F> {
         &mut self,
         path: P,
     ) -> io::Result<Stream<F>> {
-        self.open_stream_with_path(path.as_ref(), DEFAULT_STREAM_BUFFER_SIZE)
+        self.open_stream_with_path(
+            path.as_ref(),
+            DEFAULT_STREAM_MAX_BUFFER_SIZE,
+        )
     }
 
     /// Opens an existing stream in the compound file for reading and/or
@@ -399,7 +402,7 @@ impl<F: Seek> CompoundFile<F> {
         path: P,
         options: OpenStreamOptions,
     ) -> io::Result<Stream<F>> {
-        self.open_stream_with_path(path.as_ref(), options.buffer_size)
+        self.open_stream_with_path(path.as_ref(), options.max_buffer_size)
     }
 
     fn open_stream_with_path(
@@ -954,10 +957,10 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         &mut self,
         path: P,
     ) -> io::Result<Stream<F>> {
-        self.create_stream_with_path_and_buffer_size(
+        self.create_stream_with_path_and_max_buffer_size(
             path.as_ref(),
             true,
-            DEFAULT_STREAM_BUFFER_SIZE,
+            DEFAULT_STREAM_MAX_BUFFER_SIZE,
         )
     }
 
@@ -968,10 +971,10 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         &mut self,
         path: P,
     ) -> io::Result<Stream<F>> {
-        self.create_stream_with_path_and_buffer_size(
+        self.create_stream_with_path_and_max_buffer_size(
             path.as_ref(),
             false,
-            DEFAULT_STREAM_BUFFER_SIZE,
+            DEFAULT_STREAM_MAX_BUFFER_SIZE,
         )
     }
 
@@ -985,18 +988,18 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         path: P,
         options: CreateStreamOptions,
     ) -> io::Result<Stream<F>> {
-        self.create_stream_with_path_and_buffer_size(
+        self.create_stream_with_path_and_max_buffer_size(
             path.as_ref(),
             options.overwrite,
-            options.buffer_size,
+            options.max_buffer_size,
         )
     }
 
-    fn create_stream_with_path_and_buffer_size(
+    fn create_stream_with_path_and_max_buffer_size(
         &mut self,
         path: &Path,
         overwrite: bool,
-        buffer_size: usize,
+        max_buffer_size: usize,
     ) -> io::Result<Stream<F>> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
@@ -1016,7 +1019,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 );
             } else {
                 let mut stream =
-                    Stream::new(&self.minialloc, stream_id, buffer_size);
+                    Stream::new(&self.minialloc, stream_id, max_buffer_size);
                 stream.set_len(0)?;
                 return Ok(stream);
             }
@@ -1034,7 +1037,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             name,
             ObjType::Stream,
         )?;
-        Ok(Stream::new(&self.minialloc, new_stream_id, buffer_size))
+        Ok(Stream::new(&self.minialloc, new_stream_id, max_buffer_size))
     }
 
     /// Removes the stream object at the provided path.

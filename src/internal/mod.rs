@@ -15,6 +15,7 @@ mod objtype;
 pub mod path;
 mod sector;
 mod stream;
+mod stream_buffer;
 mod timestamp;
 mod validate;
 mod version;

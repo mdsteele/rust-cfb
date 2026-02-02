@@ -23,7 +23,7 @@ fn write_many_streams(
             let mut stream = match stream_buffer_size {
                 Some(buf_size) => {
                     let options =
-                        CreateStreamOptions::new().buffer_size(buf_size);
+                        CreateStreamOptions::new().max_buffer_size(buf_size);
                     test_comp
                         .create_stream_with_options(name, options)
                         .unwrap()
@@ -57,7 +57,7 @@ fn write_many_streams_disk(
             let mut stream = match stream_buffer_size {
                 Some(buf_size) => {
                     let options =
-                        CreateStreamOptions::new().buffer_size(buf_size);
+                        CreateStreamOptions::new().max_buffer_size(buf_size);
                     test_comp
                         .create_stream_with_options(name, options)
                         .unwrap()

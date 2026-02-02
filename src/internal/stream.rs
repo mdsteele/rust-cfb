@@ -4,14 +4,16 @@ use std::sync::{Arc, RwLock, Weak};
 
 //===========================================================================//
 
+use crate::internal::stream_buffer::StreamBuffer;
+
+//===========================================================================//
+
 /// A stream entry in a compound file, much like a filesystem file.
 pub struct Stream<F> {
     minialloc: Weak<RwLock<MiniAllocator<F>>>,
     stream_id: u32,
     total_len: u64,
-    buffer: Vec<u8>,
-    buf_pos: usize,
-    buf_cap: usize,
+    buffer: StreamBuffer,
     buf_offset_from_start: u64,
     flusher: Option<Box<dyn Flusher<F>>>,
 }
@@ -20,18 +22,15 @@ impl<F> Stream<F> {
     pub(crate) fn new(
         minialloc: &Arc<RwLock<MiniAllocator<F>>>,
         stream_id: u32,
-        buffer_size: usize,
+        max_buffer_size: usize,
     ) -> Stream<F> {
         let total_len =
             minialloc.read().unwrap().dir_entry(stream_id).stream_len;
-        let buffer_size = buffer_size.max(1);
         Stream {
             minialloc: Arc::downgrade(minialloc),
             stream_id,
             total_len,
-            buffer: vec![0; buffer_size],
-            buf_pos: 0,
-            buf_cap: 0,
+            buffer: StreamBuffer::new(max_buffer_size),
             buf_offset_from_start: 0,
             flusher: None,
         }
@@ -54,7 +53,7 @@ impl<F> Stream<F> {
     }
 
     fn current_position(&self) -> u64 {
-        self.buf_offset_from_start + (self.buf_pos as u64)
+        self.buf_offset_from_start + (self.buffer.cursor() as u64)
     }
 
     fn flush_changes(&mut self) -> io::Result<()> {
@@ -88,8 +87,7 @@ impl<F: Read + Write + Seek> Stream<F> {
             )?;
             self.total_len = size;
             self.buf_offset_from_start = new_position;
-            self.buf_pos = 0;
-            self.buf_cap = 0;
+            self.buffer.clear();
         }
         Ok(())
     }
@@ -104,25 +102,28 @@ impl<F: Read + Write + Seek> Stream<F> {
 
 impl<F: Read + Seek> BufRead for Stream<F> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        if self.buf_pos >= self.buf_cap
+        if !self.buffer.has_remaining()
             && self.current_position() < self.total_len
         {
             self.flush_changes()?;
-            self.buf_offset_from_start += self.buf_pos as u64;
-            self.buf_pos = 0;
+            self.buf_offset_from_start += self.buffer.cursor() as u64;
+            let stream_id = self.stream_id;
+            let offset = self.buf_offset_from_start;
             let minialloc = self.minialloc()?;
-            self.buf_cap = read_data_from_stream(
-                &mut minialloc.write().unwrap(),
-                self.stream_id,
-                self.buf_offset_from_start,
-                &mut self.buffer[..],
-            )?;
+            self.buffer.refill_with(|buf| {
+                read_data_from_stream(
+                    &mut minialloc.write().unwrap(),
+                    stream_id,
+                    offset,
+                    buf,
+                )
+            })?;
         }
-        Ok(&self.buffer[self.buf_pos..self.buf_cap])
+        Ok(self.buffer.remaining_slice())
     }
 
     fn consume(&mut self, amt: usize) {
-        self.buf_pos = self.buf_cap.min(self.buf_pos + amt);
+        self.buffer.consume(amt);
     }
 }
 
@@ -197,14 +198,14 @@ impl<F: Read + Seek> Seek for Stream<F> {
                 }
             };
         if new_pos < self.buf_offset_from_start
-            || new_pos > self.buf_offset_from_start + self.buf_cap as u64
+            || new_pos
+                > self.buf_offset_from_start + self.buffer.filled_len() as u64
         {
             self.flush_changes()?;
             self.buf_offset_from_start = new_pos;
-            self.buf_pos = 0;
-            self.buf_cap = 0;
+            self.buffer.clear();
         } else {
-            self.buf_pos = (new_pos - self.buf_offset_from_start) as usize;
+            self.buffer.seek((new_pos - self.buf_offset_from_start) as usize);
         }
         Ok(new_pos)
     }
@@ -212,22 +213,21 @@ impl<F: Read + Seek> Seek for Stream<F> {
 
 impl<F: Read + Write + Seek> Write for Stream<F> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        debug_assert!(self.buf_pos <= self.buffer.len());
-        if self.buf_pos >= self.buffer.len() {
-            self.flush_changes()?;
-            self.buf_offset_from_start += self.buf_pos as u64;
-            self.buf_pos = 0;
-            self.buf_cap = 0;
+        let num_bytes_written = match self.buffer.write_bytes(buf) {
+            Some(count) => count,
+            None => {
+                self.flush_changes()?;
+                self.buf_offset_from_start += self.buffer.cursor() as u64;
+                self.buffer.clear();
+                self.buffer.write_bytes(buf).unwrap_or(0)
+            }
+        };
+        if num_bytes_written > 0 {
+            self.mark_modified();
+            self.total_len = self.total_len.max(
+                self.buf_offset_from_start + self.buffer.filled_len() as u64,
+            );
         }
-        let num_bytes_written =
-            (&mut self.buffer[self.buf_pos..]).write(buf)?;
-        self.mark_modified();
-        self.buf_pos += num_bytes_written;
-        debug_assert!(self.buf_pos <= self.buffer.len());
-        self.buf_cap = self.buf_cap.max(self.buf_pos);
-        self.total_len = self
-            .total_len
-            .max(self.buf_offset_from_start + self.buf_cap as u64);
         Ok(num_bytes_written)
     }
 
@@ -260,7 +260,7 @@ impl<F: Read + Write + Seek> Flusher<F> for FlushBuffer {
             &mut minialloc.write().unwrap(),
             stream.stream_id,
             stream.buf_offset_from_start,
-            &stream.buffer[..stream.buf_cap],
+            stream.buffer.filled_slice(),
         )?;
         debug_assert_eq!(
             minialloc.read().unwrap().dir_entry(stream.stream_id).stream_len,
@@ -334,8 +334,8 @@ fn write_data_to_stream<F: Read + Write + Seek>(
             chain.write_all(buf)?;
             chain.start_sector_id()
         } else {
-            // Case 1b: The data we're writing is large enough that it should
-            // be placed into a new regular chain.
+            // Case 1b: The data we're writing is large enough that it should be placed
+            // into a new regular chain.
             let mut chain = minialloc
                 .open_chain(consts::END_OF_CHAIN, SectorInit::Zero)?;
             chain.write_all(buf)?;
