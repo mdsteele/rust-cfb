@@ -3,6 +3,7 @@ use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::fs::OpenOptions;
 use std::hint::black_box;
 use std::io::Cursor;
+use std::io::Read;
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -42,6 +43,17 @@ fn write_many_streams_disk(n: usize, size: usize) {
     // File is deleted when tmpfile is dropped
 }
 
+fn read_many_streams(buff: &[u8], n: usize) {
+    let mut test_comp = CompoundFile::open(Cursor::new(buff)).unwrap();
+    for i in 0..n {
+        let name = format!("test{i}");
+        let mut stream = test_comp.open_stream(name).unwrap();
+        let mut sink = Vec::new();
+        stream.read_to_end(&mut sink).unwrap();
+        black_box(sink);
+    }
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     let stream_benches = [
         // (label, stream_size, stream_count)
@@ -52,7 +64,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         ("n=1,size=256MiB", 256 * 1024 * 1024usize, 1usize),
     ];
 
-    let mut group = c.benchmark_group("streams_memory");
+    let mut group = c.benchmark_group("write_streams_memory");
     for (label, stream_size, stream_count) in stream_benches {
         let total_bytes = (stream_count * stream_size) as u64;
         group.sample_size(10);
@@ -69,7 +81,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
     group.finish();
 
-    let mut disk_group = c.benchmark_group("streams_disk");
+    let mut disk_group = c.benchmark_group("write_streams_disk");
     for (label, stream_size, stream_count) in stream_benches {
         let total_bytes = (stream_count * stream_size) as u64;
         disk_group.sample_size(10);
@@ -84,6 +96,20 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     }
     disk_group.finish();
+
+    let mut read_group = c.benchmark_group("read_streams_memory");
+    for (label, stream_size, stream_count) in stream_benches {
+        let total_bytes = (stream_count * stream_size) as u64;
+        let buff = write_many_streams(stream_count, stream_size);
+        read_group.sample_size(10);
+        read_group.throughput(Throughput::Bytes(total_bytes));
+        read_group.bench_function(label, |b| {
+            b.iter(|| {
+                read_many_streams(black_box(&buff), black_box(stream_count));
+            })
+        });
+    }
+    read_group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);

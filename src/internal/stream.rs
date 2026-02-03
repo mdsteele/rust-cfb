@@ -107,10 +107,11 @@ impl<F: Read + Seek> BufRead for Stream<F> {
         {
             self.flush_changes()?;
             self.buf_offset_from_start += self.buffer.cursor() as u64;
+            let remaining = self.total_len - self.buf_offset_from_start;
             let stream_id = self.stream_id;
             let offset = self.buf_offset_from_start;
             let minialloc = self.minialloc()?;
-            self.buffer.refill_with(|buf| {
+            self.buffer.refill_with(remaining, |buf| {
                 read_data_from_stream(
                     &mut minialloc.write().unwrap(),
                     stream_id,

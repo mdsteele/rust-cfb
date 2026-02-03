@@ -3,6 +3,7 @@ const STREAM_BUFFER_GROWTH_FACTOR: usize = 4;
 
 pub(crate) const DEFAULT_STREAM_MAX_BUFFER_SIZE: usize = 1024 * 1024;
 
+use std::convert::TryFrom;
 use std::io::{self, Write};
 
 /// A buffer for stream data that grows up to a configurable maximum.
@@ -52,11 +53,16 @@ impl StreamBuffer {
         &self.data[..self.cap]
     }
 
-    pub(crate) fn refill_with<F>(&mut self, fill: F) -> io::Result<()>
+    pub(crate) fn refill_with<F>(
+        &mut self,
+        remaining: u64,
+        fill: F,
+    ) -> io::Result<()>
     where
         F: FnOnce(&mut [u8]) -> io::Result<usize>,
     {
         self.pos = 0;
+        self.grow_for_read_remaining(remaining);
         let cap = fill(&mut self.data)?;
         self.set_cap(cap);
         Ok(())
@@ -108,7 +114,7 @@ impl StreamBuffer {
     }
 
     /// Attempts to grow the buffer, returning false if at max size.
-    pub(crate) fn grow(&mut self) -> bool {
+    fn grow(&mut self) -> bool {
         if self.data.len() >= self.max_size {
             return false;
         }
@@ -116,6 +122,18 @@ impl StreamBuffer {
             (self.data.len() * STREAM_BUFFER_GROWTH_FACTOR).min(self.max_size);
         self.data.resize(new_len, 0);
         true
+    }
+
+    fn grow_for_read_remaining(&mut self, remaining: u64) {
+        let current_len = self.data.len() as u64;
+        if remaining <= current_len {
+            return;
+        }
+        let remaining_usize =
+            usize::try_from(remaining).unwrap_or(self.max_size);
+        let desired =
+            remaining_usize.min(self.max_size).max(STREAM_BUFFER_MIN);
+        self.data.resize(desired, 0);
     }
 
     #[cfg(test)]
@@ -131,7 +149,7 @@ mod tests {
     #[test]
     fn stream_buffer_advance() {
         let mut buffer = StreamBuffer::default();
-        buffer.refill_with(|_| Ok(8)).unwrap();
+        buffer.refill_with(8, |_| Ok(8)).unwrap();
         buffer.consume(3);
         assert_eq!(buffer.cursor(), 3);
         buffer.consume(5);
@@ -142,7 +160,7 @@ mod tests {
     #[should_panic]
     fn stream_buffer_consume_panics_past_cap() {
         let mut buffer = StreamBuffer::default();
-        buffer.refill_with(|_| Ok(4)).unwrap();
+        buffer.refill_with(4, |_| Ok(4)).unwrap();
         buffer.consume(5);
     }
 
@@ -174,7 +192,7 @@ mod tests {
     fn stream_buffer_refill_resets_cursor() {
         let mut buffer = StreamBuffer::default();
         buffer.seek(5);
-        buffer.refill_with(|_| Ok(3)).unwrap();
+        buffer.refill_with(3, |_| Ok(3)).unwrap();
         assert_eq!(buffer.cursor(), 0);
         assert_eq!(buffer.filled_len(), 3);
     }
@@ -200,14 +218,14 @@ mod tests {
     fn stream_buffer_set_cap_allows_len_boundary() {
         let mut buffer = StreamBuffer::default();
         let len = STREAM_BUFFER_MIN;
-        buffer.refill_with(|_| Ok(len)).unwrap();
+        buffer.refill_with(len as u64, |_| Ok(len)).unwrap();
         assert_eq!(buffer.filled_len(), len);
     }
 
     #[test]
     fn stream_buffer_grow_preserves_pos_and_cap() {
         let mut buffer = StreamBuffer::default();
-        buffer.refill_with(|_| Ok(12)).unwrap();
+        buffer.refill_with(12, |_| Ok(12)).unwrap();
         buffer.seek(8);
         assert!(buffer.grow());
         assert_eq!(buffer.cursor(), 8);
@@ -224,9 +242,9 @@ mod tests {
     #[test]
     fn stream_buffer_refill_error_keeps_cap() {
         let mut buffer = StreamBuffer::default();
-        buffer.refill_with(|_| Ok(4)).unwrap();
+        buffer.refill_with(4, |_| Ok(4)).unwrap();
         buffer.seek(2);
-        let result = buffer.refill_with(|_| Err(io::Error::other("fail")));
+        let result = buffer.refill_with(4, |_| Err(io::Error::other("fail")));
         assert!(result.is_err());
         assert_eq!(buffer.cursor(), 0);
         assert_eq!(buffer.filled_len(), 4);
@@ -244,10 +262,35 @@ mod tests {
     #[test]
     fn stream_buffer_remaining_slice_matches_advance() {
         let mut buffer = StreamBuffer::default();
-        buffer.refill_with(|_| Ok(6)).unwrap();
+        buffer.refill_with(6, |_| Ok(6)).unwrap();
         buffer.consume(2);
         assert_eq!(buffer.remaining_slice().len(), 4);
         buffer.consume(4);
         assert!(buffer.remaining_slice().is_empty());
+    }
+
+    #[test]
+    fn write_buffer_grows_when_full() {
+        let mut buffer = StreamBuffer::new(STREAM_BUFFER_MIN * 8);
+        let input = vec![0u8; STREAM_BUFFER_MIN];
+        assert_eq!(buffer.write_bytes(&input), Some(STREAM_BUFFER_MIN));
+        let initial_len = buffer.data_len();
+        assert_eq!(buffer.write_bytes(&[1]), Some(1));
+        let grown_len = buffer.data_len();
+
+        assert_eq!(initial_len, STREAM_BUFFER_MIN);
+        assert_eq!(grown_len, STREAM_BUFFER_MIN * 4);
+    }
+
+    #[test]
+    fn read_buffer_aggressively_grows_on_refill() {
+        let mut buffer = StreamBuffer::new(STREAM_BUFFER_MIN * 8);
+        let initial_len = buffer.data_len();
+        let remaining = (STREAM_BUFFER_MIN * 64) as u64;
+        buffer.refill_with(remaining, |buf| Ok(buf.len())).unwrap();
+        let grown_len = buffer.data_len();
+
+        assert_eq!(initial_len, STREAM_BUFFER_MIN);
+        assert_eq!(grown_len, STREAM_BUFFER_MIN * 8);
     }
 }
