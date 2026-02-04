@@ -56,6 +56,7 @@ use fnv::FnvHashSet;
 use uuid::Uuid;
 
 use crate::internal::consts;
+use crate::internal::DEFAULT_STREAM_MAX_BUFFER_SIZE;
 use crate::internal::{
     Allocator, DirEntry, Directory, EntriesOrder, Header, MiniAllocator,
     ObjType, SectorInit, Sectors, Timestamp, Validation,
@@ -65,23 +66,16 @@ pub use crate::internal::{Entries, Entry, Stream, Version};
 #[macro_use]
 mod internal;
 
-const DEFAULT_STREAM_BUFFER_SIZE: usize = 8192;
-
 //===========================================================================//
 
 /// Opens an existing compound file at the given path in read-only mode.
 pub fn open<P: AsRef<Path>>(path: P) -> io::Result<CompoundFile<fs::File>> {
-    CompoundFile::open(fs::File::open(path)?)
+    OpenOptions::new().open(path)
 }
 
 /// Opens an existing compound file at the given path in read-write mode.
 pub fn open_rw<P: AsRef<Path>>(path: P) -> io::Result<CompoundFile<fs::File>> {
-    open_rw_with_path(path.as_ref())
-}
-
-fn open_rw_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
-    let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
-    CompoundFile::open(file)
+    OpenOptions::new().open_rw(path)
 }
 
 /// Creates a new compound file with no contents at the given path.
@@ -89,92 +83,104 @@ fn open_rw_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
 /// The returned `CompoundFile` object will be both readable and writable.  If
 /// a file already exists at the given path, this will overwrite it.
 pub fn create<P: AsRef<Path>>(path: P) -> io::Result<CompoundFile<fs::File>> {
-    create_with_path(path.as_ref())
-}
-
-fn create_with_path(path: &Path) -> io::Result<CompoundFile<fs::File>> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    CompoundFile::create(file)
+    OpenOptions::new().create(path)
 }
 
 //===========================================================================//
 
-/// Options for creating a stream within a compound file.
-pub struct CreateStreamOptions {
-    pub(crate) buffer_size: usize,
-    pub(crate) overwrite: bool,
+/// Options for opening or creating a compound file.
+pub struct OpenOptions {
+    pub(crate) max_buffer_size: usize,
+    pub(crate) validation: Validation,
 }
 
-impl CreateStreamOptions {
-    /// Creates a new `CreateStreamOptions` with default settings.
+impl OpenOptions {
+    /// Creates a new `OpenOptions` with default settings.
     pub fn new() -> Self {
-        CreateStreamOptions::default()
+        OpenOptions::default()
     }
 
-    /// Sets the buffer size to use when reading/writing the stream.
+    /// Sets the maximum size of a stream's internal buffer.
     ///
-    /// The buffer size determines how much data is read/written at a time when
-    /// accessing the stream. A larger buffer size can improve performance for
-    /// large streams, while a smaller buffer size can reduce memory usage.
-    pub fn buffer_size(mut self, size: usize) -> Self {
-        self.buffer_size = size;
+    /// The buffer grows dynamically up to this limit. Larger limits can improve
+    /// throughput for large streams, while smaller limits reduce peak memory
+    /// usage. Values below the internal minimum are clamped up to that minimum.
+    pub fn max_buffer_size(mut self, size: usize) -> Self {
+        self.max_buffer_size = size;
         self
     }
 
-    /// Sets whether to overwrite an existing stream at the given path when
-    /// creating the stream.
-    ///
-    /// If `overwrite` is set to `true`, and a stream already exists at the
-    /// given path, the existing stream will be truncated to zero length.
-    /// If `overwrite` is set to `false`, and a stream already exists at the
-    /// given path, an error will be returned.
-    pub fn overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite = overwrite;
+    /// Any violation of the CFB spec will be treated as an error when parsing.
+    pub fn strict(mut self) -> Self {
+        self.validation = Validation::Strict;
         self
+    }
+
+    /// Opens an existing compound file at the given path in read-only mode.
+    pub fn open<P: AsRef<Path>>(
+        self,
+        path: P,
+    ) -> io::Result<CompoundFile<fs::File>> {
+        self.open_with(fs::File::open(path)?)
+    }
+
+    /// Opens an existing compound file at the given path in read-write mode.
+    pub fn open_rw<P: AsRef<Path>>(
+        self,
+        path: P,
+    ) -> io::Result<CompoundFile<fs::File>> {
+        let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+        self.open_with(file)
+    }
+
+    /// Creates a new compound file with no contents at the given path.
+    ///
+    /// The returned `CompoundFile` object will be both readable and writable.
+    /// If a file already exists at the given path, this will overwrite it.
+    pub fn create<P: AsRef<Path>>(
+        self,
+        path: P,
+    ) -> io::Result<CompoundFile<fs::File>> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        self.create_with(file)
+    }
+
+    /// Opens an existing compound file using the underlying reader.
+    pub fn open_with<F: Read + Seek>(
+        self,
+        inner: F,
+    ) -> io::Result<CompoundFile<F>> {
+        CompoundFile::open_internal(
+            inner,
+            self.validation,
+            self.max_buffer_size,
+        )
+    }
+
+    /// Creates a new compound file with no contents using the underlying writer.
+    pub fn create_with<F: Read + Write + Seek>(
+        self,
+        inner: F,
+    ) -> io::Result<CompoundFile<F>> {
+        CompoundFile::create_with_version_and_options(
+            Version::V4,
+            inner,
+            self.max_buffer_size,
+        )
     }
 }
 
-impl Default for CreateStreamOptions {
+impl Default for OpenOptions {
     fn default() -> Self {
-        CreateStreamOptions {
-            buffer_size: DEFAULT_STREAM_BUFFER_SIZE,
-            overwrite: false,
+        OpenOptions {
+            max_buffer_size: DEFAULT_STREAM_MAX_BUFFER_SIZE,
+            validation: Validation::Permissive,
         }
-    }
-}
-
-//===========================================================================//
-
-/// Options for opening a stream within a compound file.
-pub struct OpenStreamOptions {
-    pub(crate) buffer_size: usize,
-}
-
-impl OpenStreamOptions {
-    /// Creates a new `StreamOptions` with default settings.
-    pub fn new() -> Self {
-        OpenStreamOptions::default()
-    }
-
-    /// Sets the buffer size to use when reading/writing the stream.
-    ///
-    /// The buffer size determines how much data is read/written at a time when
-    /// accessing the stream. A larger buffer size can improve performance for
-    /// large streams, while a smaller buffer size can reduce memory usage.
-    pub fn buffer_size(mut self, size: usize) -> Self {
-        self.buffer_size = size;
-        self
-    }
-}
-
-impl Default for OpenStreamOptions {
-    fn default() -> Self {
-        OpenStreamOptions { buffer_size: DEFAULT_STREAM_BUFFER_SIZE }
     }
 }
 
@@ -185,6 +191,7 @@ impl Default for OpenStreamOptions {
 /// [`Cursor`](https://doc.rust-lang.org/std/io/struct.Cursor.html)).
 pub struct CompoundFile<F> {
     minialloc: Arc<RwLock<MiniAllocator<F>>>,
+    max_buffer_size: usize,
 }
 
 impl<F> CompoundFile<F> {
@@ -385,28 +392,10 @@ impl<F: Seek> CompoundFile<F> {
         &mut self,
         path: P,
     ) -> io::Result<Stream<F>> {
-        self.open_stream_with_path(path.as_ref(), DEFAULT_STREAM_BUFFER_SIZE)
+        self.open_stream_with_path(path.as_ref())
     }
 
-    /// Opens an existing stream in the compound file for reading and/or
-    /// writing (depending on what the underlying file supports), with a specified buffer size.
-    ///
-    /// The buffer size determines how much data is read/written at a time when
-    /// accessing the stream. A larger buffer size can improve performance for
-    /// large streams, while a smaller buffer size can reduce memory usage.
-    pub fn open_stream_with_options<P: AsRef<Path>>(
-        &mut self,
-        path: P,
-        options: OpenStreamOptions,
-    ) -> io::Result<Stream<F>> {
-        self.open_stream_with_path(path.as_ref(), options.buffer_size)
-    }
-
-    fn open_stream_with_path(
-        &mut self,
-        path: &Path,
-        buffer_size: usize,
-    ) -> io::Result<Stream<F>> {
+    fn open_stream_with_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
         let names = internal::path::name_chain_from_path(path)?;
         let path = internal::path::path_from_name_chain(&names);
         let stream_id = match self.stream_id_for_name_chain(&names) {
@@ -416,7 +405,7 @@ impl<F: Seek> CompoundFile<F> {
         if self.minialloc().dir_entry(stream_id).obj_type != ObjType::Stream {
             invalid_input!("Not a stream: {:?}", path);
         }
-        Ok(Stream::new(&self.minialloc, stream_id, buffer_size))
+        Ok(Stream::new(&self.minialloc, stream_id, self.max_buffer_size))
     }
 }
 
@@ -425,21 +414,22 @@ impl<F: Read + Seek> CompoundFile<F> {
     /// underlying reader also supports the `Write` trait, then the
     /// `CompoundFile` object will be writable as well.
     pub fn open(inner: F) -> io::Result<CompoundFile<F>> {
-        CompoundFile::open_internal(inner, Validation::Permissive)
+        OpenOptions::new().open_with(inner)
     }
 
     /// Like `open()`, but is stricter when parsing and will return an error if
     /// the file violates the CFB spec in any way (which many CFB files in the
     /// wild do).  This is mainly useful for validating a CFB file or
-    /// implemention (such as this crate itself) to help ensure compatibility
+    /// implementation (such as this crate itself) to help ensure compatibility
     /// with other readers.
     pub fn open_strict(inner: F) -> io::Result<CompoundFile<F>> {
-        CompoundFile::open_internal(inner, Validation::Strict)
+        OpenOptions::new().strict().open_with(inner)
     }
 
     fn open_internal(
         mut inner: F,
         validation: Validation,
+        max_buffer_size: usize,
     ) -> io::Result<CompoundFile<F>> {
         let inner_len = inner.seek(SeekFrom::End(0))?;
         if inner_len < consts::HEADER_LEN as u64 {
@@ -705,7 +695,10 @@ impl<F: Read + Seek> CompoundFile<F> {
             validation,
         )?;
 
-        Ok(CompoundFile { minialloc: Arc::new(RwLock::new(minialloc)) })
+        Ok(CompoundFile {
+            minialloc: Arc::new(RwLock::new(minialloc)),
+            max_buffer_size,
+        })
     }
 }
 
@@ -713,14 +706,26 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
     /// Creates a new compound file with no contents, using the underlying
     /// reader/writer.  The reader/writer should be initially empty.
     pub fn create(inner: F) -> io::Result<CompoundFile<F>> {
-        CompoundFile::create_with_version(Version::V4, inner)
+        OpenOptions::new().create_with(inner)
     }
 
     /// Creates a new compound file of the given version with no contents,
     /// using the underlying writer.  The writer should be initially empty.
     pub fn create_with_version(
         version: Version,
+        inner: F,
+    ) -> io::Result<CompoundFile<F>> {
+        CompoundFile::create_with_version_and_options(
+            version,
+            inner,
+            DEFAULT_STREAM_MAX_BUFFER_SIZE,
+        )
+    }
+
+    fn create_with_version_and_options(
+        version: Version,
         mut inner: F,
+        max_buffer_size: usize,
     ) -> io::Result<CompoundFile<F>> {
         let mut header = Header {
             version,
@@ -783,7 +788,10 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             consts::END_OF_CHAIN,
             Validation::Strict,
         )?;
-        Ok(CompoundFile { minialloc: Arc::new(RwLock::new(minialloc)) })
+        Ok(CompoundFile {
+            minialloc: Arc::new(RwLock::new(minialloc)),
+            max_buffer_size,
+        })
     }
 
     /// Creates a new, empty storage object (i.e. "directory") at the provided
@@ -954,11 +962,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         &mut self,
         path: P,
     ) -> io::Result<Stream<F>> {
-        self.create_stream_with_path_and_buffer_size(
-            path.as_ref(),
-            true,
-            DEFAULT_STREAM_BUFFER_SIZE,
-        )
+        self.create_stream_with_path(path.as_ref(), true)
     }
 
     /// Creates and returns a new, empty stream object at the provided path.
@@ -968,35 +972,13 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         &mut self,
         path: P,
     ) -> io::Result<Stream<F>> {
-        self.create_stream_with_path_and_buffer_size(
-            path.as_ref(),
-            false,
-            DEFAULT_STREAM_BUFFER_SIZE,
-        )
+        self.create_stream_with_path(path.as_ref(), false)
     }
 
-    /// Creates and returns a new, empty stream object at the provided path,
-    /// using a custom per-stream buffer size.
-    ///
-    /// This is equivalent to `create_stream()`, except the returned `Stream`
-    /// uses `buffer_size` bytes for its internal read/write buffer.
-    pub fn create_stream_with_options<P: AsRef<Path>>(
-        &mut self,
-        path: P,
-        options: CreateStreamOptions,
-    ) -> io::Result<Stream<F>> {
-        self.create_stream_with_path_and_buffer_size(
-            path.as_ref(),
-            options.overwrite,
-            options.buffer_size,
-        )
-    }
-
-    fn create_stream_with_path_and_buffer_size(
+    fn create_stream_with_path(
         &mut self,
         path: &Path,
         overwrite: bool,
-        buffer_size: usize,
     ) -> io::Result<Stream<F>> {
         let mut names = internal::path::name_chain_from_path(path)?;
         if let Some(stream_id) = self.stream_id_for_name_chain(&names) {
@@ -1015,8 +997,11 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                     internal::path::path_from_name_chain(&names)
                 );
             } else {
-                let mut stream =
-                    Stream::new(&self.minialloc, stream_id, buffer_size);
+                let mut stream = Stream::new(
+                    &self.minialloc,
+                    stream_id,
+                    self.max_buffer_size,
+                );
                 stream.set_len(0)?;
                 return Ok(stream);
             }
@@ -1034,7 +1019,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
             name,
             ObjType::Stream,
         )?;
-        Ok(Stream::new(&self.minialloc, new_stream_id, buffer_size))
+        Ok(Stream::new(&self.minialloc, new_stream_id, self.max_buffer_size))
     }
 
     /// Removes the stream object at the provided path.
