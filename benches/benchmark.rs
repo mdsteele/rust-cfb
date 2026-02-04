@@ -57,6 +57,7 @@ fn read_many_streams(buff: &[u8], n: usize) {
 fn criterion_benchmark(c: &mut Criterion) {
     let stream_benches = [
         // (label, stream_size, stream_count)
+        ("n=10000,size=0B", 0, 10000usize),
         ("n=1000,size=64B", 64usize, 1000usize),
         ("n=100,size=4KiB-1 (MiniFAT)", 1024 * 4 - 1, 100usize),
         ("n=100,size=4KiB (FAT)", 1024 * 4, 100usize),
@@ -68,7 +69,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     for (label, stream_size, stream_count) in stream_benches {
         let total_bytes = (stream_count * stream_size) as u64;
         group.sample_size(10);
-        group.throughput(Throughput::Bytes(total_bytes));
+        if total_bytes > 0 {
+            group.throughput(Throughput::Bytes(total_bytes));
+        }
         group.bench_function(label, |b| {
             b.iter(|| {
                 let out = write_many_streams(
@@ -85,7 +88,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     for (label, stream_size, stream_count) in stream_benches {
         let total_bytes = (stream_count * stream_size) as u64;
         disk_group.sample_size(10);
-        disk_group.throughput(Throughput::Bytes(total_bytes));
+        if total_bytes > 0 {
+            disk_group.throughput(Throughput::Bytes(total_bytes));
+        }
         disk_group.bench_function(label, |b| {
             b.iter(|| {
                 write_many_streams_disk(
@@ -102,7 +107,9 @@ fn criterion_benchmark(c: &mut Criterion) {
         let total_bytes = (stream_count * stream_size) as u64;
         let buff = write_many_streams(stream_count, stream_size);
         read_group.sample_size(10);
-        read_group.throughput(Throughput::Bytes(total_bytes));
+        if total_bytes > 0 {
+            read_group.throughput(Throughput::Bytes(total_bytes));
+        }
         read_group.bench_function(label, |b| {
             b.iter(|| {
                 read_many_streams(black_box(&buff), black_box(stream_count));
