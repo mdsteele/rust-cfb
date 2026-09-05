@@ -89,10 +89,22 @@ impl Entry {
         self.creation_time.to_system_time()
     }
 
+    /// Returns the raw FILETIME value of [`created`], as it is stored in the
+    /// file.
+    pub fn created_raw(&self) -> u64 {
+        self.creation_time.raw_value()
+    }
+
     /// Returns the time when the object that this entry represents was last
     /// modified.
     pub fn modified(&self) -> SystemTime {
         self.modified_time.to_system_time()
+    }
+
+    /// Returns the raw FILETIME value of [`modified`], as it is stored in the
+    /// file.
+    pub fn modified_raw(&self) -> u64 {
+        self.modified_time.raw_value()
     }
 }
 
