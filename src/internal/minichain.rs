@@ -38,9 +38,46 @@ impl<'a, F> MiniChain<'a, F> {
     pub fn len(&self) -> u64 {
         (consts::MINI_SECTOR_LEN as u64) * (self.sector_ids.len() as u64)
     }
+
+    /// How many mini sectors from `index` on are consecutive within one
+    /// regular sector (and so can be read or written in one go), looking
+    /// no further than needed to cover `wanted` bytes from
+    /// `offset_within_sector` into the first.
+    fn run_len(
+        &self,
+        index: usize,
+        offset_within_sector: u64,
+        wanted: usize,
+    ) -> usize {
+        let mini_sector_len = consts::MINI_SECTOR_LEN as u64;
+        let per_sector =
+            (self.minialloc.sector_len() / consts::MINI_SECTOR_LEN) as u32;
+        let first = self.sector_ids[index];
+        let mut run = 1;
+        while index + run < self.sector_ids.len()
+            && self.sector_ids[index + run]
+                == self.sector_ids[index + run - 1] + 1
+            && self.sector_ids[index + run] / per_sector == first / per_sector
+            && run as u64 * mini_sector_len - offset_within_sector
+                < wanted as u64
+        {
+            run += 1;
+        }
+        run
+    }
 }
 
 impl<'a, F: Read + Write + Seek> MiniChain<'a, F> {
+    /// Adds `count` mini sectors to the end of the chain.
+    fn extend_by(&mut self, count: usize) -> io::Result<()> {
+        let last_sector_id =
+            self.sector_ids.last().copied().unwrap_or(consts::END_OF_CHAIN);
+        let new_sector_ids =
+            self.minialloc.extend_mini_chain_by(last_sector_id, count)?;
+        self.sector_ids.extend(new_sector_ids);
+        Ok(())
+    }
+
     /// Resizes the chain to the minimum number of sectors large enough to old
     /// `new_len` bytes, allocating or freeing sectors as needed.
     pub fn set_len(&mut self, new_len: u64) -> io::Result<()> {
@@ -60,15 +97,7 @@ impl<'a, F: Read + Write + Seek> MiniChain<'a, F> {
             }
             self.zero_tail(new_len)?;
         } else {
-            for _ in self.sector_ids.len()..new_num_sectors {
-                let new_sector_id =
-                    if let Some(&last_sector_id) = self.sector_ids.last() {
-                        self.minialloc.extend_mini_chain(last_sector_id)?
-                    } else {
-                        self.minialloc.begin_mini_chain()?
-                    };
-                self.sector_ids.push(new_sector_id);
-            }
+            self.extend_by(new_num_sectors - self.sector_ids.len())?;
         }
         Ok(())
     }
@@ -130,6 +159,12 @@ impl<'a, F: Read + Seek> Read for MiniChain<'a, F> {
         debug_assert!(current_sector_index < self.sector_ids.len());
         let current_sector_id = self.sector_ids[current_sector_index];
         let offset_within_sector = self.offset_from_start % sector_len;
+        // Read through as many consecutive mini sectors as the buffer
+        // covers.
+        let run =
+            self.run_len(current_sector_index, offset_within_sector, max_len);
+        let run_len = run as u64 * sector_len - offset_within_sector;
+        let max_len = max_len.min(run_len as usize);
         let mut sector = self.minialloc.seek_within_mini_sector(
             current_sector_id,
             offset_within_sector,
@@ -146,31 +181,36 @@ impl<'a, F: Read + Write + Seek> Write for MiniChain<'a, F> {
         if buf.is_empty() {
             return Ok(0);
         }
-        let mut total_len = self.len();
+        let total_len = self.len();
+        debug_assert!(self.offset_from_start <= total_len);
         let sector_len = consts::MINI_SECTOR_LEN as u64;
-        if self.offset_from_start == total_len {
-            let new_sector_id =
-                if let Some(&last_sector_id) = self.sector_ids.last() {
-                    self.minialloc.extend_mini_chain(last_sector_id)?
-                } else {
-                    self.minialloc.begin_mini_chain()?
-                };
-            self.sector_ids.push(new_sector_id);
-            total_len += sector_len;
-            debug_assert_eq!(total_len, self.len());
+        // Make room for the whole buffer at once.
+        let end = self.offset_from_start + buf.len() as u64;
+        if end > total_len {
+            let count = (end - total_len).div_ceil(sector_len) as usize;
+            self.extend_by(count)?;
         }
         let current_sector_index =
             (self.offset_from_start / sector_len) as usize;
         debug_assert!(current_sector_index < self.sector_ids.len());
         let current_sector_id = self.sector_ids[current_sector_index];
         let offset_within_sector = self.offset_from_start % sector_len;
+        // Write through as many consecutive mini sectors as the buffer
+        // covers.
+        let run = self.run_len(
+            current_sector_index,
+            offset_within_sector,
+            buf.len(),
+        );
+        let run_len = run as u64 * sector_len - offset_within_sector;
+        let max_len = buf.len().min(run_len as usize);
         let mut sector = self.minialloc.seek_within_mini_sector(
             current_sector_id,
             offset_within_sector,
         )?;
-        let bytes_written = sector.write(buf)?;
+        let bytes_written = sector.write(&buf[..max_len])?;
         self.offset_from_start += bytes_written as u64;
-        debug_assert!(self.offset_from_start <= total_len);
+        debug_assert!(self.offset_from_start <= self.len());
         Ok(bytes_written)
     }
 

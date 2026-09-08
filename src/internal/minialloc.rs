@@ -90,6 +90,10 @@ impl<F> MiniAllocator<F> {
         self.directory.into_inner()
     }
 
+    pub fn sector_len(&self) -> usize {
+        self.directory.sector_len()
+    }
+
     pub fn stream_id_for_name_chain(&self, names: &[&str]) -> Option<u32> {
         self.directory.stream_id_for_name_chain(names)
     }
@@ -209,6 +213,10 @@ impl<F: Seek> MiniAllocator<F> {
         )
     }
 
+    /// Seeks to `offset_within_mini_sector` bytes into mini sector
+    /// `mini_sector`.  The returned sector runs to the end of the regular
+    /// sector the mini sector lives in, so consecutive mini sectors that
+    /// share a regular sector can be read or written in one go.
     pub fn seek_within_mini_sector(
         &mut self,
         mini_sector: u32,
@@ -228,11 +236,10 @@ impl<F: Seek> MiniAllocator<F> {
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "invalid sector id")
             })?;
-        self.directory.seek_within_subsector(
+        self.directory.seek_within_sector(
             sector_id,
-            mini_sector_within_sector,
-            consts::MINI_SECTOR_LEN,
-            offset_within_mini_sector,
+            mini_sector_within_sector as u64 * consts::MINI_SECTOR_LEN as u64
+                + offset_within_mini_sector,
         )
     }
 }
@@ -283,47 +290,75 @@ impl<F: Write + Seek> MiniAllocator<F> {
         self.directory.with_dir_entry_mut(stream_id, func)
     }
 
-    /// Allocates a new mini chain with one sector, and returns the starting
-    /// sector number.
-    pub fn begin_mini_chain(&mut self) -> io::Result<u32> {
-        self.allocate_mini_sector(consts::END_OF_CHAIN)
-    }
-
-    /// Given the starting mini sector (or any internal mini sector) of a mini
-    /// chain, extends the end of that chain by one mini sector and returns the
-    /// new mini sector number, updating the MiniFAT as necessary.
-    pub fn extend_mini_chain(
+    /// Adds `count` mini sectors to the end of the mini chain whose last
+    /// mini sector is `last_mini_sector` (or starts a new mini chain, if
+    /// that is `END_OF_CHAIN`), and returns their IDs in chain order.
+    ///
+    /// Doing this for a whole write at once, rather than a mini sector at a
+    /// time, lets the MiniFAT entries of consecutive mini sectors be written
+    /// together, and the mini stream (and so the root directory entry) be
+    /// grown once.
+    pub fn extend_mini_chain_by(
         &mut self,
-        start_mini_sector: u32,
-    ) -> io::Result<u32> {
-        debug_assert_ne!(start_mini_sector, consts::END_OF_CHAIN);
-        let mut last_mini_sector = start_mini_sector;
-        loop {
-            let next = self.minifat[last_mini_sector as usize];
-            if next == consts::END_OF_CHAIN {
-                break;
-            }
-            last_mini_sector = next;
+        last_mini_sector: u32,
+        count: usize,
+    ) -> io::Result<Vec<u32>> {
+        debug_assert!(
+            last_mini_sector == consts::END_OF_CHAIN
+                || self.minifat[last_mini_sector as usize]
+                    == consts::END_OF_CHAIN
+        );
+        let mut mini_sectors = Vec::with_capacity(count);
+        let mut appended = 0;
+        for _ in 0..count {
+            mini_sectors.push(self.take_mini_sector_id(&mut appended)?);
         }
-        let new_mini_sector =
-            self.allocate_mini_sector(consts::END_OF_CHAIN)?;
-        self.set_minifat(last_mini_sector, new_mini_sector)?;
-        Ok(new_mini_sector)
+        // Link the new mini sectors up, writing the MiniFAT entries of each
+        // run of consecutive IDs in one go.
+        let mut start = 0;
+        while start < mini_sectors.len() {
+            let mut end = start + 1;
+            while end < mini_sectors.len()
+                && mini_sectors[end] == mini_sectors[end - 1] + 1
+            {
+                end += 1;
+            }
+            let values: Vec<u32> = (start..end)
+                .map(|i| {
+                    mini_sectors
+                        .get(i + 1)
+                        .copied()
+                        .unwrap_or(consts::END_OF_CHAIN)
+                })
+                .collect();
+            self.set_minifat_run(mini_sectors[start], &values)?;
+            start = end;
+        }
+        if last_mini_sector != consts::END_OF_CHAIN && count > 0 {
+            self.set_minifat(last_mini_sector, mini_sectors[0])?;
+        }
+        if appended > 0 {
+            self.append_mini_sectors(appended)?;
+        }
+        Ok(mini_sectors)
     }
 
-    /// Allocates a new entry in the MiniFAT, sets its value to `value`, and
-    /// returns the new mini sector number.
-    fn allocate_mini_sector(&mut self, value: u32) -> io::Result<u32> {
-        // If there's an existing free mini sector, use that.
+    /// Picks the ID for a new mini sector: a free one if there is one,
+    /// otherwise the one past the end of the mini stream (adding a MiniFAT
+    /// sector first if the MiniFAT is full), counting it in `appended`.
+    /// Its MiniFAT entry is set to `END_OF_CHAIN` in memory only; the
+    /// caller writes the entry, and grows the mini stream by the appended
+    /// mini sectors.
+    fn take_mini_sector_id(
+        &mut self,
+        appended: &mut usize,
+    ) -> io::Result<u32> {
         while let Some(free_idx) = self.free_mini_sectors.pop() {
             if self.minifat[free_idx as usize] == consts::FREE_SECTOR {
-                self.set_minifat(free_idx, value)?;
+                self.minifat[free_idx as usize] = consts::END_OF_CHAIN;
                 return Ok(free_idx);
             }
         }
-        // Otherwise, we need a new mini sector; if there's not room in the
-        // MiniFAT to add it, then first we need to allocate a new MiniFAT
-        // sector.
         let minifat_entries_per_sector = self.directory.sector_len() / 4;
         if self.minifat_start_sector == consts::END_OF_CHAIN {
             debug_assert!(self.minifat.is_empty());
@@ -345,23 +380,23 @@ impl<F: Write + Seek> MiniAllocator<F> {
             let mut header = self.directory.seek_within_header(64)?;
             header.write_le_u32(num_minifat_sectors)?;
         }
-        // Add a new mini sector to the end of the mini stream and return it.
         let new_mini_sector = self.minifat.len() as u32;
-        self.set_minifat(new_mini_sector, value)?;
-        self.append_mini_sector()?;
+        self.minifat.push(consts::END_OF_CHAIN);
+        *appended += 1;
         Ok(new_mini_sector)
     }
 
-    /// Adds a new mini sector to the end of the mini stream.
-    fn append_mini_sector(&mut self) -> io::Result<()> {
+    /// Adds `count` mini sectors to the end of the mini stream, adding
+    /// regular sectors to its chain as needed.
+    fn append_mini_sectors(&mut self, count: usize) -> io::Result<()> {
         let mini_stream_start_sector =
             self.directory.root_dir_entry().start_sector;
         let mini_stream_len = self.directory.root_dir_entry().stream_len;
         debug_assert_eq!(mini_stream_len % consts::MINI_SECTOR_LEN as u64, 0);
-        let sector_len = self.directory.sector_len();
+        let sector_len = self.directory.sector_len() as u64;
+        let new_mini_stream_len =
+            mini_stream_len + (count * consts::MINI_SECTOR_LEN) as u64;
 
-        // If the mini stream doesn't have room for new mini sector, add
-        // another regular sector to its chain.
         let new_start_sector = if mini_stream_start_sector
             == consts::END_OF_CHAIN
         {
@@ -370,23 +405,25 @@ impl<F: Write + Seek> MiniAllocator<F> {
             self.mini_stream_sectors = Some(vec![start_sector]);
             start_sector
         } else {
-            if mini_stream_len % sector_len as u64 == 0 {
-                // Extending from the chain's last sector avoids walking
-                // it from the start; `extend_chain` accepts any sector
-                // of the chain.
-                let last_sector = *self.mini_stream_sectors()?.last().unwrap();
-                let new_sector = self
-                    .directory
-                    .extend_chain(last_sector, SectorInit::Zero)?;
-                self.mini_stream_sectors.as_mut().unwrap().push(new_sector);
-            }
             mini_stream_start_sector
         };
+        // If the mini stream doesn't have room for the new mini sectors, add
+        // regular sectors to its chain.
+        while (self.mini_stream_sectors()?.len() as u64) * sector_len
+            < new_mini_stream_len
+        {
+            // Extending from the chain's last sector avoids walking it from
+            // the start; `extend_chain` accepts any sector of the chain.
+            let last_sector = *self.mini_stream_sectors()?.last().unwrap();
+            let new_sector =
+                self.directory.extend_chain(last_sector, SectorInit::Zero)?;
+            self.mini_stream_sectors.as_mut().unwrap().push(new_sector);
+        }
 
         // Update length of mini stream in root directory entry.
         self.directory.with_root_dir_entry_mut(|dir_entry| {
             dir_entry.start_sector = new_start_sector;
-            dir_entry.stream_len += consts::MINI_SECTOR_LEN as u64;
+            dir_entry.stream_len = new_mini_stream_len;
         })
     }
 
@@ -453,27 +490,50 @@ impl<F: Write + Seek> MiniAllocator<F> {
     /// underlying file.  The `index` must be <= `self.minifat.len()`.
     fn set_minifat(&mut self, index: u32, value: u32) -> io::Result<()> {
         debug_assert!(index as usize <= self.minifat.len());
-        let offset = (index as u64) * size_of::<u32>() as u64;
-        let sector_len = self.directory.sector_len() as u64;
-        let sector_index = (offset / sector_len) as usize;
-        let offset_within_sector = offset % sector_len;
-        let sector_id =
-            self.minifat_sectors()?.get(sector_index).copied().ok_or_else(
-                || {
+        if (index as usize) == self.minifat.len() {
+            self.minifat.push(value);
+        }
+        self.set_minifat_run(index, &[value])
+    }
+
+    /// Sets `self.minifat[index..index + values.len()] = values`, and also
+    /// writes that change to the underlying file, one write per MiniFAT
+    /// sector touched.  The entries must already exist.
+    fn set_minifat_run(
+        &mut self,
+        index: u32,
+        values: &[u32],
+    ) -> io::Result<()> {
+        let entries_per_sector =
+            self.directory.sector_len() / size_of::<u32>();
+        let mut done = 0;
+        while done < values.len() {
+            let minifat_index = index as usize + done;
+            let index_within_sector = minifat_index % entries_per_sector;
+            let count = (entries_per_sector - index_within_sector)
+                .min(values.len() - done);
+            let mut bytes = Vec::with_capacity(count * size_of::<u32>());
+            for &value in &values[done..done + count] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            let sector_id = self
+                .minifat_sectors()?
+                .get(minifat_index / entries_per_sector)
+                .copied()
+                .ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         "MiniFAT sector missing",
                     )
-                },
+                })?;
+            let mut sector = self.directory.seek_within_sector(
+                sector_id,
+                (index_within_sector * size_of::<u32>()) as u64,
             )?;
-        let mut sector = self
-            .directory
-            .seek_within_sector(sector_id, offset_within_sector)?;
-        sector.write_le_u32(value)?;
-        if (index as usize) == self.minifat.len() {
-            self.minifat.push(value);
-        } else {
-            self.minifat[index as usize] = value;
+            sector.write_all(&bytes)?;
+            self.minifat[minifat_index..minifat_index + count]
+                .copy_from_slice(&values[done..done + count]);
+            done += count;
         }
         Ok(())
     }
@@ -491,8 +551,8 @@ mod tests {
     use std::io::Cursor;
 
     use crate::internal::{
-        consts, Allocator, DirEntry, Directory, ObjType, Sectors, Timestamp,
-        Validation, Version,
+        consts, Allocator, DirEntry, Directory, ObjType, SectorInit, Sectors,
+        Timestamp, Validation, Version,
     };
 
     use super::MiniAllocator;
@@ -510,7 +570,15 @@ mod tests {
         let version = Version::V3;
         let num_sectors = 4; // FAT, Directory, MiniFAT, and mini chain
         let data_len = (1 + num_sectors) * version.sector_len();
-        let cursor = Cursor::new(vec![0; data_len]);
+        let mut data = vec![0; data_len];
+        // The MiniFAT lives in sector 2; write it out so that what is on
+        // disk matches what is in memory.
+        let minifat_offset = 3 * version.sector_len();
+        for (i, &entry) in minifat.iter().enumerate() {
+            data[minifat_offset + 4 * i..minifat_offset + 4 * i + 4]
+                .copy_from_slice(&entry.to_le_bytes());
+        }
+        let cursor = Cursor::new(data);
         let sectors = Sectors::new(version, data_len as u64, cursor);
         let mut fat = vec![consts::END_OF_CHAIN; num_sectors];
         fat[0] = consts::FAT_SECTOR;
@@ -528,6 +596,75 @@ mod tests {
         let directory =
             Directory::new(allocator, entries, 1, validation).unwrap();
         MiniAllocator::new(directory, minifat, 2, validation).unwrap()
+    }
+
+    fn mini_chain(
+        minialloc: &MiniAllocator<Cursor<Vec<u8>>>,
+        start: u32,
+    ) -> Vec<u32> {
+        let mut ids = vec![];
+        let mut id = start;
+        while id != consts::END_OF_CHAIN {
+            ids.push(id);
+            id = minialloc.next_mini_sector(id).unwrap();
+        }
+        ids
+    }
+
+    /// Reads the MiniFAT back from the file, as a reader would.
+    fn minifat_on_disk(
+        minialloc: &mut MiniAllocator<Cursor<Vec<u8>>>,
+    ) -> Vec<u32> {
+        use crate::ReadLeNumber;
+        let start = minialloc.minifat_start_sector;
+        let mut chain = minialloc.open_chain(start, SectorInit::Fat).unwrap();
+        let mut minifat = Vec::new();
+        for _ in 0..(chain.len() / 4) {
+            minifat.push(chain.read_le_u32().unwrap());
+        }
+        minifat.truncate(minialloc.minifat.len());
+        minifat
+    }
+
+    #[test]
+    fn extending_a_mini_chain_links_and_grows_the_mini_stream() {
+        let mut minialloc = make_minialloc(vec![consts::END_OF_CHAIN]);
+        assert_eq!(minialloc.root_dir_entry().stream_len, 64);
+        // Ten mini sectors after the existing one: the MiniFAT entries are
+        // written, and the mini stream grows to hold them (a V3 sector
+        // holds 8 mini sectors).
+        let ids = minialloc.extend_mini_chain_by(0, 10).unwrap();
+        assert_eq!(ids, (1..=10).collect::<Vec<u32>>());
+        assert_eq!(mini_chain(&minialloc, 0), (0..=10).collect::<Vec<u32>>());
+        assert_eq!(minifat_on_disk(&mut minialloc), minialloc.minifat);
+        assert_eq!(minialloc.root_dir_entry().stream_len, 11 * 64);
+        assert_eq!(minialloc.mini_stream_sectors().unwrap().len(), 2);
+        // A new chain, then freeing it and extending again reuses its mini
+        // sectors, last freed first.
+        let other =
+            minialloc.extend_mini_chain_by(consts::END_OF_CHAIN, 3).unwrap();
+        assert_eq!(other, vec![11, 12, 13]);
+        minialloc.free_mini_chain(11).unwrap();
+        // Freed mini sectors at the end of the mini stream are dropped from
+        // it again.
+        assert_eq!(minialloc.root_dir_entry().stream_len, 11 * 64);
+        let more = minialloc.extend_mini_chain_by(10, 5).unwrap();
+        assert_eq!(more, vec![11, 12, 13, 14, 15]);
+        assert_eq!(mini_chain(&minialloc, 0), (0..=15).collect::<Vec<u32>>());
+        assert_eq!(minifat_on_disk(&mut minialloc), minialloc.minifat);
+        assert_eq!(minialloc.root_dir_entry().stream_len, 16 * 64);
+    }
+
+    #[test]
+    fn extending_across_minifat_sectors() {
+        let mut minialloc = make_minialloc(vec![consts::END_OF_CHAIN]);
+        // A V3 MiniFAT sector holds 128 entries.
+        let ids =
+            minialloc.extend_mini_chain_by(consts::END_OF_CHAIN, 300).unwrap();
+        assert_eq!(mini_chain(&minialloc, ids[0]), ids);
+        assert_eq!(minialloc.minifat_sectors().unwrap().len(), 3);
+        assert_eq!(minifat_on_disk(&mut minialloc), minialloc.minifat);
+        assert_eq!(minialloc.root_dir_entry().stream_len, 301 * 64);
     }
 
     #[test]

@@ -98,3 +98,65 @@ fn a_stream_crossing_the_mini_cutoff_keeps_its_neighbours_intact() {
     comp.open_stream("/big").unwrap().read_to_end(&mut data).unwrap();
     assert_eq!(data, vec![7u8; 50]);
 }
+
+/// A mini stream written in one go lands in one run of mini sectors, one
+/// appended in pieces crosses mini sector boundaries mid-write, and one
+/// created after others were removed reuses their scattered mini sectors;
+/// all of them read back intact, also from a strictly reopened file.
+#[test]
+fn mini_streams_written_whole_in_pieces_and_into_reused_sectors() {
+    let mut comp = CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    let whole: Vec<u8> = (0..3000).map(|i| (i % 253) as u8).collect();
+    comp.create_stream("/whole").unwrap().write_all(&whole).unwrap();
+
+    let mut pieces = Vec::new();
+    {
+        let mut stream = comp.create_stream("/pieces").unwrap();
+        for (i, len) in
+            [10usize, 60, 100, 1, 63, 64, 65, 500].iter().enumerate()
+        {
+            let piece = vec![i as u8 + 1; *len];
+            stream.write_all(&piece).unwrap();
+            pieces.extend_from_slice(&piece);
+        }
+    }
+
+    write_streams(&mut comp, 20, 200);
+    for i in (0..20).step_by(2) {
+        comp.remove_stream(format!("/s{i}")).unwrap();
+    }
+    let reused: Vec<u8> = (0..2500).map(|i| (i % 7) as u8).collect();
+    comp.create_stream("/reused").unwrap().write_all(&reused).unwrap();
+
+    let check = |comp: &mut CompoundFile<Cursor<Vec<u8>>>| {
+        let mut read = |path: &str| {
+            let mut data = Vec::new();
+            comp.open_stream(path).unwrap().read_to_end(&mut data).unwrap();
+            data
+        };
+        assert_eq!(read("/whole"), whole);
+        assert_eq!(read("/pieces"), pieces);
+        assert_eq!(read("/reused"), reused);
+        for i in (1..20).step_by(2) {
+            assert_stream(comp, i, 200);
+        }
+    };
+    check(&mut comp);
+    let bytes = comp.into_inner().into_inner();
+    let mut comp = CompoundFile::open_strict(Cursor::new(bytes)).unwrap();
+    check(&mut comp);
+}
+
+/// Enough mini sectors to need more than one MiniFAT sector (1024 entries
+/// per V4 sector) still link up and reopen strictly.
+#[test]
+fn mini_streams_beyond_one_minifat_sector() {
+    let mut comp = CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    // 40 streams of 4000 bytes take 63 mini sectors each: 2520 entries.
+    write_streams(&mut comp, 40, 4000);
+    let bytes = comp.into_inner().into_inner();
+    let mut comp = CompoundFile::open_strict(Cursor::new(bytes)).unwrap();
+    for i in 0..40 {
+        assert_stream(&mut comp, i, 4000);
+    }
+}
