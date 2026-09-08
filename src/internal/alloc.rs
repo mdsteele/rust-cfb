@@ -132,15 +132,23 @@ impl<F> Allocator<F> {
             *sector = consts::FAT_SECTOR;
         }
         let mut pointees = FnvHashSet::default();
-        for (from_sector, &to_sector) in self.fat.iter().enumerate() {
+        for from_sector in 0..self.fat.len() {
+            let to_sector = self.fat[from_sector];
             if to_sector <= consts::MAX_REGULAR_SECTOR {
                 if to_sector as usize >= self.fat.len() {
-                    malformed!(
-                        "FAT has {} entries, but sector {} points to {}",
-                        self.fat.len(),
-                        from_sector,
-                        to_sector
-                    );
+                    if validation.is_strict() {
+                        malformed!(
+                            "FAT has {} entries, but sector {} points to {}",
+                            self.fat.len(),
+                            from_sector,
+                            to_sector
+                        );
+                    }
+                    // End the chain here instead, so that only a chain
+                    // that actually runs through this sector is affected
+                    // (it gets truncated), rather than the whole file.
+                    self.fat[from_sector] = consts::END_OF_CHAIN;
+                    continue;
                 }
                 if pointees.contains(&to_sector) {
                     malformed!("sector {} pointed to twice", to_sector);
@@ -539,10 +547,23 @@ mod tests {
         expected = "Malformed FAT (FAT has 2 entries, but sector 1 points to \
                     2)"
     )]
-    fn pointee_out_of_range() {
+    fn pointee_out_of_range_strict() {
         let difat = vec![0];
         let fat = vec![consts::FAT_SECTOR, 2];
-        make_allocator(difat, fat, Validation::Permissive);
+        make_allocator(difat, fat, Validation::Strict);
+    }
+
+    #[test]
+    fn pointee_out_of_range_permissive() {
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, 2];
+        // A FAT entry pointing past the end of the file is a spec violation,
+        // but is tolerated under Permissive validation.
+        let mut allocator = make_allocator(difat, fat, Validation::Permissive);
+        // We should repair the FAT entry by ending the chain there, and the
+        // resulting Allocator should now pass Strict validation.
+        assert_eq!(allocator.fat[1], consts::END_OF_CHAIN);
+        allocator.validate(Validation::Strict).unwrap();
     }
 
     #[test]
