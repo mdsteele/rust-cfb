@@ -700,6 +700,44 @@ impl<F: Read + Seek> CompoundFile<F> {
             max_buffer_size,
         })
     }
+    /// Writes a compacted copy of this compound file to `dest`, and returns
+    /// the copy.  `dest` should be empty; it is written from the start.
+    ///
+    /// The copy has the same version and holds the same storages and streams,
+    /// with the same CLSIDs, state bits, and timestamps, but takes up only as
+    /// much space as those need.  A compound file never shrinks in place, so
+    /// the sectors freed by removing or shrinking streams stay in the file
+    /// until it is copied like this.  This is the approach Windows takes as
+    /// well: compacting a file means copying its root storage into a new one.
+    pub fn copy_to<W: Read + Write + Seek>(
+        &mut self,
+        dest: W,
+    ) -> io::Result<CompoundFile<W>> {
+        let mut copy =
+            CompoundFile::create_with_version(self.version(), dest)?;
+        let entries: Vec<Entry> = self.walk().collect();
+        for entry in entries.iter() {
+            if entry.is_stream() {
+                let mut source = self.open_stream(entry.path())?;
+                let mut target = copy.create_stream(entry.path())?;
+                io::copy(&mut source, &mut target)?;
+            } else if !entry.is_root() {
+                copy.create_storage(entry.path())?;
+            }
+        }
+        // Fill in the metadata once the tree is complete, so that nothing
+        // done while building it can overwrite what was copied.
+        for entry in entries.iter() {
+            copy.set_state_bits(entry.path(), entry.state_bits())?;
+            if !entry.is_stream() {
+                copy.set_storage_clsid(entry.path(), *entry.clsid())?;
+                copy.set_created_time(entry.path(), entry.created())?;
+                copy.set_modified_time(entry.path(), entry.modified())?;
+            }
+        }
+        copy.flush()?;
+        Ok(copy)
+    }
 }
 
 impl<F> CompoundFile<F> {
