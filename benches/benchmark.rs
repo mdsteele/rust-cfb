@@ -4,6 +4,8 @@ use std::fs::OpenOptions;
 use std::hint::black_box;
 use std::io::Cursor;
 use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -119,5 +121,45 @@ fn criterion_benchmark(c: &mut Criterion) {
     read_group.finish();
 }
 
-criterion_group!(benches, criterion_benchmark);
+/// Reads one large stream the way a caller that streams it out would: in
+/// pieces, so the stream's buffer is refilled many times.
+fn large_stream_benchmark(c: &mut Criterion) {
+    let size = 256 * 1024 * 1024usize;
+    let buff = write_many_streams(1, size);
+
+    let mut group = c.benchmark_group("read_large_stream_memory");
+    group.sample_size(10);
+    group.throughput(Throughput::Bytes(size as u64));
+    group.bench_function("copy 256MiB", |b| {
+        b.iter(|| {
+            let mut comp = CompoundFile::open(Cursor::new(&buff)).unwrap();
+            let mut stream = comp.open_stream("test0").unwrap();
+            let n = std::io::copy(&mut stream, &mut std::io::sink()).unwrap();
+            black_box(n);
+        })
+    });
+    group.finish();
+
+    let reads = 1000u64;
+    let mut group = c.benchmark_group("seek_large_stream_memory");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(reads));
+    group.bench_function("1000 x seek+read 16B in 256MiB", |b| {
+        b.iter(|| {
+            let mut comp = CompoundFile::open(Cursor::new(&buff)).unwrap();
+            let mut stream = comp.open_stream("test0").unwrap();
+            let len = stream.len();
+            let mut chunk = [0u8; 16];
+            for i in 0..reads {
+                let offset = (i * 7919 * 4099) % (len - 16);
+                stream.seek(SeekFrom::Start(offset)).unwrap();
+                stream.read_exact(&mut chunk).unwrap();
+                black_box(chunk);
+            }
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(benches, criterion_benchmark, large_stream_benchmark);
 criterion_main!(benches);
