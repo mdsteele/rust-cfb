@@ -702,6 +702,23 @@ impl<F: Read + Seek> CompoundFile<F> {
     }
 }
 
+impl<F> CompoundFile<F> {
+    /// Returns the stream ID of the storage at the given name chain, which
+    /// a new entry is about to be created in.
+    fn parent_storage_id(&self, names: &[&str]) -> io::Result<u32> {
+        let Some(parent_id) = self.stream_id_for_name_chain(names) else {
+            not_found!("Parent storage doesn't exist");
+        };
+        if self.minialloc().dir_entry(parent_id).obj_type == ObjType::Stream {
+            invalid_input!(
+                "Parent {:?} is a stream, not a storage",
+                internal::path::path_from_name_chain(names)
+            );
+        }
+        Ok(parent_id)
+    }
+}
+
 impl<F: Read + Write + Seek> CompoundFile<F> {
     /// Creates a new compound file with no contents, using the underlying
     /// reader/writer.  The reader/writer should be initially empty.
@@ -827,10 +844,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         // the root always already exists and will have been rejected above.
         debug_assert!(!names.is_empty());
         let name = names.pop().unwrap();
-        let parent_id = match self.stream_id_for_name_chain(&names) {
-            Some(stream_id) => stream_id,
-            None => not_found!("Parent storage doesn't exist"),
-        };
+        let parent_id = self.parent_storage_id(&names)?;
         self.minialloc_mut().insert_dir_entry(
             parent_id,
             name,
@@ -1010,10 +1024,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
         // the root always already exists and will have been rejected above.
         debug_assert!(!names.is_empty());
         let name = names.pop().unwrap();
-        let parent_id = match self.stream_id_for_name_chain(&names) {
-            Some(stream_id) => stream_id,
-            None => not_found!("Parent storage doesn't exist"),
-        };
+        let parent_id = self.parent_storage_id(&names)?;
         let new_stream_id = self.minialloc_mut().insert_dir_entry(
             parent_id,
             name,

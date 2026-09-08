@@ -786,3 +786,25 @@ fn test_compound_file_sync() {
 }
 
 //===========================================================================//
+
+/// A stream is not a storage: nothing can be created inside one, whatever
+/// case its name is spelled in.  (Doing so used to hang a child off the
+/// stream's directory entry, which strict readers reject.)
+#[test]
+fn cannot_create_entries_inside_a_stream() {
+    let cursor = Cursor::new(Vec::new());
+    let mut comp = CompoundFile::create(cursor).unwrap();
+    comp.create_stream("/a").unwrap().write_all(b"data").unwrap();
+    let err = match comp.create_stream("/A/child") {
+        Ok(_) => panic!("created a stream inside a stream"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(err.to_string(), "Parent \"/A\" is a stream, not a storage");
+    let err = comp.create_storage("/a/child").unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    let cursor = comp.into_inner();
+    let comp = CompoundFile::open_strict(cursor).unwrap();
+    assert!(comp.is_stream("/a"));
+    assert!(!comp.exists("/a/child"));
+}
