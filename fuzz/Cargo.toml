@@ -23,3 +23,9 @@ name = "fuzz_total"
 path = "fuzz_targets/fuzz_total.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_write"
+path = "fuzz_targets/fuzz_write.rs"
+test = false
+doc = false
