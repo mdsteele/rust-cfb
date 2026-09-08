@@ -70,6 +70,47 @@ fn chains_that_outgrow_a_fat_sector_round_trip() {
     assert_eq!(back, small);
 }
 
+/// Only the sectors a write fills completely skip their zero fill: the
+/// unused tail of a chain's last sector is still zero.
+#[test]
+fn unused_tail_of_last_sector_is_zero() {
+    let mut comp = CompoundFile::create_with_version(
+        Version::V3,
+        Cursor::new(Vec::new()),
+    )
+    .unwrap();
+    let data = vec![0xAB; 4096 + 100];
+    comp.create_stream("/s").unwrap().write_all(&data).unwrap();
+    let start_sector = {
+        // Locate the data in the file: the chain is the only run of 0xAB.
+        let bytes = comp.into_inner().into_inner();
+        let start = bytes.windows(4).position(|w| w == [0xAB; 4]).unwrap();
+        assert_eq!(start % 512, 0);
+        (start, bytes)
+    };
+    let (start, bytes) = start_sector;
+    let end = start + data.len();
+    assert!(bytes[start..end].iter().all(|&b| b == 0xAB));
+    let sector_end = end.div_ceil(512) * 512;
+    assert!(bytes[end..sector_end].iter().all(|&b| b == 0));
+}
+
+/// Growing a stream with `set_len` still zero-fills the new sectors.
+#[test]
+fn set_len_growth_is_zero_filled() {
+    let mut comp = CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    {
+        let mut stream = comp.create_stream("/s").unwrap();
+        stream.write_all(&vec![0xCD; 5000]).unwrap();
+        stream.set_len(20000).unwrap();
+    }
+    let mut back = Vec::new();
+    comp.open_stream("/s").unwrap().read_to_end(&mut back).unwrap();
+    assert_eq!(back.len(), 20000);
+    assert!(back[..5000].iter().all(|&b| b == 0xCD));
+    assert!(back[5000..].iter().all(|&b| b == 0));
+}
+
 /// Reads that span consecutive sectors come back in large pieces, and
 /// still respect sector boundaries where the chain is not consecutive.
 #[test]
