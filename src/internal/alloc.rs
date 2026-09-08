@@ -3,7 +3,7 @@ use crate::internal::{
 };
 use crate::WriteLeNumber;
 use fnv::FnvHashSet;
-use std::io::{self, Seek, Write};
+use std::io::{self, Read, Seek, Write};
 use std::mem::size_of;
 
 //===========================================================================//
@@ -162,6 +162,20 @@ impl<F> Allocator<F> {
     }
 }
 
+impl<F: Read + Seek> Allocator<F> {
+    /// Reads from `offset_within_sector` bytes into sector `sector_id` and
+    /// on through the sectors after it in the file; see
+    /// `Sectors::read_contiguous`.
+    pub fn read_contiguous(
+        &mut self,
+        sector_id: u32,
+        offset_within_sector: u64,
+        buf: &mut [u8],
+    ) -> io::Result<usize> {
+        self.sectors.read_contiguous(sector_id, offset_within_sector, buf)
+    }
+}
+
 impl<F: Seek> Allocator<F> {
     pub fn seek_within_header(
         &mut self,
@@ -230,6 +244,18 @@ impl<F: Write + Seek> Allocator<F> {
         let new_sector_id = self.allocate_sector(init)?;
         self.set_fat(last_sector_id, new_sector_id)?;
         Ok(new_sector_id)
+    }
+
+    /// Writes `buf` starting `offset_within_sector` bytes into sector
+    /// `sector_id` and on through the sectors after it in the file; see
+    /// `Sectors::write_contiguous`.
+    pub fn write_contiguous(
+        &mut self,
+        sector_id: u32,
+        offset_within_sector: u64,
+        buf: &[u8],
+    ) -> io::Result<usize> {
+        self.sectors.write_contiguous(sector_id, offset_within_sector, buf)
     }
 
     /// Allocates a new entry in the FAT, sets its value to `END_OF_CHAIN`, and

@@ -43,6 +43,32 @@ impl<F> Sectors<F> {
 }
 
 impl<F: Seek> Sectors<F> {
+    /// Seeks to `offset_within_sector` bytes into sector `sector_id`, having
+    /// checked that the `len` bytes from there stay within the file.
+    fn seek_contiguous(
+        &mut self,
+        sector_id: u32,
+        offset_within_sector: u64,
+        len: usize,
+    ) -> io::Result<()> {
+        let sector_len = self.sector_len() as u64;
+        debug_assert!(offset_within_sector <= sector_len);
+        let end =
+            sector_id as u64 * sector_len + offset_within_sector + len as u64;
+        let last_sector = end.saturating_sub(1) / sector_len;
+        if last_sector >= self.num_sectors as u64 {
+            invalid_data!(
+                "Tried to access sector {}, but sector count is only {}",
+                last_sector,
+                self.num_sectors
+            );
+        }
+        self.inner.seek(SeekFrom::Start(
+            (sector_id + 1) as u64 * sector_len + offset_within_sector,
+        ))?;
+        Ok(())
+    }
+
     pub fn seek_within_header(
         &mut self,
         offset_within_header: u64,
@@ -88,7 +114,39 @@ impl<F: Seek> Sectors<F> {
     }
 }
 
+impl<F: Read + Seek> Sectors<F> {
+    /// Reads into `buf` starting `offset_within_sector` bytes into sector
+    /// `sector_id` and continuing through the sectors that follow it in the
+    /// file, which the caller has established are the next ones of the
+    /// chain being read.  Makes a single read of the underlying file, so
+    /// may read fewer bytes than `buf` holds.
+    pub fn read_contiguous(
+        &mut self,
+        sector_id: u32,
+        offset_within_sector: u64,
+        buf: &mut [u8],
+    ) -> io::Result<usize> {
+        self.seek_contiguous(sector_id, offset_within_sector, buf.len())?;
+        self.inner.read(buf)
+    }
+}
+
 impl<F: Write + Seek> Sectors<F> {
+    /// Writes `buf` starting `offset_within_sector` bytes into sector
+    /// `sector_id` and continuing through the sectors that follow it in the
+    /// file, which the caller has established are the next ones of the
+    /// chain being written.  Makes a single write to the underlying file,
+    /// so may write fewer bytes than `buf` holds.
+    pub fn write_contiguous(
+        &mut self,
+        sector_id: u32,
+        offset_within_sector: u64,
+        buf: &[u8],
+    ) -> io::Result<usize> {
+        self.seek_contiguous(sector_id, offset_within_sector, buf.len())?;
+        self.inner.write(buf)
+    }
+
     /// Creates or resets the specified sector using the given initializer.
     pub fn init_sector(
         &mut self,
