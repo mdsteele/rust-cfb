@@ -67,7 +67,7 @@ impl<'a, F: Write + Seek> Chain<'a, F> {
                 self.allocator
                     .free_chain_after(self.sector_ids[new_num_sectors - 1])?;
             }
-            // TODO: init remainder of final sector
+            self.zero_tail(new_len)?;
         } else {
             for _ in self.sector_ids.len()..new_num_sectors {
                 let new_sector_id = if let Some(&last_sector_id) =
@@ -81,6 +81,23 @@ impl<'a, F: Write + Seek> Chain<'a, F> {
             }
         }
         Ok(())
+    }
+
+    /// Overwrites with zeros the bytes from `offset` to the end of the sector
+    /// containing it, so that no stale data lingers past a stream's length.
+    /// Does nothing if `offset` is at the start of a sector.
+    pub fn zero_tail(&mut self, offset: u64) -> io::Result<()> {
+        let sector_len = self.allocator.sector_len() as u64;
+        let offset_within_sector = offset % sector_len;
+        if offset_within_sector == 0 {
+            return Ok(());
+        }
+        debug_assert!(offset < self.len());
+        let sector_id = self.sector_ids[(offset / sector_len) as usize];
+        let zeros = vec![0u8; (sector_len - offset_within_sector) as usize];
+        self.allocator
+            .seek_within_sector(sector_id, offset_within_sector)?
+            .write_all(&zeros)
     }
 
     pub fn free(self) -> io::Result<()> {

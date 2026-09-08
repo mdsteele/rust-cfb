@@ -1,5 +1,5 @@
 use cfb::{CompoundFile, Version};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 //===========================================================================//
 
@@ -98,3 +98,82 @@ fn resize_huge_to_large() {
 }
 
 //===========================================================================//
+
+//===========================================================================//
+
+// Bytes past a stream's length must not survive in the last sector, or a
+// later grow would hand them back as data.
+
+fn count_byte(comp: CompoundFile<Cursor<Vec<u8>>>, byte: u8) -> usize {
+    comp.into_inner().get_ref().iter().filter(|&&b| b == byte).count()
+}
+
+fn fill_and_shrink(
+    initial_len: usize,
+    shrunk_len: usize,
+) -> CompoundFile<Cursor<Vec<u8>>> {
+    let mut comp =
+        CompoundFile::create(Cursor::new(Vec::new())).expect("create");
+    comp.create_stream("/s")
+        .unwrap()
+        .write_all(&vec![0xAB; initial_len])
+        .unwrap();
+    comp.open_stream("/s").unwrap().set_len(shrunk_len as u64).unwrap();
+    comp
+}
+
+fn read_tail(
+    comp: &mut CompoundFile<Cursor<Vec<u8>>>,
+    from: usize,
+) -> Vec<u8> {
+    let mut stream = comp.open_stream("/s").unwrap();
+    stream.seek(SeekFrom::Start(from as u64)).unwrap();
+    let mut tail = Vec::new();
+    stream.read_to_end(&mut tail).unwrap();
+    tail
+}
+
+#[test]
+fn shrink_zeroes_the_rest_of_the_last_sector() {
+    assert_eq!(count_byte(fill_and_shrink(5000, 4100), 0xAB), 4100);
+    assert_eq!(count_byte(fill_and_shrink(200, 100), 0xAB), 100);
+}
+
+#[test]
+fn grow_after_shrink_reads_zeros() {
+    let mut comp = fill_and_shrink(5000, 4100);
+    comp.open_stream("/s").unwrap().set_len(5000).unwrap();
+    assert_eq!(read_tail(&mut comp, 4100), vec![0u8; 900]);
+    let mut comp = fill_and_shrink(200, 100);
+    comp.open_stream("/s").unwrap().set_len(200).unwrap();
+    assert_eq!(read_tail(&mut comp, 100), vec![0u8; 100]);
+}
+
+#[test]
+fn grow_after_shrink_across_the_mini_cutoff_reads_zeros() {
+    let mut comp = fill_and_shrink(5000, 100);
+    comp.open_stream("/s").unwrap().set_len(5000).unwrap();
+    assert_eq!(read_tail(&mut comp, 100), vec![0u8; 4900]);
+}
+
+#[test]
+fn removing_a_mini_stream_leaves_no_data_behind() {
+    let mut comp =
+        CompoundFile::create(Cursor::new(Vec::new())).expect("create");
+    comp.create_stream("/s").unwrap().write_all(&[0xAB; 200]).unwrap();
+    comp.remove_stream("/s").unwrap();
+    assert_eq!(count_byte(comp, 0xAB), 0);
+}
+
+#[test]
+fn grow_in_a_reused_mini_sector_reads_zeros() {
+    let mut comp =
+        CompoundFile::create(Cursor::new(Vec::new())).expect("create");
+    comp.create_stream("/old").unwrap().write_all(&[0xAB; 128]).unwrap();
+    comp.remove_stream("/old").unwrap();
+    // The new stream takes over the freed mini sectors, whose old contents
+    // must not show up when it grows into them.
+    comp.create_stream("/s").unwrap().write_all(&[0xCD; 100]).unwrap();
+    comp.open_stream("/s").unwrap().set_len(128).unwrap();
+    assert_eq!(read_tail(&mut comp, 100), vec![0u8; 28]);
+}

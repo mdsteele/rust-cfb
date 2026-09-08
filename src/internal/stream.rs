@@ -429,8 +429,12 @@ fn resize_stream<F: Read + Write + Seek>(
         } else if new_stream_len < consts::MINI_STREAM_CUTOFF as u64 {
             // Case 2b: The new length is still small enough to fit in a mini
             // chain.  Therefore, we just need to adjust the length of the
-            // existing chain.
+            // existing chain.  When growing, the bytes between the old and
+            // new lengths in the last mini sector must read as zeros.
             let mut chain = minialloc.open_mini_chain(old_start_sector)?;
+            if new_stream_len > old_stream_len {
+                chain.zero_tail(old_stream_len)?;
+            }
             chain.set_len(new_stream_len)?;
             debug_assert_eq!(chain.start_sector_id(), old_start_sector);
             old_start_sector
@@ -469,9 +473,13 @@ fn resize_stream<F: Read + Write + Seek>(
         } else {
             // Case 3c: The new length is still too large to fit in a mini
             // chain.  Therefore, we just need to adjust the length of the
-            // existing chain.
+            // existing chain.  When growing, the bytes between the old and
+            // new lengths in the last sector must read as zeros.
             let mut chain =
                 minialloc.open_chain(old_start_sector, SectorInit::Zero)?;
+            if new_stream_len > old_stream_len {
+                chain.zero_tail(old_stream_len)?;
+            }
             chain.set_len(new_stream_len)?;
             debug_assert_eq!(chain.start_sector_id(), old_start_sector);
             old_start_sector

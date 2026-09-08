@@ -396,6 +396,14 @@ impl<F: Write + Seek> MiniAllocator<F> {
             invalid_input!("sector {} freed twice", mini_sector);
         }
         self.set_minifat(mini_sector, consts::FREE_SECTOR)?;
+        // Wipe the mini sector now.  Regular sectors are zeroed when they
+        // are allocated, but a mini sector can come back into use without
+        // passing through allocation of a fresh sector: either from the
+        // free list, or by the mini stream growing again over a region it
+        // was truncated from below.  A chain growing into it must read
+        // zeros there.
+        self.seek_within_mini_sector(mini_sector, 0)?
+            .write_all(&[0u8; consts::MINI_SECTOR_LEN])?;
         self.free_mini_sectors.push(mini_sector);
         let mut mini_stream_len = self.directory.root_dir_entry().stream_len;
         debug_assert_eq!(mini_stream_len % consts::MINI_SECTOR_LEN as u64, 0);
