@@ -622,6 +622,7 @@ mod tests {
         for _ in 0..(chain.len() / 4) {
             minifat.push(chain.read_le_u32().unwrap());
         }
+        drop(chain);
         minifat.truncate(minialloc.minifat.len());
         minifat
     }
