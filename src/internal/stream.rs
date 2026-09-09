@@ -1,10 +1,20 @@
 use crate::internal::{consts, MiniAllocator, ObjType, SectorInit};
+use std::convert::TryFrom;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock, Weak};
 
 //===========================================================================//
 
 use crate::internal::stream_buffer::StreamBuffer;
+
+/// Reads and writes at least this large go straight to the underlying file
+/// rather than through the stream's buffer: copying them through the buffer
+/// (and growing it to hold them) costs more than the buffering saves.
+const DIRECT_IO_MIN: usize = 64 * 1024;
+
+/// How much of a stream `read_to_end` reads per call to the underlying
+/// file.
+const READ_TO_END_CHUNK: usize = 16 * 1024 * 1024;
 
 //===========================================================================//
 
@@ -100,6 +110,27 @@ impl<F: Read + Write + Seek> Stream<F> {
     }
 }
 
+impl<F: Read + Seek> Stream<F> {
+    /// Reads into `buf` straight from the underlying file, from the current
+    /// position on.  The buffer must hold no unread data; it is emptied.
+    fn read_direct(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        debug_assert!(!self.buffer.has_remaining());
+        self.flush_changes()?;
+        let position = self.current_position();
+        self.buf_offset_from_start = position;
+        self.buffer.clear();
+        let minialloc = self.minialloc()?;
+        let num_bytes = read_data_from_stream(
+            &mut minialloc.write().unwrap(),
+            self.stream_id,
+            position,
+            buf,
+        )?;
+        self.buf_offset_from_start += num_bytes as u64;
+        Ok(num_bytes)
+    }
+}
+
 impl<F: Read + Seek> BufRead for Stream<F> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if !self.buffer.has_remaining()
@@ -130,10 +161,75 @@ impl<F: Read + Seek> BufRead for Stream<F> {
 
 impl<F: Read + Seek> Read for Stream<F> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.len() >= DIRECT_IO_MIN && !self.buffer.has_remaining() {
+            return self.read_direct(buf);
+        }
         let mut buffered_data = self.fill_buf()?;
         let num_bytes = buffered_data.read(buf)?;
         self.consume(num_bytes);
         Ok(num_bytes)
+    }
+
+    /// Reads the rest of the stream straight into `buf`, which is grown
+    /// once to the exact size needed.
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        let buffered = self.buffer.remaining_slice();
+        let buffered_len = buffered.len();
+        buf.extend_from_slice(buffered);
+        self.buffer.consume(buffered_len);
+        let position = self.current_position();
+        debug_assert!(position <= self.total_len);
+        let remaining =
+            usize::try_from(self.total_len - position).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    "stream is too large to read into memory",
+                )
+            })?;
+        // A malformed file can claim any length for a stream; the chain
+        // behind it bounds what can actually be read, so reserve no more
+        // than that.
+        let capacity = {
+            let minialloc = self.minialloc()?;
+            let capacity = stream_capacity(
+                &mut minialloc.write().unwrap(),
+                self.stream_id,
+            )?;
+            usize::try_from(capacity.saturating_sub(position))
+                .unwrap_or(usize::MAX)
+        };
+        buf.try_reserve(remaining.min(capacity)).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "not enough memory to read the stream",
+            )
+        })?;
+        // The reserved memory is filled a piece at a time, so that a
+        // malformed file claiming an enormous stream length doesn't cost a
+        // zero fill of all of it before the read fails.
+        let mut total = 0;
+        while total < remaining {
+            // Past the chain's capacity, a one byte read reports the
+            // short chain without growing the buffer any further.
+            let chunk = (remaining - total)
+                .min(READ_TO_END_CHUNK)
+                .min(capacity.saturating_sub(total).max(1));
+            let start = buf.len();
+            buf.resize(start + chunk, 0);
+            let num_bytes = match self.read_direct(&mut buf[start..]) {
+                Ok(num_bytes) => num_bytes,
+                Err(error) => {
+                    buf.truncate(start);
+                    return Err(error);
+                }
+            };
+            buf.truncate(start + num_bytes);
+            if num_bytes == 0 {
+                break;
+            }
+            total += num_bytes;
+        }
+        Ok(buffered_len + total)
     }
 }
 
@@ -212,8 +308,33 @@ impl<F: Read + Seek> Seek for Stream<F> {
     }
 }
 
+impl<F: Read + Write + Seek> Stream<F> {
+    /// Writes `buf` straight to the underlying file at the current
+    /// position, after flushing whatever the buffer holds; the buffer is
+    /// emptied.
+    fn write_direct(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.flush_changes()?;
+        let position = self.current_position();
+        self.buf_offset_from_start = position;
+        self.buffer.clear();
+        let minialloc = self.minialloc()?;
+        write_data_to_stream(
+            &mut minialloc.write().unwrap(),
+            self.stream_id,
+            position,
+            buf,
+        )?;
+        self.buf_offset_from_start = position + buf.len() as u64;
+        self.total_len = self.total_len.max(self.buf_offset_from_start);
+        Ok(buf.len())
+    }
+}
+
 impl<F: Read + Write + Seek> Write for Stream<F> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.len() >= DIRECT_IO_MIN {
+            return self.write_direct(buf);
+        }
         let num_bytes_written = match self.buffer.write_bytes(buf) {
             Some(count) => count,
             None => {
@@ -272,6 +393,26 @@ impl<F: Read + Write + Seek> Flusher<F> for FlushBuffer {
 }
 
 //===========================================================================//
+
+/// The number of bytes the chain behind the stream can hold, which bounds
+/// what a read can return however long the directory entry claims the
+/// stream is.
+fn stream_capacity<F: Read + Seek>(
+    minialloc: &mut MiniAllocator<F>,
+    stream_id: u32,
+) -> io::Result<u64> {
+    let (start_sector, stream_len) = {
+        let dir_entry = minialloc.dir_entry(stream_id);
+        (dir_entry.start_sector, dir_entry.stream_len)
+    };
+    if start_sector == consts::END_OF_CHAIN {
+        Ok(0)
+    } else if stream_len < consts::MINI_STREAM_CUTOFF as u64 {
+        Ok(minialloc.open_mini_chain(start_sector)?.len())
+    } else {
+        Ok(minialloc.open_chain(start_sector, SectorInit::Zero)?.len())
+    }
+}
 
 fn read_data_from_stream<F: Read + Seek>(
     minialloc: &mut MiniAllocator<F>,
