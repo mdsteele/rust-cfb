@@ -1,5 +1,6 @@
 use crate::internal::{consts, MiniAllocator, ObjType, SectorInit};
 use std::convert::TryFrom;
+use std::fmt;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, RwLock, Weak};
 
@@ -358,6 +359,16 @@ impl<F: Read + Write + Seek> Write for Stream<F> {
         let minialloc = self.minialloc()?;
         minialloc.write().unwrap().flush()?;
         Ok(())
+    }
+}
+
+impl<F> fmt::Debug for Stream<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Stream")
+            .field("stream_id", &self.stream_id)
+            .field("len", &self.total_len)
+            .field("position", &self.current_position())
+            .finish()
     }
 }
 

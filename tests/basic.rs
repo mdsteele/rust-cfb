@@ -795,10 +795,7 @@ fn cannot_create_entries_inside_a_stream() {
     let cursor = Cursor::new(Vec::new());
     let mut comp = CompoundFile::create(cursor).unwrap();
     comp.create_stream("/a").unwrap().write_all(b"data").unwrap();
-    let err = match comp.create_stream("/A/child") {
-        Ok(_) => panic!("created a stream inside a stream"),
-        Err(err) => err,
-    };
+    let err = comp.create_stream("/A/child").unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     assert_eq!(err.to_string(), "Parent \"/A\" is a stream, not a storage");
     let err = comp.create_storage("/a/child").unwrap_err();
