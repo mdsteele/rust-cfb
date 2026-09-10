@@ -483,3 +483,105 @@ fn invalid_num_dir_sectors_issue_52() {
     // Read the file back in.
     CompoundFile::open_strict(cursor).unwrap();
 }
+
+//===========================================================================//
+
+// Regression tests for https://github.com/mdsteele/rust-cfb/issues/80.
+
+fn le_u16(bytes: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([bytes[at], bytes[at + 1]])
+}
+
+fn le_u32(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[at],
+        bytes[at + 1],
+        bytes[at + 2],
+        bytes[at + 3],
+    ])
+}
+
+/// Builds a V3 file with two 60000-byte streams, then returns its bytes
+/// together with the byte offset of the first FAT sector.
+fn file_with_two_streams(remove_scratch: bool) -> (Vec<u8>, usize) {
+    let mut buf = Cursor::new(Vec::new());
+    {
+        let mut comp =
+            CompoundFile::create_with_version(cfb::Version::V3, &mut buf)
+                .unwrap();
+        comp.create_storage("/BodyText").unwrap();
+        comp.create_stream("/scratch")
+            .unwrap()
+            .write_all(&[1u8; 60_000])
+            .unwrap();
+        comp.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&[7u8; 60_000])
+            .unwrap();
+        if remove_scratch {
+            comp.remove_stream("/scratch").unwrap();
+        }
+        comp.flush().unwrap();
+    }
+    let bytes = buf.into_inner();
+    let sector_size = 1usize << le_u16(&bytes, 30);
+    let fat_base = (le_u32(&bytes, 76) as usize + 1) * sector_size;
+    (bytes, fat_base)
+}
+
+fn read_stream(
+    comp: &mut CompoundFile<Cursor<Vec<u8>>>,
+    path: &str,
+) -> Vec<u8> {
+    let mut data = Vec::new();
+    comp.open_stream(path).unwrap().read_to_end(&mut data).unwrap();
+    data
+}
+
+const OUT_OF_RANGE: u32 = 0x1E55_5E69;
+
+/// A free FAT entry that points past the end of the file.  No chain runs
+/// through it, so every stream is still fully reachable.
+fn free_entry_points_out_of_range() -> Cursor<Vec<u8>> {
+    let (mut bytes, fat_base) = file_with_two_streams(true);
+    let at = (0..128)
+        .map(|i| fat_base + 4 * i)
+        .find(|&at| le_u32(&bytes, at) == u32::MAX)
+        .expect("no free FAT entry");
+    bytes[at..at + 4].copy_from_slice(&OUT_OF_RANGE.to_le_bytes());
+    Cursor::new(bytes)
+}
+
+#[test]
+fn open_free_entry_points_out_of_range_issue_80() {
+    let mut comp =
+        CompoundFile::open(free_entry_points_out_of_range()).unwrap();
+    assert_eq!(read_stream(&mut comp, "/BodyText/Section0"), [7u8; 60_000]);
+}
+
+#[test]
+#[should_panic(expected = "points to 508911209")]
+fn open_strict_free_entry_points_out_of_range_issue_80() {
+    CompoundFile::open_strict(free_entry_points_out_of_range()).unwrap();
+}
+
+/// A FAT entry inside the first stream's chain points past the end of the
+/// file.  Only that stream is affected; the other one still reads in full.
+#[test]
+fn open_chain_entry_points_out_of_range_issue_80() {
+    let (mut bytes, fat_base) = file_with_two_streams(false);
+    // The scratch stream was written first, so its chain occupies the
+    // sectors right after the FAT and directory sectors.
+    let at = fat_base + 4 * 50;
+    assert_eq!(le_u32(&bytes, at), 51, "sector 50 should link to 51");
+    bytes[at..at + 4].copy_from_slice(&OUT_OF_RANGE.to_le_bytes());
+    let mut comp = CompoundFile::open(Cursor::new(bytes)).unwrap();
+    assert_eq!(read_stream(&mut comp, "/BodyText/Section0"), [7u8; 60_000]);
+    let mut truncated = Vec::new();
+    let result =
+        comp.open_stream("/scratch").unwrap().read_to_end(&mut truncated);
+    assert!(
+        result.is_err() || truncated.len() < 60_000,
+        "the scratch stream should not read in full"
+    );
+}
