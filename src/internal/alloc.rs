@@ -25,6 +25,13 @@ pub struct Allocator<F> {
     difat: Vec<u32>,
     fat: Vec<u32>,
     free_sectors: Vec<u32>,
+    /// The sector IDs of the most recently used chain, keyed by its start
+    /// sector.  A `Stream` opens its chain anew for every buffer refill,
+    /// and walking a long FAT chain from the start each time made reading
+    /// or writing a stream of `n` sectors cost `O(n^2)`.  The list is
+    /// handed to the next `Chain` opened for the same start sector, which
+    /// gives it back when dropped; any FAT change discards it.
+    chain_cache: Option<(u32, Vec<u32>)>,
 }
 
 impl<F> Allocator<F> {
@@ -41,6 +48,7 @@ impl<F> Allocator<F> {
             difat,
             fat,
             free_sectors: Vec::new(),
+            chain_cache: None,
         };
         alloc.validate(validation)?;
         Ok(alloc)
@@ -86,7 +94,26 @@ impl<F> Allocator<F> {
         start_sector_id: u32,
         init: SectorInit,
     ) -> io::Result<Chain<'_, F>> {
-        Chain::new(self, start_sector_id, init)
+        match self.chain_cache.take() {
+            Some((cached_start, sector_ids))
+                if cached_start == start_sector_id =>
+            {
+                Ok(Chain::from_sector_ids(self, sector_ids, init))
+            }
+            _ => Chain::new(self, start_sector_id, init),
+        }
+    }
+
+    /// Remembers the sector IDs of the chain starting at `start_sector_id`
+    /// so that the next `open_chain` for it need not walk the FAT again.
+    /// The IDs must reflect the current FAT.
+    pub(crate) fn cache_chain(
+        &mut self,
+        start_sector_id: u32,
+        sector_ids: Vec<u32>,
+    ) {
+        debug_assert_eq!(sector_ids.first(), Some(&start_sector_id));
+        self.chain_cache = Some((start_sector_id, sector_ids));
     }
 
     fn validate(&mut self, validation: Validation) -> io::Result<()> {
@@ -380,6 +407,7 @@ impl<F: Write + Seek> Allocator<F> {
     /// Sets `self.fat[index] = value`, and also writes that change to the
     /// underlying file.  The `index` must be <= `self.fat.len()`.
     fn set_fat(&mut self, index: u32, value: u32) -> io::Result<()> {
+        self.chain_cache = None;
         let index = index as usize;
         debug_assert!(index <= self.fat.len());
         let fat_entries_per_sector =
@@ -409,7 +437,9 @@ impl<F: Write + Seek> Allocator<F> {
 #[cfg(test)]
 mod tests {
     use super::Allocator;
-    use crate::internal::{consts, Sectors, Validation, Version};
+    use crate::internal::{
+        consts, Chain, SectorInit, Sectors, Validation, Version,
+    };
     use std::io::Cursor;
 
     fn make_sectors(
@@ -543,6 +573,57 @@ mod tests {
         let difat = vec![0];
         let fat = vec![consts::FAT_SECTOR, 2];
         make_allocator(difat, fat, Validation::Permissive);
+    }
+
+    #[test]
+    fn chain_cache_follows_the_fat() {
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, 2, 3, consts::END_OF_CHAIN];
+        let mut alloc = make_allocator(difat, fat, Validation::Strict);
+        assert_eq!(alloc.chain_cache, None);
+
+        // Dropping a chain leaves its sector list behind for the next open.
+        let chain = alloc.open_chain(1, SectorInit::Zero).unwrap();
+        assert_eq!(chain.sector_ids(), &[1, 2, 3]);
+        drop(chain);
+        assert_eq!(alloc.chain_cache, Some((1, vec![1, 2, 3])));
+
+        // A chain that grew hands back the grown list.
+        let mut chain = alloc.open_chain(1, SectorInit::Zero).unwrap();
+        chain.set_len(4 * 512).unwrap();
+        assert_eq!(chain.sector_ids(), &[1, 2, 3, 4]);
+        drop(chain);
+        assert_eq!(alloc.chain_cache, Some((1, vec![1, 2, 3, 4])));
+        let chain = Chain::new(&mut alloc, 1, SectorInit::Zero).unwrap();
+        assert_eq!(chain.sector_ids(), &[1, 2, 3, 4]);
+        drop(chain);
+
+        // A chain that shrank hands back the shortened list.
+        let mut chain = alloc.open_chain(1, SectorInit::Zero).unwrap();
+        chain.set_len(2 * 512).unwrap();
+        assert_eq!(chain.sector_ids(), &[1, 2]);
+        drop(chain);
+        assert_eq!(alloc.chain_cache, Some((1, vec![1, 2])));
+        let chain = Chain::new(&mut alloc, 1, SectorInit::Zero).unwrap();
+        assert_eq!(chain.sector_ids(), &[1, 2]);
+        drop(chain);
+
+        // Opening a different chain does not use the cached one.
+        let start = alloc.begin_chain(SectorInit::Zero).unwrap();
+        let chain = alloc.open_chain(start, SectorInit::Zero).unwrap();
+        assert_eq!(chain.sector_ids(), &[start]);
+        drop(chain);
+        assert_eq!(alloc.chain_cache, Some((start, vec![start])));
+
+        // Any FAT change from outside a chain discards the cache.
+        alloc.free_chain(1).unwrap();
+        assert_eq!(alloc.chain_cache, None);
+
+        // A freed chain leaves nothing behind.
+        let chain = alloc.open_chain(start, SectorInit::Zero).unwrap();
+        chain.free().unwrap();
+        assert_eq!(alloc.chain_cache, None);
+        assert_eq!(alloc.fat[start as usize], consts::FREE_SECTOR);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::internal::{consts, Allocator, SectorInit};
 use std::cmp;
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::mem;
 
 //===========================================================================//
 
@@ -31,6 +32,15 @@ impl<'a, F> Chain<'a, F> {
             }
         }
         Ok(Chain { allocator, init, sector_ids, offset_from_start: 0 })
+    }
+
+    /// Creates a chain from sector IDs that are known to match the FAT.
+    pub(crate) fn from_sector_ids(
+        allocator: &'a mut Allocator<F>,
+        sector_ids: Vec<u32>,
+        init: SectorInit,
+    ) -> Chain<'a, F> {
+        Chain { allocator, init, sector_ids, offset_from_start: 0 }
     }
 
     pub fn start_sector_id(&self) -> u32 {
@@ -98,11 +108,13 @@ impl<'a, F: Write + Seek> Chain<'a, F> {
         if new_num_sectors == 0 {
             if let Some(&start_sector) = self.sector_ids.first() {
                 self.allocator.free_chain(start_sector)?;
+                self.sector_ids.clear();
             }
         } else if new_num_sectors <= self.sector_ids.len() {
             if new_num_sectors < self.sector_ids.len() {
                 self.allocator
                     .free_chain_after(self.sector_ids[new_num_sectors - 1])?;
+                self.sector_ids.truncate(new_num_sectors);
             }
             self.zero_tail(new_len)?;
         } else {
@@ -128,8 +140,23 @@ impl<'a, F: Write + Seek> Chain<'a, F> {
             .write_all(&zeros)
     }
 
-    pub fn free(self) -> io::Result<()> {
-        self.allocator.free_chain(self.start_sector_id())
+    pub fn free(mut self) -> io::Result<()> {
+        let start_sector_id = self.start_sector_id();
+        self.sector_ids.clear();
+        self.allocator.free_chain(start_sector_id)
+    }
+}
+
+impl<'a, F> Drop for Chain<'a, F> {
+    fn drop(&mut self) {
+        // The list is kept in step with every change this chain made to the
+        // FAT, so the next chain opened for the same start sector can reuse
+        // it instead of walking the FAT again.
+        if !self.sector_ids.is_empty() {
+            let start_sector_id = self.sector_ids[0];
+            self.allocator
+                .cache_chain(start_sector_id, mem::take(&mut self.sector_ids));
+        }
     }
 }
 
