@@ -1,10 +1,11 @@
 use cfb::CompoundFile;
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::hint::black_box;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Write;
+use std::time::Duration;
 use tempfile::NamedTempFile;
 
 fn write_many_streams(n: usize, size: usize) -> Vec<u8> {
@@ -22,25 +23,40 @@ fn write_many_streams(n: usize, size: usize) -> Vec<u8> {
     buff
 }
 
+fn write_many_streams_to_file(tmpfile: &NamedTempFile, n: usize, size: usize) {
+    let mut test_comp = CompoundFile::create(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(tmpfile.path())
+            .unwrap(),
+    )
+    .unwrap();
+    let data = vec![0; size];
+    for i in 0..n {
+        let name = format!("test{i}");
+        let mut stream = test_comp.create_stream(name).unwrap();
+        stream.write_all(&data).unwrap();
+    }
+}
+
 fn write_many_streams_disk(n: usize, size: usize) {
     let tmpfile = NamedTempFile::new().unwrap();
-    {
-        let mut test_comp = CompoundFile::create(
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(tmpfile.path())
-                .unwrap(),
-        )
-        .unwrap();
-        let data = vec![0; size];
-        for i in 0..n {
-            let name = format!("test{i}");
-            let mut stream = test_comp.create_stream(name).unwrap();
-            stream.write_all(&data).unwrap();
-        }
-    }
+    write_many_streams_to_file(&tmpfile, n, size);
     // File is deleted when tmpfile is dropped
+}
+
+fn read_many_streams_disk(tmpfile: &NamedTempFile, n: usize) {
+    // An unbuffered File, as `cfb::open` hands out.
+    let mut test_comp =
+        CompoundFile::open(File::open(tmpfile.path()).unwrap()).unwrap();
+    for i in 0..n {
+        let name = format!("test{i}");
+        let mut stream = test_comp.open_stream(name).unwrap();
+        let mut sink = Vec::new();
+        stream.read_to_end(&mut sink).unwrap();
+        black_box(sink);
+    }
 }
 
 fn read_many_streams(buff: &[u8], n: usize) {
@@ -117,6 +133,29 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     }
     read_group.finish();
+
+    let mut read_disk_group = c.benchmark_group("read_streams_disk");
+    for (label, stream_size, stream_count) in stream_benches {
+        let total_bytes = (stream_count * stream_size) as u64;
+        let tmpfile = NamedTempFile::new().unwrap();
+        write_many_streams_to_file(&tmpfile, stream_count, stream_size);
+        // Disk cases are slow per iteration; keep the group's run time down.
+        read_disk_group.sample_size(10);
+        read_disk_group.warm_up_time(Duration::from_secs(1));
+        read_disk_group.measurement_time(Duration::from_secs(2));
+        if total_bytes > 0 {
+            read_disk_group.throughput(Throughput::Bytes(total_bytes));
+        }
+        read_disk_group.bench_function(label, |b| {
+            b.iter(|| {
+                read_many_streams_disk(
+                    black_box(&tmpfile),
+                    black_box(stream_count),
+                );
+            })
+        });
+    }
+    read_disk_group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);
