@@ -147,6 +147,14 @@ impl<F: Write + Seek> Sectors<F> {
         self.inner.write(buf)
     }
 
+    /// Adds sector `sector_id`, which must be the one just past the end of
+    /// the file, without initializing it; the caller is about to write all
+    /// of it.
+    pub fn reserve_sector(&mut self, sector_id: u32) {
+        debug_assert_eq!(sector_id, self.num_sectors);
+        self.num_sectors += 1;
+    }
+
     /// Creates or resets the specified sector using the given initializer.
     pub fn init_sector(
         &mut self,
@@ -258,6 +266,9 @@ impl<'a, F: Seek> Seek for Sector<'a, F> {
 
 // ========================================================================= //
 
+/// A run of zero bytes for initializing sectors with.
+const ZEROS: [u8; 4096] = [0; 4096];
+
 #[derive(Clone, Copy)]
 pub enum SectorInit {
     Zero,
@@ -274,10 +285,12 @@ impl SectorInit {
         debug_assert_eq!(sector.offset_within_sector, 0);
         match self {
             SectorInit::Zero => {
-                io::copy(
-                    &mut io::repeat(0).take(sector.len() as u64),
-                    sector,
-                )?;
+                let mut remaining = sector.len();
+                while remaining > 0 {
+                    let len = remaining.min(ZEROS.len());
+                    sector.write_all(&ZEROS[..len])?;
+                    remaining -= len;
+                }
             }
             SectorInit::Fat => {
                 debug_assert_eq!(sector.len() % 4, 0);

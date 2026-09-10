@@ -75,17 +75,19 @@ impl<'a, F> Chain<'a, F> {
 }
 
 impl<'a, F: Write + Seek> Chain<'a, F> {
-    /// Adds `count` sectors to the end of the chain.
-    fn extend_by(&mut self, count: usize) -> io::Result<()> {
-        for _ in 0..count {
-            let new_sector_id =
-                if let Some(&last_sector_id) = self.sector_ids.last() {
-                    self.allocator.extend_chain(last_sector_id, self.init)?
-                } else {
-                    self.allocator.begin_chain(self.init)?
-                };
-            self.sector_ids.push(new_sector_id);
-        }
+    /// Adds `count` sectors to the end of the chain, of which the first
+    /// `uninit` are left uninitialized because they are about to be
+    /// overwritten.
+    fn extend_by(&mut self, count: usize, uninit: usize) -> io::Result<()> {
+        let last_sector_id =
+            self.sector_ids.last().copied().unwrap_or(consts::END_OF_CHAIN);
+        let new_sector_ids = self.allocator.extend_chain_by(
+            last_sector_id,
+            count,
+            self.init,
+            uninit,
+        )?;
+        self.sector_ids.extend(new_sector_ids);
         Ok(())
     }
 
@@ -106,7 +108,7 @@ impl<'a, F: Write + Seek> Chain<'a, F> {
             }
             self.zero_tail(new_len)?;
         } else {
-            self.extend_by(new_num_sectors - self.sector_ids.len())?;
+            self.extend_by(new_num_sectors - self.sector_ids.len(), 0)?;
         }
         Ok(())
     }
@@ -192,11 +194,13 @@ impl<'a, F: Write + Seek> Write for Chain<'a, F> {
         let total_len = self.len();
         debug_assert!(self.offset_from_start <= total_len);
         let sector_len = self.allocator.sector_len() as u64;
-        // Make room for the whole buffer at once.
+        // Make room for the whole buffer at once.  New sectors that the
+        // buffer fills completely are not zeroed first.
         let end = self.offset_from_start + buf.len() as u64;
         if end > total_len {
             let count = (end - total_len).div_ceil(sector_len) as usize;
-            self.extend_by(count)?;
+            let filled = ((end - total_len) / sector_len) as usize;
+            self.extend_by(count, filled)?;
         }
         let current_sector_index =
             (self.offset_from_start / sector_len) as usize;

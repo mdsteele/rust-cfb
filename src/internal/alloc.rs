@@ -258,28 +258,123 @@ impl<F: Write + Seek> Allocator<F> {
         self.sectors.write_contiguous(sector_id, offset_within_sector, buf)
     }
 
+    /// Adds `count` sectors to the end of the chain whose last sector is
+    /// `last_sector_id` (or starts a new chain, if that is `END_OF_CHAIN`),
+    /// and returns their IDs in chain order.  The first `uninit` of them are
+    /// not initialized, because the caller is about to overwrite them
+    /// completely; the rest are initialized with `init`.
+    ///
+    /// Doing this for a whole write at once, rather than a sector at a
+    /// time, lets the FAT entries of consecutive sectors be written
+    /// together.
+    pub fn extend_chain_by(
+        &mut self,
+        last_sector_id: u32,
+        count: usize,
+        init: SectorInit,
+        uninit: usize,
+    ) -> io::Result<Vec<u32>> {
+        debug_assert!(
+            last_sector_id == consts::END_OF_CHAIN
+                || self.fat[last_sector_id as usize] == consts::END_OF_CHAIN
+        );
+        let mut sector_ids = Vec::with_capacity(count);
+        for index in 0..count {
+            let sector_id = self.take_sector_id()?;
+            if index < uninit {
+                if sector_id as usize == self.fat.len() - 1
+                    && sector_id == self.sectors.num_sectors()
+                {
+                    self.sectors.reserve_sector(sector_id);
+                }
+            } else {
+                self.sectors.init_sector(sector_id, init)?;
+            }
+            sector_ids.push(sector_id);
+        }
+        // Link the new sectors up, writing the FAT entries of each run of
+        // consecutive sector IDs in one go.
+        let mut start = 0;
+        while start < sector_ids.len() {
+            let mut end = start + 1;
+            while end < sector_ids.len()
+                && sector_ids[end] == sector_ids[end - 1] + 1
+            {
+                end += 1;
+            }
+            let values: Vec<u32> = (start..end)
+                .map(|i| {
+                    sector_ids
+                        .get(i + 1)
+                        .copied()
+                        .unwrap_or(consts::END_OF_CHAIN)
+                })
+                .collect();
+            self.set_fat_run(sector_ids[start], &values)?;
+            start = end;
+        }
+        if last_sector_id != consts::END_OF_CHAIN && count > 0 {
+            self.set_fat(last_sector_id, sector_ids[0])?;
+        }
+        Ok(sector_ids)
+    }
+
     /// Allocates a new entry in the FAT, sets its value to `END_OF_CHAIN`, and
     /// returns the new sector number.
     fn allocate_sector(&mut self, init: SectorInit) -> io::Result<u32> {
-        // If there's an existing free sector, use that.
-        if let Some(free_sector_idx) = self.free_sectors.pop() {
-            let sector_id = free_sector_idx;
-            self.set_fat(sector_id, consts::END_OF_CHAIN)?;
-            self.sectors.init_sector(sector_id, init)?;
+        let sector_id = self.take_sector_id()?;
+        self.set_fat(sector_id, consts::END_OF_CHAIN)?;
+        self.sectors.init_sector(sector_id, init)?;
+        Ok(sector_id)
+    }
+
+    /// Picks the sector ID for a new sector: a free one if there is one,
+    /// otherwise the one past the end of the file (adding a FAT sector
+    /// first if the FAT is full).  Its FAT entry is set to `END_OF_CHAIN`
+    /// in memory only; the caller writes the entry, and initializes the
+    /// sector.
+    fn take_sector_id(&mut self) -> io::Result<u32> {
+        if let Some(sector_id) = self.free_sectors.pop() {
+            self.fat[sector_id as usize] = consts::END_OF_CHAIN;
             return Ok(sector_id);
         }
-        // Otherwise, we need a new sector; if there's no room in the FAT to
-        // add it, then first we need to allocate a new FAT sector.
         let fat_entries_per_sector =
             self.sectors.sector_len() / size_of::<u32>();
         if self.fat.len() % fat_entries_per_sector == 0 {
             self.append_fat_sector()?;
         }
-        // Add a new sector to the end of the file and return it.
         let new_sector = self.fat.len() as u32;
-        self.set_fat(new_sector, consts::END_OF_CHAIN)?;
-        self.sectors.init_sector(new_sector, init)?;
+        self.fat.push(consts::END_OF_CHAIN);
         Ok(new_sector)
+    }
+
+    /// Sets `self.fat[index..index + values.len()] = values`, and also writes
+    /// that change to the underlying file, one write per FAT sector
+    /// touched.  The entries must already exist.
+    fn set_fat_run(&mut self, index: u32, values: &[u32]) -> io::Result<()> {
+        let fat_entries_per_sector =
+            self.sectors.sector_len() / size_of::<u32>();
+        let mut done = 0;
+        while done < values.len() {
+            let fat_index = index as usize + done;
+            let index_within_sector = fat_index % fat_entries_per_sector;
+            let count = (fat_entries_per_sector - index_within_sector)
+                .min(values.len() - done);
+            let mut bytes = Vec::with_capacity(count * size_of::<u32>());
+            for &value in &values[done..done + count] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            let fat_sector_id = self.difat[fat_index / fat_entries_per_sector];
+            let mut sector = self.sectors.seek_within_sector(
+                fat_sector_id,
+                (index_within_sector * size_of::<u32>()) as u64,
+            )?;
+            sector.write_all(&bytes)?;
+            self.fat[fat_index..fat_index + count]
+                .copy_from_slice(&values[done..done + count]);
+            done += count;
+        }
+        Ok(())
     }
 
     /// Adds a new sector to the FAT chain at the end of the file, and updates
@@ -565,3 +660,120 @@ mod tests {
 }
 
 //===========================================================================//
+
+#[cfg(test)]
+mod extend_tests {
+    use super::Allocator;
+    use crate::internal::{consts, SectorInit, Sectors, Validation, Version};
+    use crate::ReadLeNumber;
+    use std::io::{Cursor, Read};
+
+    /// A V3 file with one FAT sector (sector 0) and nothing else.
+    fn make_allocator() -> Allocator<Cursor<Vec<u8>>> {
+        let version = Version::V3;
+        let data_len = 2 * version.sector_len();
+        let mut data = vec![0u8; data_len];
+        let mut fat_bytes = Vec::new();
+        for i in 0..128u32 {
+            let entry =
+                if i == 0 { consts::FAT_SECTOR } else { consts::FREE_SECTOR };
+            fat_bytes.extend_from_slice(&entry.to_le_bytes());
+        }
+        data[512..1024].copy_from_slice(&fat_bytes);
+        let sectors =
+            Sectors::new(version, data_len as u64, Cursor::new(data));
+        Allocator::new(
+            sectors,
+            vec![],
+            vec![0],
+            vec![consts::FAT_SECTOR],
+            Validation::Strict,
+        )
+        .unwrap()
+    }
+
+    /// Reads the FAT back from the file, as a reader would.
+    fn fat_on_disk(allocator: &mut Allocator<Cursor<Vec<u8>>>) -> Vec<u32> {
+        let mut fat = Vec::new();
+        for &fat_sector in allocator.difat.clone().iter() {
+            let mut sector = allocator.seek_to_sector(fat_sector).unwrap();
+            for _ in 0..128 {
+                fat.push(sector.read_le_u32().unwrap());
+            }
+        }
+        fat.truncate(allocator.fat.len());
+        fat
+    }
+
+    fn chain_of(
+        allocator: &Allocator<Cursor<Vec<u8>>>,
+        start: u32,
+    ) -> Vec<u32> {
+        let mut ids = vec![];
+        let mut id = start;
+        while id != consts::END_OF_CHAIN {
+            ids.push(id);
+            id = allocator.next(id).unwrap();
+        }
+        ids
+    }
+
+    #[test]
+    fn extends_a_new_chain_in_one_run() {
+        let mut allocator = make_allocator();
+        let ids = allocator
+            .extend_chain_by(consts::END_OF_CHAIN, 5, SectorInit::Zero, 3)
+            .unwrap();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5]);
+        assert_eq!(chain_of(&allocator, 1), ids);
+        assert_eq!(fat_on_disk(&mut allocator), allocator.fat);
+        // The uninitialized sectors are part of the file, and the
+        // initialized ones are zero.
+        assert_eq!(allocator.sectors.num_sectors(), 6);
+        let mut sector = allocator.seek_to_sector(5).unwrap();
+        let mut buf = vec![0xFF; 512];
+        sector.read_exact(&mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn extends_an_existing_chain_through_free_sectors() {
+        let mut allocator = make_allocator();
+        let first = allocator
+            .extend_chain_by(consts::END_OF_CHAIN, 3, SectorInit::Zero, 0)
+            .unwrap();
+        let other = allocator
+            .extend_chain_by(consts::END_OF_CHAIN, 4, SectorInit::Zero, 0)
+            .unwrap();
+        assert_eq!(other, vec![4, 5, 6, 7]);
+        allocator.free_chain(other[0]).unwrap();
+        // The freed sectors are reused, last freed first, then the file
+        // grows again; every step is linked in order.
+        let more = allocator
+            .extend_chain_by(*first.last().unwrap(), 6, SectorInit::Zero, 6)
+            .unwrap();
+        assert_eq!(more, vec![7, 6, 5, 4, 8, 9]);
+        let mut expected = first.clone();
+        expected.extend(more);
+        assert_eq!(chain_of(&allocator, 1), expected);
+        assert_eq!(fat_on_disk(&mut allocator), allocator.fat);
+        assert_eq!(allocator.sectors.num_sectors(), 10);
+    }
+
+    #[test]
+    fn extends_across_fat_sectors() {
+        let mut allocator = make_allocator();
+        // 300 sectors need three FAT sectors, which get allocated in the
+        // middle of the chain and are skipped by it.
+        let ids = allocator
+            .extend_chain_by(consts::END_OF_CHAIN, 300, SectorInit::Zero, 0)
+            .unwrap();
+        assert_eq!(chain_of(&allocator, ids[0]), ids);
+        assert_eq!(allocator.difat.len(), 3);
+        for &fat_sector in &allocator.difat {
+            assert!(!ids.contains(&fat_sector));
+            assert_eq!(allocator.fat[fat_sector as usize], consts::FAT_SECTOR);
+        }
+        assert_eq!(fat_on_disk(&mut allocator), allocator.fat);
+    }
+}
