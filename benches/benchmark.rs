@@ -88,7 +88,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         ("n=1000,size=64B", 64usize, 1000usize),
         ("n=100,size=4KiB-1 (MiniFAT)", 1024 * 4 - 1, 100usize),
         ("n=100,size=4KiB (FAT)", 1024 * 4, 100usize),
-        ("n=50,size=1MiB", 1024 * 1024usize, 50usize),
+        ("n=256,size=1MiB", 1024 * 1024usize, 256usize),
         ("n=1,size=256MiB", 256 * 1024 * 1024usize, 1usize),
     ];
 
