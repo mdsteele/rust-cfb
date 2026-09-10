@@ -420,21 +420,6 @@ impl<F: Seek> Directory<F> {
         self.allocator.seek_within_sector(sector_id, offset_within_sector)
     }
 
-    pub fn seek_within_subsector(
-        &mut self,
-        sector_id: u32,
-        subsector_index_within_sector: u32,
-        subsector_len: usize,
-        offset_within_subsector: u64,
-    ) -> io::Result<Sector<'_, F>> {
-        self.allocator.seek_within_subsector(
-            sector_id,
-            subsector_index_within_sector,
-            subsector_len,
-            offset_within_subsector,
-        )
-    }
-
     pub fn seek_within_header(
         &mut self,
         offset_within_header: u64,
