@@ -108,6 +108,10 @@ impl DirEntry {
         version: Version,
         validation: Validation,
     ) -> io::Result<DirEntry> {
+        // Read the whole entry in one go, then parse it from memory.
+        let mut buffer = [0u8; consts::DIR_ENTRY_LEN];
+        reader.read_exact(&mut buffer)?;
+        let reader = &mut &buffer[..];
         let mut name: String = {
             let mut name_chars: Vec<u16> = Vec::with_capacity(32);
             for _ in 0..32 {
@@ -277,27 +281,32 @@ impl DirEntry {
 
     pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         debug_assert!(internal::path::validate_name(&self.name).is_ok());
-        let name_utf16: Vec<u16> = self.name.encode_utf16().collect();
-        debug_assert!(name_utf16.len() < 32);
-        for &chr in name_utf16.iter() {
-            writer.write_le_u16(chr)?;
+        // Assemble the entry in memory, then write it in one go.
+        let mut buffer = [0u8; consts::DIR_ENTRY_LEN];
+        let mut name_len = 0;
+        for (index, unit) in self.name.encode_utf16().enumerate() {
+            buffer[2 * index..2 * index + 2]
+                .copy_from_slice(&unit.to_le_bytes());
+            name_len = index + 1;
         }
-        for _ in name_utf16.len()..32 {
-            writer.write_le_u16(0)?;
+        debug_assert!(name_len < 32);
+        {
+            let mut rest: &mut [u8] = &mut buffer[64..];
+            rest.write_le_u16((name_len as u16 + 1) * 2)?;
+            rest.write_all(&[self.obj_type.as_byte()])?;
+            rest.write_all(&[self.color.as_byte()])?;
+            rest.write_le_u32(self.left_sibling)?;
+            rest.write_le_u32(self.right_sibling)?;
+            rest.write_le_u32(self.child)?;
+            DirEntry::write_clsid(&mut rest, &self.clsid)?;
+            rest.write_le_u32(self.state_bits)?;
+            self.creation_time.write_to(&mut rest)?;
+            self.modified_time.write_to(&mut rest)?;
+            rest.write_le_u32(self.start_sector)?;
+            rest.write_le_u64(self.stream_len)?;
+            debug_assert!(rest.is_empty());
         }
-        writer.write_le_u16((name_utf16.len() as u16 + 1) * 2)?;
-        writer.write_all(&[self.obj_type.as_byte()])?;
-        writer.write_all(&[self.color.as_byte()])?;
-        writer.write_le_u32(self.left_sibling)?;
-        writer.write_le_u32(self.right_sibling)?;
-        writer.write_le_u32(self.child)?;
-        DirEntry::write_clsid(writer, &self.clsid)?;
-        writer.write_le_u32(self.state_bits)?;
-        self.creation_time.write_to(writer)?;
-        self.modified_time.write_to(writer)?;
-        writer.write_le_u32(self.start_sector)?;
-        writer.write_le_u64(self.stream_len)?;
-        Ok(())
+        writer.write_all(&buffer)
     }
 }
 
@@ -354,6 +363,80 @@ mod tests {
         assert_eq!(dir_entry.modified_time, Timestamp::zero());
         assert_eq!(dir_entry.start_sector, 0);
         assert_eq!(dir_entry.stream_len, 0);
+    }
+
+    /// Writing an entry back out reproduces the bytes it was read from.
+    #[test]
+    fn write_round_trip() {
+        let input: [u8; consts::DIR_ENTRY_LEN] = [
+            // Name:
+            70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14, 0, // name length
+            1, // obj type
+            1, // color,
+            12, 0, 0, 0, // left sibling
+            34, 0, 0, 0, // right sibling
+            56, 0, 0, 0, // child
+            0xe0, 0x85, 0x9f, 0xf2, 0xf9, 0x4f, 0x68, 0x10, // CLSID
+            0xab, 0x91, 0x08, 0x00, 0x2b, 0x27, 0xb3, 0xd9, // CLSID
+            239, 190, 173, 222, // state bits
+            0, 0, 0, 0, 0, 0, 0, 0, // created
+            0, 0, 0, 0, 0, 0, 0, 0, // modified
+            0, 0, 0, 0, // start sector
+            0, 0, 0, 0, 0, 0, 0, 0, // stream length
+        ];
+        let dir_entry = DirEntry::read_from(
+            &mut (&input as &[u8]),
+            Version::V3,
+            Validation::Strict,
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        dir_entry.write_to(&mut output).unwrap();
+        assert_eq!(output, input);
+    }
+
+    /// A name of the maximum 31 UTF-16 units, with a stream's fields, is
+    /// written and read back unchanged.
+    #[test]
+    fn write_and_read_longest_name() {
+        let name = "Ünïcödé-name-of-31-characters??";
+        assert_eq!(name.encode_utf16().count(), 31);
+        let mut dir_entry =
+            DirEntry::new(name, ObjType::Stream, Timestamp::zero());
+        dir_entry.left_sibling = 7;
+        dir_entry.right_sibling = 8;
+        dir_entry.start_sector = 0x12345;
+        dir_entry.stream_len = 0x1_0000_0001;
+        let mut output = Vec::new();
+        dir_entry.write_to(&mut output).unwrap();
+        assert_eq!(output.len(), consts::DIR_ENTRY_LEN);
+        assert_eq!(output[64], 64);
+        assert_eq!(output[65], 0);
+        let back = DirEntry::read_from(
+            &mut (&output as &[u8]),
+            Version::V4,
+            Validation::Strict,
+        )
+        .unwrap();
+        assert_eq!(back, dir_entry);
+    }
+
+    /// An entry cut short is an error, not a panic.
+    #[test]
+    fn read_truncated_entry() {
+        let input = [0u8; consts::DIR_ENTRY_LEN - 1];
+        let result = DirEntry::read_from(
+            &mut (&input as &[u8]),
+            Version::V3,
+            Validation::Permissive,
+        );
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
     }
 
     #[test]
