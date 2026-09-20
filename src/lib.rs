@@ -463,6 +463,11 @@ impl<F: Read + Seek> CompoundFile<F> {
         let mut sectors = Sectors::new(header.version, inner_len, inner);
         let num_sectors = sectors.num_sectors();
 
+        // The DIFAT and FAT are read a whole sector at a time, rather than
+        // with one tiny read per entry.
+        let entries_per_sector = sector_len / size_of::<u32>();
+        let mut sector_buf = vec![0u8; sector_len];
+
         // Read in DIFAT.
         let mut difat = Vec::<u32>::new();
         difat.extend_from_slice(&header.initial_difat_entries);
@@ -493,9 +498,11 @@ impl<F: Read + Seek> CompoundFile<F> {
             }
             seen_sector_ids.insert(current_difat_sector);
             difat_sector_ids.push(current_difat_sector);
-            let mut sector = sectors.seek_to_sector(current_difat_sector)?;
-            for _ in 0..(sector_len / size_of::<u32>() - 1) {
-                let next = sector.read_le_u32()?;
+            sectors
+                .seek_to_sector(current_difat_sector)?
+                .read_exact(&mut sector_buf)?;
+            let mut entries = le_u32s(&sector_buf);
+            for next in entries.by_ref().take(entries_per_sector - 1) {
                 if next != consts::FREE_SECTOR
                     && next > consts::MAX_REGULAR_SECTOR
                 {
@@ -506,7 +513,7 @@ impl<F: Read + Seek> CompoundFile<F> {
                 }
                 difat.push(next);
             }
-            current_difat_sector = sector.read_le_u32()?;
+            current_difat_sector = entries.next().unwrap();
             if validation.is_strict()
                 && current_difat_sector == consts::FREE_SECTOR
             {
@@ -563,10 +570,10 @@ impl<F: Read + Seek> CompoundFile<F> {
                     num_sectors
                 );
             }
-            let mut sector = sectors.seek_to_sector(sector_index)?;
-            for _ in 0..(sector_len / size_of::<u32>()) {
-                fat.push(sector.read_le_u32()?);
-            }
+            sectors
+                .seek_to_sector(sector_index)?
+                .read_exact(&mut sector_buf)?;
+            fat.extend(le_u32s(&sector_buf));
         }
         // If the number of sectors in the file is not a multiple of the number
         // of FAT entries per sector, then the last FAT sector must be padded
@@ -677,11 +684,12 @@ impl<F: Read + Seek> CompoundFile<F> {
                     chain.num_sectors()
                 );
             }
+            // Read the whole MiniFAT in one go, rather than with one tiny
+            // read (and a seek) per entry.
             let num_minifat_entries = (chain.len() / 4) as usize;
-            let mut minifat = Vec::<u32>::with_capacity(num_minifat_entries);
-            for _ in 0..num_minifat_entries {
-                minifat.push(chain.read_le_u32()?);
-            }
+            let mut minifat_buf = vec![0u8; num_minifat_entries * 4];
+            chain.read_exact(&mut minifat_buf)?;
+            let mut minifat: Vec<u32> = le_u32s(&minifat_buf).collect();
             while minifat.last() == Some(&consts::FREE_SECTOR) {
                 minifat.pop();
             }
@@ -1214,6 +1222,13 @@ trait WriteLeNumber: Write {
     }
 }
 impl<T: Write> WriteLeNumber for T {}
+
+/// Decodes a buffer of little-endian u32 values.
+fn le_u32s(buf: &[u8]) -> impl Iterator<Item = u32> + '_ {
+    buf.chunks_exact(size_of::<u32>())
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
 //===========================================================================//
 
 #[cfg(test)]

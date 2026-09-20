@@ -183,6 +183,28 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     }
     read_disk_group.finish();
+
+    // Opening loads the DIFAT, FAT, directory and MiniFAT.
+    let mut open_disk_group = c.benchmark_group("open_disk");
+    for (label, stream_size, stream_count) in stream_benches {
+        let tmpfile = NamedTempFile::new().unwrap();
+        write_many_streams_to_file(
+            &tmpfile,
+            &vec![0; stream_size],
+            stream_count,
+        );
+        open_disk_group.sample_size(10);
+        open_disk_group.warm_up_time(Duration::from_secs(1));
+        open_disk_group.measurement_time(Duration::from_secs(2));
+        open_disk_group.bench_function(label, |b| {
+            b.iter(|| {
+                // An unbuffered File, as `cfb::open` hands out.
+                let file = File::open(tmpfile.path()).unwrap();
+                black_box(CompoundFile::open(file).unwrap());
+            })
+        });
+    }
+    open_disk_group.finish();
 }
 
 /// Reads one large stream the way a caller that streams it out would: in
