@@ -36,6 +36,11 @@ impl Timestamp {
         system_time_from_timestamp(self.0)
     }
 
+    /// Returns the raw FILETIME value.
+    pub fn raw_value(self) -> u64 {
+        self.0
+    }
+
     pub fn read_from<R: Read>(reader: &mut R) -> io::Result<Timestamp> {
         Ok(Timestamp(reader.read_le_u64()?))
     }
