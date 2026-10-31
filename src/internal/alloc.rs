@@ -118,11 +118,16 @@ impl<F> Allocator<F> {
 
     fn validate(&mut self, validation: Validation) -> io::Result<()> {
         if self.fat.len() > self.sectors.num_sectors() as usize {
-            malformed!(
-                "FAT has {} entries, but file has only {} sectors",
-                self.fat.len(),
-                self.sectors.num_sectors()
-            );
+            if validation.is_strict() {
+                malformed!(
+                    "FAT has {} entries, but file has only {} sectors",
+                    self.fat.len(),
+                    self.sectors.num_sectors()
+                );
+            }
+            // Entries past the end of the file describe sectors that aren't
+            // there; any chain running into them gets ended below.
+            self.fat.truncate(self.sectors.num_sectors() as usize);
         }
         for &difat_sector in self.difat_sector_ids.iter() {
             let difat_sector_index = difat_sector as usize;
@@ -178,7 +183,14 @@ impl<F> Allocator<F> {
                     continue;
                 }
                 if pointees.contains(&to_sector) {
-                    malformed!("sector {} pointed to twice", to_sector);
+                    if validation.is_strict() {
+                        malformed!("sector {} pointed to twice", to_sector);
+                    }
+                    // Two chains run into the same sector. End this one
+                    // here, as above, so that the chain that got there first
+                    // keeps its sectors and only this one is truncated.
+                    self.fat[from_sector] = consts::END_OF_CHAIN;
+                    continue;
                 }
                 pointees.insert(to_sector);
             } else if to_sector == consts::INVALID_SECTOR {
@@ -582,6 +594,28 @@ mod tests {
     }
 
     #[test]
+    fn fat_longer_than_file_permissive() {
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, 2, consts::END_OF_CHAIN];
+        let sectors = make_sectors(Version::V3, 2);
+        // The entry past the end is dropped, and the chain that ran into it
+        // ends where the file does.
+        let mut allocator = Allocator::new(
+            sectors,
+            vec![],
+            difat,
+            fat,
+            Validation::Permissive,
+        )
+        .unwrap();
+        assert_eq!(
+            allocator.fat,
+            vec![consts::FAT_SECTOR, consts::END_OF_CHAIN]
+        );
+        allocator.validate(Validation::Strict).unwrap();
+    }
+
+    #[test]
     #[should_panic(
         expected = "Malformed FAT (FAT has 2 entries, but DIFAT lists 3 as \
                     a DIFAT sector)"
@@ -744,10 +778,22 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "Malformed FAT (sector 3 pointed to twice)")]
-    fn double_pointee() {
+    fn double_pointee_strict() {
         let difat = vec![0];
         let fat = vec![consts::FAT_SECTOR, 3, 3, consts::END_OF_CHAIN];
-        make_allocator(difat, fat, Validation::Permissive);
+        make_allocator(difat, fat, Validation::Strict);
+    }
+
+    #[test]
+    fn double_pointee_permissive() {
+        let difat = vec![0];
+        let fat = vec![consts::FAT_SECTOR, 3, 3, consts::END_OF_CHAIN];
+        // The second chain into sector 3 is ended where it would have joined
+        // the first, and the result passes Strict validation.
+        let mut allocator = make_allocator(difat, fat, Validation::Permissive);
+        assert_eq!(allocator.fat[1], 3);
+        assert_eq!(allocator.fat[2], consts::END_OF_CHAIN);
+        allocator.validate(Validation::Strict).unwrap();
     }
 
     #[test]
