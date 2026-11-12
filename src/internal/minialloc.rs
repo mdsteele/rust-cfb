@@ -138,24 +138,33 @@ impl<F> MiniAllocator<F> {
             }
         }
         let mut pointees = FnvHashSet::default();
-        for (from_mini_sector, &to_mini_sector) in
-            self.minifat.iter().enumerate()
-        {
+        for from_mini_sector in 0..self.minifat.len() {
+            let to_mini_sector = self.minifat[from_mini_sector];
             if to_mini_sector <= consts::MAX_REGULAR_SECTOR {
                 if to_mini_sector as usize >= self.minifat.len() {
-                    malformed!(
-                        "MiniFAT has {} entries, but mini sector {} points to \
-                         {}",
-                        self.minifat.len(),
-                        from_mini_sector,
-                        to_mini_sector
-                    );
+                    if validation.is_strict() {
+                        malformed!(
+                            "MiniFAT has {} entries, but mini sector {} \
+                             points to {}",
+                            self.minifat.len(),
+                            from_mini_sector,
+                            to_mini_sector
+                        );
+                    }
+                    // As in the FAT, end the chain here so that only a chain
+                    // running through this mini sector is truncated.
+                    self.minifat[from_mini_sector] = consts::END_OF_CHAIN;
+                    continue;
                 }
                 if pointees.contains(&to_mini_sector) {
-                    malformed!(
-                        "mini sector {} pointed to twice",
-                        to_mini_sector
-                    );
+                    if validation.is_strict() {
+                        malformed!(
+                            "mini sector {} pointed to twice",
+                            to_mini_sector
+                        );
+                    }
+                    self.minifat[from_mini_sector] = consts::END_OF_CHAIN;
+                    continue;
                 }
                 pointees.insert(to_mini_sector);
             }
@@ -558,15 +567,26 @@ mod tests {
     use super::MiniAllocator;
 
     fn make_minialloc(minifat: Vec<u32>) -> MiniAllocator<Cursor<Vec<u8>>> {
+        make_minialloc_with(minifat, Validation::Strict)
+    }
+
+    fn make_minialloc_with(
+        minifat: Vec<u32>,
+        validation: Validation,
+    ) -> MiniAllocator<Cursor<Vec<u8>>> {
         let root_stream_len = (consts::MINI_SECTOR_LEN * minifat.len()) as u64;
-        make_minialloc_with_root_stream_len(minifat, root_stream_len)
+        make_minialloc_with_root_stream_len(
+            minifat,
+            root_stream_len,
+            validation,
+        )
     }
 
     fn make_minialloc_with_root_stream_len(
         minifat: Vec<u32>,
         root_stream_len: u64,
+        validation: Validation,
     ) -> MiniAllocator<Cursor<Vec<u8>>> {
-        let validation = Validation::Strict;
         let version = Version::V3;
         let num_sectors = 4; // FAT, Directory, MiniFAT, and mini chain
         let data_len = (1 + num_sectors) * version.sector_len();
@@ -676,7 +696,11 @@ mod tests {
     fn root_stream_too_short() {
         let minifat = vec![1, 2, consts::END_OF_CHAIN];
         let root_stream_len = (2 * consts::MINI_SECTOR_LEN) as u64;
-        make_minialloc_with_root_stream_len(minifat, root_stream_len);
+        make_minialloc_with_root_stream_len(
+            minifat,
+            root_stream_len,
+            Validation::Strict,
+        );
     }
 
     #[test]
@@ -687,6 +711,26 @@ mod tests {
     fn pointee_out_of_range() {
         let minifat = vec![1, 3];
         make_minialloc(minifat);
+    }
+
+    #[test]
+    fn pointee_out_of_range_permissive() {
+        let minifat = vec![1, 3];
+        let mut minialloc =
+            make_minialloc_with(minifat, Validation::Permissive);
+        assert_eq!(minialloc.minifat, vec![1, consts::END_OF_CHAIN]);
+        minialloc.validate(Validation::Strict).unwrap();
+    }
+
+    #[test]
+    fn double_pointee_permissive() {
+        let minifat = vec![1, 2, 1];
+        // The chain from mini sector 2 back into 1 is ended there, leaving
+        // 0 -> 1 -> 2 intact.
+        let mut minialloc =
+            make_minialloc_with(minifat, Validation::Permissive);
+        assert_eq!(minialloc.minifat, vec![1, 2, consts::END_OF_CHAIN]);
+        minialloc.validate(Validation::Strict).unwrap();
     }
 
     #[test]

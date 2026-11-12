@@ -185,21 +185,36 @@ impl DirEntry {
                 None => malformed!("invalid color: {}", color_byte),
             }
         };
-        let left_sibling = reader.read_le_u32()?;
+        // Some writers leave a reserved value such as END_OF_CHAIN, or a
+        // child on a stream entry, where there should be no link; under
+        // Permissive validation such a link is read as no link at all.
+        let mut left_sibling = reader.read_le_u32()?;
         if left_sibling != NO_STREAM && left_sibling > MAX_REGULAR_STREAM_ID {
-            malformed!("invalid left sibling: {}", left_sibling);
+            if validation.is_strict() {
+                malformed!("invalid left sibling: {}", left_sibling);
+            }
+            left_sibling = NO_STREAM;
         }
-        let right_sibling = reader.read_le_u32()?;
+        let mut right_sibling = reader.read_le_u32()?;
         if right_sibling != NO_STREAM && right_sibling > MAX_REGULAR_STREAM_ID
         {
-            malformed!("invalid right sibling: {}", right_sibling);
+            if validation.is_strict() {
+                malformed!("invalid right sibling: {}", right_sibling);
+            }
+            right_sibling = NO_STREAM;
         }
-        let child = reader.read_le_u32()?;
+        let mut child = reader.read_le_u32()?;
         if child != NO_STREAM {
             if obj_type == ObjType::Stream {
-                malformed!("non-empty stream child: {}", child);
+                if validation.is_strict() {
+                    malformed!("non-empty stream child: {}", child);
+                }
+                child = NO_STREAM;
             } else if child > MAX_REGULAR_STREAM_ID {
-                malformed!("invalid child: {}", child);
+                if validation.is_strict() {
+                    malformed!("invalid child: {}", child);
+                }
+                child = NO_STREAM;
             }
         }
 
@@ -586,6 +601,50 @@ mod tests {
         .unwrap();
         assert_eq!(dir_entry.obj_type, ObjType::Stream);
         assert_eq!(dir_entry.creation_time, Timestamp::zero());
+    }
+
+    const INVALID_LINKS_ON_STREAM: [u8; consts::DIR_ENTRY_LEN] = [
+        70, 0, 111, 0, 111, 0, 98, 0, 97, 0, 114, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, // name
+        14, 0, // name length
+        2, // obj type
+        1, // color,
+        0xfe, 0xff, 0xff, 0xff, // left sibling
+        34, 0, 0, 0, // right sibling
+        5, 0, 0, 0, // child
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // CLSID
+        0, 0, 0, 0, // state bits
+        0, 0, 0, 0, 0, 0, 0, 0, // created
+        0, 0, 0, 0, 0, 0, 0, 0, // modified
+        0, 0, 0, 0, // start sector
+        0, 0, 0, 0, 0, 0, 0, 0, // stream length
+    ];
+
+    #[test]
+    #[should_panic(
+        expected = "Malformed directory entry (invalid left sibling: \
+                    4294967294)"
+    )]
+    fn invalid_links_on_stream_strict() {
+        let mut input: &[u8] = &INVALID_LINKS_ON_STREAM;
+        DirEntry::read_from(&mut input, Version::V4, Validation::Strict)
+            .unwrap();
+    }
+
+    #[test]
+    fn invalid_links_on_stream_permissive() {
+        let mut input: &[u8] = &INVALID_LINKS_ON_STREAM;
+        let dir_entry = DirEntry::read_from(
+            &mut input,
+            Version::V4,
+            Validation::Permissive,
+        )
+        .unwrap();
+        assert_eq!(dir_entry.left_sibling, consts::NO_STREAM);
+        assert_eq!(dir_entry.right_sibling, 34);
+        assert_eq!(dir_entry.child, consts::NO_STREAM);
     }
 
     const NON_ZERO_MODIFIED_TIME_ON_STREAM: [u8; consts::DIR_ENTRY_LEN] = [
