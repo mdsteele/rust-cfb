@@ -395,7 +395,15 @@ impl<F: Seek> CompoundFile<F> {
         self.open_stream_with_path(path.as_ref())
     }
 
-    fn open_stream_with_path(&mut self, path: &Path) -> io::Result<Stream<F>> {
+    /// Reads an existing stream in the compound file for reading
+    pub fn read_stream<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> io::Result<Stream<F>> {
+        self.open_stream_with_path(path.as_ref())
+    }
+
+    fn open_stream_with_path(&self, path: &Path) -> io::Result<Stream<F>> {
         let names = internal::path::name_chain_from_path(path)?;
         let path = internal::path::path_from_name_chain(&names);
         let stream_id = match self.stream_id_for_name_chain(&names) {
