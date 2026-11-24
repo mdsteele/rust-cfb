@@ -179,14 +179,6 @@ impl<F> Directory<F> {
         stream_ids
     }
 
-    /// Makes a stream empty in memory, leaving the chain it pointed at (and
-    /// the file) untouched.
-    pub fn disown_chain(&mut self, stream_id: u32) {
-        let dir_entry = self.dir_entry_mut(stream_id);
-        dir_entry.start_sector = consts::END_OF_CHAIN;
-        dir_entry.stream_len = 0;
-    }
-
     pub fn root_dir_entry(&self) -> &DirEntry {
         self.dir_entry(consts::ROOT_STREAM_ID)
     }

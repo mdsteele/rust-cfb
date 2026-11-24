@@ -628,8 +628,9 @@ fn file_with_streams_sharing_a_chain(
 }
 
 /// Several streams claiming the same sectors would let a small file read
-/// back as many times its size.  Strict rejects that; Permissive lets one
-/// stream keep the sectors and treats the others as empty.
+/// back as many times its size.  Strict rejects that.  Permissive reads
+/// every stream as the data its chain holds, but refuses to change or
+/// remove any of them, as that would corrupt the others.
 fn check_streams_sharing_a_chain(big_len: usize, skip_sectors: u32) {
     let bytes = file_with_streams_sharing_a_chain(big_len, skip_sectors);
 
@@ -642,12 +643,40 @@ fn check_streams_sharing_a_chain(big_len: usize, skip_sectors: u32) {
     );
 
     let mut comp = CompoundFile::open(Cursor::new(bytes)).unwrap();
+    let sector_len = comp.version().sector_len();
+    let shared_len = big_len - skip_sectors as usize * sector_len;
     assert_eq!(read_stream(&mut comp, "/big"), vec![7u8; big_len]);
     for i in 0..10 {
         let name = format!("/s{}", i);
-        assert_eq!(comp.open_stream(&name).unwrap().len(), 0, "{}", name);
-        assert!(read_stream(&mut comp, &name).is_empty(), "{}", name);
+        assert_eq!(read_stream(&mut comp, &name), vec![7u8; shared_len]);
     }
+
+    let assert_refused = |result: std::io::Result<()>, what: &str| {
+        let err = result.expect_err(what);
+        assert!(
+            err.to_string().contains("also in use elsewhere"),
+            "unexpected error for {}: {}",
+            what,
+            err
+        );
+    };
+    for name in ["/big", "/s0", "/s9"] {
+        let mut stream = comp.open_stream(name).unwrap();
+        stream.write_all(b"x").unwrap();
+        assert_refused(stream.flush(), "write");
+        let mut stream = comp.open_stream(name).unwrap();
+        assert_refused(stream.set_len(10), "set_len");
+        assert_refused(comp.create_stream(name).map(|_| ()), "replace");
+        assert_refused(comp.remove_stream(name), "remove");
+    }
+
+    // The rest of the file can still be written to.
+    comp.create_stream("/new").unwrap().write_all(&[9u8; 5000]).unwrap();
+    comp.flush().unwrap();
+    let mut comp = CompoundFile::open(comp.into_inner()).unwrap();
+    assert_eq!(read_stream(&mut comp, "/new"), vec![9u8; 5000]);
+    assert_eq!(read_stream(&mut comp, "/big"), vec![7u8; big_len]);
+    assert_eq!(read_stream(&mut comp, "/s5"), vec![7u8; shared_len]);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use std::io::{self, Seek, Write};
 use std::mem::size_of;
 
-use fnv::FnvHashSet;
+use fnv::{FnvHashMap, FnvHashSet};
 
 use crate::internal::{
     consts, Chain, DirEntry, Directory, MiniChain, ObjType, Sector,
@@ -37,6 +37,10 @@ pub struct MiniAllocator<F> {
     /// The sector IDs of the MiniFAT's chain, kept the same way for
     /// `set_minifat`.
     minifat_sectors: Option<Vec<u32>>,
+    /// The stream IDs of streams that use sectors another stream (or the
+    /// directory, MiniFAT or mini stream) uses as well.  These can be read,
+    /// but not changed or removed.
+    shared_streams: FnvHashSet<u32>,
 }
 
 impl<F> MiniAllocator<F> {
@@ -53,6 +57,7 @@ impl<F> MiniAllocator<F> {
             free_mini_sectors: Vec::new(),
             mini_stream_sectors: None,
             minifat_sectors: None,
+            shared_streams: FnvHashSet::default(),
         };
         minialloc.validate(validation)?;
         Ok(minialloc)
@@ -184,24 +189,33 @@ impl<F> MiniAllocator<F> {
     /// to twice from within them; directory entries can still start their
     /// chains at the same sector, or part way along another stream's chain.
     /// A small file could then hold any number of streams that each read
-    /// back as its largest one.  Under Permissive validation, the stream
-    /// with the lowest stream ID keeps the sectors and the others are
-    /// treated as empty.
+    /// back as its largest one.  Under Permissive validation such streams
+    /// can still be read, each giving the data its chain holds, but not
+    /// changed or removed, as that would corrupt the streams they share
+    /// sectors with.
     fn validate_stream_chains(
         &mut self,
         validation: Validation,
     ) -> io::Result<()> {
-        let mut claimed: FnvHashSet<u32> =
-            self.directory.dir_sector_ids().iter().copied().collect();
+        // Maps each sector in use to the stream using it.
+        let mut claimed: FnvHashMap<u32, u32> = self
+            .directory
+            .dir_sector_ids()
+            .iter()
+            .map(|&sector_id| (sector_id, consts::NO_STREAM))
+            .collect();
         for start_sector in [
             self.minifat_start_sector,
             self.directory.root_dir_entry().start_sector,
         ] {
-            claim_chain(&mut claimed, start_sector, |sector_id| {
-                self.directory.next_sector(sector_id)
-            });
+            claim_chain(
+                &mut claimed,
+                consts::NO_STREAM,
+                start_sector,
+                |sector_id| self.directory.next_sector(sector_id),
+            );
         }
-        let mut claimed_mini = FnvHashSet::default();
+        let mut claimed_mini = FnvHashMap::default();
         for stream_id in self.directory.reachable_stream_ids() {
             let dir_entry = self.directory.dir_entry(stream_id);
             if dir_entry.obj_type != ObjType::Stream
@@ -214,17 +228,19 @@ impl<F> MiniAllocator<F> {
             let shared = if is_mini {
                 claim_chain(
                     &mut claimed_mini,
+                    stream_id,
                     dir_entry.start_sector,
                     |sector_id| self.next_mini_sector(sector_id),
                 )
             } else {
                 claim_chain(
                     &mut claimed,
+                    stream_id,
                     dir_entry.start_sector,
                     |sector_id| self.directory.next_sector(sector_id),
                 )
             };
-            if let Some(sector_id) = shared {
+            if let Some((sector_id, other_stream_id)) = shared {
                 if validation.is_strict() {
                     invalid_data!(
                         "Stream {:?} uses {} {}, which is already in use",
@@ -233,29 +249,48 @@ impl<F> MiniAllocator<F> {
                         sector_id
                     );
                 }
-                self.directory.disown_chain(stream_id);
+                self.shared_streams.insert(stream_id);
+                if other_stream_id != consts::NO_STREAM {
+                    self.shared_streams.insert(other_stream_id);
+                }
             }
+        }
+        Ok(())
+    }
+
+    /// Returns an error if the stream shares sectors with another one, so
+    /// that changing or removing it would corrupt the other.
+    pub fn check_not_shared(&self, stream_id: u32) -> io::Result<()> {
+        if self.shared_streams.contains(&stream_id) {
+            invalid_data!(
+                "Cannot change or remove stream {:?}, because it uses \
+                 sectors that are also in use elsewhere in the file",
+                self.dir_entry(stream_id).name
+            );
         }
         Ok(())
     }
 }
 
-/// Adds the sectors of the chain starting at `start_sector_id` to `claimed`,
-/// stopping at (and returning) the first one that was already there.  A
-/// chain that turns out to be invalid is left for reading it to report.
+/// Records the sectors of the chain starting at `start_sector_id` in
+/// `claimed` as used by `stream_id`, stopping at the first one that was
+/// already there, and returning it and the stream using it.  A chain that
+/// turns out to be invalid is left for reading it to report.
 fn claim_chain(
-    claimed: &mut FnvHashSet<u32>,
+    claimed: &mut FnvHashMap<u32, u32>,
+    stream_id: u32,
     start_sector_id: u32,
     next: impl Fn(u32) -> io::Result<u32>,
-) -> Option<u32> {
+) -> Option<(u32, u32)> {
     let mut sector_id = start_sector_id;
     while sector_id != consts::END_OF_CHAIN {
         let Ok(next_sector_id) = next(sector_id) else {
             break;
         };
-        if !claimed.insert(sector_id) {
-            return Some(sector_id);
+        if let Some(&other_stream_id) = claimed.get(&sector_id) {
+            return Some((sector_id, other_stream_id));
         }
+        claimed.insert(sector_id, stream_id);
         sector_id = next_sector_id;
     }
     None

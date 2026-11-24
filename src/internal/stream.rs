@@ -467,6 +467,7 @@ fn write_data_to_stream<F: Read + Write + Seek>(
     buf_offset_from_start: u64,
     buf: &[u8],
 ) -> io::Result<()> {
+    minialloc.check_not_shared(stream_id)?;
     let (old_start_sector, old_stream_len) = {
         let dir_entry = minialloc.dir_entry(stream_id);
         debug_assert_eq!(dir_entry.obj_type, ObjType::Stream);
@@ -549,6 +550,7 @@ fn resize_stream<F: Read + Write + Seek>(
     stream_id: u32,
     new_stream_len: u64,
 ) -> io::Result<()> {
+    minialloc.check_not_shared(stream_id)?;
     let (old_start_sector, old_stream_len) = {
         let dir_entry = minialloc.dir_entry(stream_id);
         debug_assert_eq!(dir_entry.obj_type, ObjType::Stream);
