@@ -152,6 +152,17 @@ impl<F> Directory<F> {
         Some(stream_id)
     }
 
+    /// The stream ID of the entry called `name` directly inside the storage
+    /// `parent_id`, if there is one.
+    pub fn stream_id_for_child(
+        &self,
+        parent_id: u32,
+        name: &str,
+    ) -> Option<u32> {
+        let key = (parent_id, internal::path::name_key(name));
+        self.name_index.get(&key).copied()
+    }
+
     pub fn open_chain(
         &mut self,
         start_sector_id: u32,

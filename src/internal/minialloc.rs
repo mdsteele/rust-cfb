@@ -98,6 +98,14 @@ impl<F> MiniAllocator<F> {
         self.directory.stream_id_for_name_chain(names)
     }
 
+    pub fn stream_id_for_child(
+        &self,
+        parent_id: u32,
+        name: &str,
+    ) -> Option<u32> {
+        self.directory.stream_id_for_child(parent_id, name)
+    }
+
     pub fn open_chain(
         &mut self,
         start_sector_id: u32,

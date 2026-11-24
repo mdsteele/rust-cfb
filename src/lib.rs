@@ -52,7 +52,7 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use fnv::FnvHashSet;
+use fnv::{FnvHashMap, FnvHashSet};
 use uuid::Uuid;
 
 use crate::internal::consts;
@@ -723,25 +723,64 @@ impl<F: Read + Seek> CompoundFile<F> {
     ) -> io::Result<CompoundFile<W>> {
         let mut copy =
             CompoundFile::create_with_version(self.version(), dest)?;
-        let entries: Vec<Entry> = self.walk().collect();
-        for entry in entries.iter() {
-            if entry.is_stream() {
-                let mut source = self.open_stream(entry.path())?;
-                let mut target = copy.create_stream(entry.path())?;
+        // Storages can be nested without limit, and a path names every
+        // storage above an entry, so going through paths would make the
+        // copy quadratic in the nesting depth.  The tree is copied by
+        // stream ID instead, in the order `walk` visits it.
+        let source_ids = self.stream_ids_with_parents();
+        let mut copy_ids = FnvHashMap::default();
+        copy_ids.insert(consts::ROOT_STREAM_ID, consts::ROOT_STREAM_ID);
+        for &(source_id, source_parent_id) in source_ids.iter() {
+            let (name, obj_type) = {
+                let minialloc = self.minialloc();
+                let dir_entry = minialloc.dir_entry(source_id);
+                (dir_entry.name.clone(), dir_entry.obj_type)
+            };
+            let parent_id = copy_ids[&source_parent_id];
+            if copy.minialloc().stream_id_for_child(parent_id, &name).is_some()
+            {
+                already_exists!(
+                    "Cannot copy {:?} because its storage has more than one \
+                     entry with that name",
+                    name
+                );
+            }
+            let copy_id = copy
+                .minialloc_mut()
+                .insert_dir_entry(parent_id, &name, obj_type)?;
+            copy_ids.insert(source_id, copy_id);
+            if obj_type == ObjType::Stream {
+                let mut source = Stream::new(
+                    &self.minialloc,
+                    source_id,
+                    self.max_buffer_size,
+                );
+                let mut target = Stream::new(
+                    &copy.minialloc,
+                    copy_id,
+                    copy.max_buffer_size,
+                );
                 io::copy(&mut source, &mut target)?;
-            } else if !entry.is_root() {
-                copy.create_storage(entry.path())?;
             }
         }
         // Fill in the metadata once the tree is complete, so that nothing
         // done while building it can overwrite what was copied.
-        for entry in entries.iter() {
-            copy.set_state_bits(entry.path(), entry.state_bits())?;
-            if !entry.is_stream() {
-                copy.set_storage_clsid(entry.path(), *entry.clsid())?;
-                copy.set_created_time(entry.path(), entry.created())?;
-                copy.set_modified_time(entry.path(), entry.modified())?;
-            }
+        let root_ids = (consts::ROOT_STREAM_ID, consts::ROOT_STREAM_ID);
+        for &(source_id, _) in
+            std::iter::once(&root_ids).chain(source_ids.iter())
+        {
+            let source_entry = self.minialloc().dir_entry(source_id).clone();
+            copy.minialloc_mut().with_dir_entry_mut(
+                copy_ids[&source_id],
+                |dir_entry| {
+                    dir_entry.state_bits = source_entry.state_bits;
+                    if dir_entry.obj_type != ObjType::Stream {
+                        dir_entry.clsid = source_entry.clsid;
+                        dir_entry.creation_time = source_entry.creation_time;
+                        dir_entry.modified_time = source_entry.modified_time;
+                    }
+                },
+            )?;
         }
         copy.flush()?;
         Ok(copy)
@@ -749,6 +788,38 @@ impl<F: Read + Seek> CompoundFile<F> {
 }
 
 impl<F> CompoundFile<F> {
+    /// Returns the stream ID of every entry other than the root, paired
+    /// with that of the storage it is in, in the order `walk` visits them.
+    fn stream_ids_with_parents(&self) -> Vec<(u32, u32)> {
+        let minialloc = self.minialloc();
+        let push_left_spine =
+            |stack: &mut Vec<(u32, u32)>,
+             parent_id: u32,
+             mut stream_id: u32| {
+                while stream_id != consts::NO_STREAM {
+                    stack.push((stream_id, parent_id));
+                    stream_id = minialloc.dir_entry(stream_id).left_sibling;
+                }
+            };
+        let mut stream_ids = Vec::new();
+        let mut stack = Vec::new();
+        let root_id = consts::ROOT_STREAM_ID;
+        push_left_spine(
+            &mut stack,
+            root_id,
+            minialloc.dir_entry(root_id).child,
+        );
+        while let Some((stream_id, parent_id)) = stack.pop() {
+            stream_ids.push((stream_id, parent_id));
+            let dir_entry = minialloc.dir_entry(stream_id);
+            push_left_spine(&mut stack, parent_id, dir_entry.right_sibling);
+            if dir_entry.obj_type != ObjType::Stream {
+                push_left_spine(&mut stack, stream_id, dir_entry.child);
+            }
+        }
+        stream_ids
+    }
+
     /// Returns the stream ID of the storage at the given name chain, which
     /// a new entry is about to be created in.
     fn parent_storage_id(&self, names: &[&str]) -> io::Result<u32> {
