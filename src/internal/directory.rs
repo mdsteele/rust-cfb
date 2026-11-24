@@ -160,6 +160,25 @@ impl<F> Directory<F> {
         self.allocator.open_chain(start_sector_id, init)
     }
 
+    /// The sector after `sector_id` in its chain, according to the FAT.
+    pub fn next_sector(&self, sector_id: u32) -> io::Result<u32> {
+        self.allocator.next(sector_id)
+    }
+
+    /// The IDs of the sectors holding the directory, in order.
+    pub fn dir_sector_ids(&self) -> &[u32] {
+        &self.dir_sector_ids
+    }
+
+    /// The stream IDs of all entries other than the root that can be reached
+    /// by name, in increasing order.
+    pub fn reachable_stream_ids(&self) -> Vec<u32> {
+        let mut stream_ids: Vec<u32> =
+            self.name_index.values().copied().collect();
+        stream_ids.sort_unstable();
+        stream_ids
+    }
+
     pub fn root_dir_entry(&self) -> &DirEntry {
         self.dir_entry(consts::ROOT_STREAM_ID)
     }

@@ -1105,6 +1105,7 @@ impl<F: Read + Write + Seek> CompoundFile<F> {
                 dir_entry.stream_len < consts::MINI_STREAM_CUTOFF as u64,
             )
         };
+        self.minialloc().check_not_shared(stream_id)?;
         if is_in_mini_stream {
             self.minialloc_mut().free_mini_chain(start_sector_id)?;
         } else {
