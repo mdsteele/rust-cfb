@@ -77,7 +77,7 @@ impl<F> Directory<F> {
             .filter(|(_, entry)| entry.obj_type == ObjType::Unallocated)
             .map(|(stream_id, _)| stream_id as u32)
             .collect();
-        directory.build_name_index();
+        directory.build_name_index(validation)?;
         Ok(directory)
     }
 
@@ -104,16 +104,27 @@ impl<F> Directory<F> {
     }
 
     /// Fills `name_index` from the sibling trees, visiting every entry once.
-    fn build_name_index(&mut self) {
+    ///
+    /// `validate` only compares each entry with its own siblings, which
+    /// doesn't rule out two entries in one storage having the same name.
+    /// Only one of them can be found by name, so Strict rejects that.
+    fn build_name_index(&mut self, validation: Validation) -> io::Result<()> {
         let mut index = FnvHashMap::default();
         let mut stack = vec![(consts::ROOT_STREAM_ID, consts::ROOT_STREAM_ID)];
         while let Some((stream_id, parent_id)) = stack.pop() {
             let dir_entry = self.dir_entry(stream_id);
             if stream_id != consts::ROOT_STREAM_ID {
-                index.insert(
-                    (parent_id, internal::path::name_key(&dir_entry.name)),
-                    stream_id,
-                );
+                let key =
+                    (parent_id, internal::path::name_key(&dir_entry.name));
+                if index.insert(key, stream_id).is_some()
+                    && validation.is_strict()
+                {
+                    malformed!(
+                        "storage {:?} has more than one entry named {:?}",
+                        self.dir_entry(parent_id).name,
+                        dir_entry.name
+                    );
+                }
             }
             for sibling in [dir_entry.left_sibling, dir_entry.right_sibling] {
                 if sibling != consts::NO_STREAM {
@@ -125,6 +136,7 @@ impl<F> Directory<F> {
             }
         }
         self.name_index = index;
+        Ok(())
     }
 
     pub fn version(&self) -> Version {
@@ -901,6 +913,39 @@ mod tests {
             make_entries_with_adjacent_red_nodes(),
             Validation::Strict,
         );
+    }
+
+    /// "b" at the top of the sibling tree, "a" to its left, and another "b"
+    /// to the right of that: each is in order with its own siblings.
+    fn make_entries_with_duplicate_name() -> Vec<DirEntry> {
+        let mut root_entry = DirEntry::empty_root_entry();
+        root_entry.child = 1;
+        let mut top = DirEntry::new("b", ObjType::Stream, Timestamp::zero());
+        top.color = Color::Black;
+        top.left_sibling = 2;
+        let mut left = DirEntry::new("a", ObjType::Stream, Timestamp::zero());
+        left.color = Color::Black;
+        left.right_sibling = 3;
+        let mut duplicate =
+            DirEntry::new("B", ObjType::Stream, Timestamp::zero());
+        duplicate.color = Color::Black;
+        vec![root_entry, top, left, duplicate]
+    }
+
+    #[test]
+    #[should_panic(expected = "has more than one entry named")]
+    fn duplicate_name_strict() {
+        make_directory(make_entries_with_duplicate_name(), Validation::Strict);
+    }
+
+    #[test]
+    fn duplicate_name_permissive() {
+        let directory = make_directory(
+            make_entries_with_duplicate_name(),
+            Validation::Permissive,
+        );
+        assert!(directory.stream_id_for_name_chain(&["b"]).is_some());
+        assert_eq!(directory.stream_id_for_name_chain(&["a"]), Some(2));
     }
 
     #[test]
