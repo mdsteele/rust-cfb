@@ -1,7 +1,7 @@
 use crate::internal::{consts, DirEntry, MiniAllocator, ObjType, Timestamp};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use uuid::Uuid;
 use web_time::SystemTime;
 
@@ -11,7 +11,11 @@ use web_time::SystemTime;
 #[derive(Clone)]
 pub struct Entry {
     name: String,
-    path: PathBuf,
+    /// The full path, built when first asked for if the entry came from
+    /// iterating over a storage.
+    path: OnceLock<PathBuf>,
+    /// The storage this entry was found in, if `path` wasn't known up front.
+    parent: Option<Arc<PathPrefix>>,
     obj_type: ObjType,
     clsid: Uuid,
     state_bits: u32,
@@ -22,9 +26,19 @@ pub struct Entry {
 
 impl Entry {
     pub(crate) fn new(dir_entry: &DirEntry, path: PathBuf) -> Entry {
+        let mut entry = Entry::new_in_storage(dir_entry, None);
+        entry.path = OnceLock::from(path);
+        entry
+    }
+
+    fn new_in_storage(
+        dir_entry: &DirEntry,
+        parent: Option<Arc<PathPrefix>>,
+    ) -> Entry {
         Entry {
             name: dir_entry.name.clone(),
-            path,
+            path: OnceLock::new(),
+            parent,
             obj_type: dir_entry.obj_type,
             clsid: dir_entry.clsid,
             state_bits: dir_entry.state_bits,
@@ -41,7 +55,14 @@ impl Entry {
 
     /// Returns the full path to the object that this entry represents.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.path.get_or_init(|| {
+            let parent = self.parent.as_ref().expect("entry without path");
+            if self.obj_type == ObjType::Root {
+                parent.to_path_buf(None)
+            } else {
+                parent.to_path_buf(Some(&self.name))
+            }
+        })
     }
 
     /// Returns whether this entry is for a stream object (i.e. a "file" within
@@ -109,6 +130,88 @@ impl fmt::Debug for Entry {
 
 //===========================================================================//
 
+/// The path of a storage, as its name plus a link to the storage it is in.
+///
+/// Storages can be nested without limit, and the path of every entry holds
+/// the names of all the storages above it.  Giving each entry its own copy
+/// of that path would cost time and memory quadratic in the nesting depth,
+/// so entries found by iteration share these instead and only build their
+/// full path when asked for it.
+pub(crate) struct PathPrefix {
+    parent: Option<Arc<PathPrefix>>,
+    /// The path that iteration started from, for the outermost prefix.
+    base: PathBuf,
+    /// The name of the storage.  The root storage and the outermost prefix
+    /// have none.
+    name: Option<String>,
+}
+
+impl PathPrefix {
+    fn base(path: PathBuf) -> Arc<PathPrefix> {
+        Arc::new(PathPrefix { parent: None, base: path, name: None })
+    }
+
+    /// The prefix for what is inside the storage `dir_entry`, which is
+    /// itself inside `parent`.
+    fn child(
+        parent: &Arc<PathPrefix>,
+        dir_entry: &DirEntry,
+    ) -> Arc<PathPrefix> {
+        let name = if dir_entry.obj_type == ObjType::Root {
+            None
+        } else {
+            Some(dir_entry.name.clone())
+        };
+        Arc::new(PathPrefix {
+            parent: Some(parent.clone()),
+            base: PathBuf::new(),
+            name,
+        })
+    }
+
+    /// The path of this storage, or of `name` within it.
+    fn to_path_buf(&self, name: Option<&str>) -> PathBuf {
+        let mut prefixes = Vec::new();
+        let mut len = name.map_or(0, |name| name.len() + 1);
+        let mut current = Some(self);
+        while let Some(prefix) = current {
+            len += prefix.base.as_os_str().len()
+                + prefix.name.as_ref().map_or(0, |name| name.len() + 1);
+            prefixes.push(prefix);
+            current = prefix.parent.as_deref();
+        }
+        let mut path = PathBuf::with_capacity(len);
+        for prefix in prefixes.into_iter().rev() {
+            if prefix.parent.is_none() {
+                path.push(&prefix.base);
+            }
+            if let Some(name) = prefix.name.as_ref() {
+                path.push(name);
+            }
+        }
+        if let Some(name) = name {
+            path.push(name);
+        }
+        path
+    }
+}
+
+impl Drop for PathPrefix {
+    fn drop(&mut self) {
+        // Release the storages above this one in a loop; leaving it to the
+        // compiler would recurse once per level of nesting.
+        let mut parent = self.parent.take();
+        while let Some(prefix) = parent {
+            parent = match Arc::try_unwrap(prefix) {
+                Ok(mut prefix) => prefix.parent.take(),
+                Err(_) => None,
+            };
+        }
+    }
+}
+
+//===========================================================================//
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum EntriesOrder {
     Nonrecursive,
@@ -125,7 +228,7 @@ pub struct Entries<'a, F: 'a> {
     // iteration.  But we'd need to think about how the iterator should behave
     // if the CFB tree structure is modified during iteration.
     minialloc: &'a Arc<RwLock<MiniAllocator<F>>>,
-    stack: Vec<(PathBuf, u32, bool)>,
+    stack: Vec<(Arc<PathPrefix>, u32, bool)>,
 }
 
 impl<'a, F> Entries<'a, F> {
@@ -136,21 +239,26 @@ impl<'a, F> Entries<'a, F> {
         start: u32,
     ) -> Entries<'a, F> {
         let mut entries = Entries { order, minialloc, stack: Vec::new() };
+        let parent = PathPrefix::base(parent_path);
         match order {
             EntriesOrder::Nonrecursive => {
-                entries.stack_left_spine(&parent_path, start);
+                entries.stack_left_spine(&parent, start);
             }
             EntriesOrder::Preorder => {
-                entries.stack.push((parent_path, start, false));
+                entries.stack.push((parent, start, false));
             }
         }
         entries
     }
 
-    fn stack_left_spine(&mut self, parent_path: &Path, mut current_id: u32) {
+    fn stack_left_spine(
+        &mut self,
+        parent: &Arc<PathPrefix>,
+        mut current_id: u32,
+    ) {
         let minialloc = self.minialloc.read().unwrap();
         while current_id != consts::NO_STREAM {
-            self.stack.push((parent_path.to_path_buf(), current_id, true));
+            self.stack.push((parent.clone(), current_id, true));
             current_id = minialloc.dir_entry(current_id).left_sibling;
         }
     }
@@ -160,33 +268,28 @@ impl<'a, F> Iterator for Entries<'a, F> {
     type Item = Entry;
 
     fn next(&mut self) -> Option<Entry> {
-        if let Some((parent, stream_id, visit_siblings)) = self.stack.pop() {
+        let (parent, stream_id, visit_siblings) = self.stack.pop()?;
+        let (entry, right_sibling, children) = {
             let minialloc = self.minialloc.read().unwrap();
             let dir_entry = minialloc.dir_entry(stream_id);
-            let path = join_path(&parent, dir_entry);
-            if visit_siblings {
-                self.stack_left_spine(&parent, dir_entry.right_sibling);
-            }
-            if self.order == EntriesOrder::Preorder
+            let children = if self.order == EntriesOrder::Preorder
                 && dir_entry.obj_type != ObjType::Stream
                 && dir_entry.child != consts::NO_STREAM
             {
-                self.stack_left_spine(&path, dir_entry.child);
-            }
-            Some(Entry::new(dir_entry, path))
-        } else {
-            None
+                Some((PathPrefix::child(&parent, dir_entry), dir_entry.child))
+            } else {
+                None
+            };
+            let entry = Entry::new_in_storage(dir_entry, Some(parent.clone()));
+            (entry, dir_entry.right_sibling, children)
+        };
+        if visit_siblings {
+            self.stack_left_spine(&parent, right_sibling);
         }
-    }
-}
-
-//===========================================================================//
-
-fn join_path(parent_path: &Path, dir_entry: &DirEntry) -> PathBuf {
-    if dir_entry.obj_type == ObjType::Root {
-        parent_path.to_path_buf()
-    } else {
-        parent_path.join(&dir_entry.name)
+        if let Some((prefix, child)) = children {
+            self.stack_left_spine(&prefix, child);
+        }
+        Some(entry)
     }
 }
 
