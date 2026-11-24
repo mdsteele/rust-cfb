@@ -176,8 +176,89 @@ impl<F> MiniAllocator<F> {
                 self.free_mini_sectors.push(idx as u32);
             }
         }
+        self.validate_stream_chains(validation)
+    }
+
+    /// Checks that no sector or mini sector is used by more than one stream.
+    /// The FAT and MiniFAT validation only ensure that no sector is pointed
+    /// to twice from within them; directory entries can still start their
+    /// chains at the same sector, or part way along another stream's chain.
+    /// A small file could then hold any number of streams that each read
+    /// back as its largest one.  Under Permissive validation, the stream
+    /// with the lowest stream ID keeps the sectors and the others are
+    /// treated as empty.
+    fn validate_stream_chains(
+        &mut self,
+        validation: Validation,
+    ) -> io::Result<()> {
+        let mut claimed: FnvHashSet<u32> =
+            self.directory.dir_sector_ids().iter().copied().collect();
+        for start_sector in [
+            self.minifat_start_sector,
+            self.directory.root_dir_entry().start_sector,
+        ] {
+            claim_chain(&mut claimed, start_sector, |sector_id| {
+                self.directory.next_sector(sector_id)
+            });
+        }
+        let mut claimed_mini = FnvHashSet::default();
+        for stream_id in self.directory.reachable_stream_ids() {
+            let dir_entry = self.directory.dir_entry(stream_id);
+            if dir_entry.obj_type != ObjType::Stream
+                || dir_entry.stream_len == 0
+            {
+                continue;
+            }
+            let is_mini =
+                dir_entry.stream_len < consts::MINI_STREAM_CUTOFF as u64;
+            let shared = if is_mini {
+                claim_chain(
+                    &mut claimed_mini,
+                    dir_entry.start_sector,
+                    |sector_id| self.next_mini_sector(sector_id),
+                )
+            } else {
+                claim_chain(
+                    &mut claimed,
+                    dir_entry.start_sector,
+                    |sector_id| self.directory.next_sector(sector_id),
+                )
+            };
+            if let Some(sector_id) = shared {
+                if validation.is_strict() {
+                    invalid_data!(
+                        "Stream {:?} uses {} {}, which is already in use",
+                        dir_entry.name,
+                        if is_mini { "mini sector" } else { "sector" },
+                        sector_id
+                    );
+                }
+                self.directory.disown_chain(stream_id);
+            }
+        }
         Ok(())
     }
+}
+
+/// Adds the sectors of the chain starting at `start_sector_id` to `claimed`,
+/// stopping at (and returning) the first one that was already there.  A
+/// chain that turns out to be invalid is left for reading it to report.
+fn claim_chain(
+    claimed: &mut FnvHashSet<u32>,
+    start_sector_id: u32,
+    next: impl Fn(u32) -> io::Result<u32>,
+) -> Option<u32> {
+    let mut sector_id = start_sector_id;
+    while sector_id != consts::END_OF_CHAIN {
+        let Ok(next_sector_id) = next(sector_id) else {
+            break;
+        };
+        if !claimed.insert(sector_id) {
+            return Some(sector_id);
+        }
+        sector_id = next_sector_id;
+    }
+    None
 }
 
 impl<F: Seek> MiniAllocator<F> {

@@ -585,3 +585,82 @@ fn open_chain_entry_points_out_of_range_issue_80() {
         "the scratch stream should not read in full"
     );
 }
+
+/// A file with a stream "big" of `big_len` bytes and ten more streams whose
+/// directory entries claim the same chain, starting `skip_sectors` sectors
+/// into it.
+fn file_with_streams_sharing_a_chain(
+    big_len: usize,
+    skip_sectors: u32,
+) -> Vec<u8> {
+    let mut comp = CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    let sector_len = comp.version().sector_len();
+    comp.create_stream("big").unwrap().write_all(&vec![7u8; big_len]).unwrap();
+    for i in 0..10 {
+        comp.create_stream(format!("s{}", i)).unwrap();
+    }
+    comp.flush().unwrap();
+    let mut bytes = comp.into_inner().into_inner();
+
+    // Directory entries are 128 bytes long and aligned; a stream's entry has
+    // object type 2 at offset 66, its start sector at 116 and length at 120.
+    let is_stream_named = |bytes: &[u8], at: usize, first: u8, len: u16| {
+        bytes[at + 66] == 2
+            && bytes[at] == first
+            && bytes[at + 1] == 0
+            && le_u16(bytes, at + 64) == len
+    };
+    let entries = (0..bytes.len() / 128).map(|i| i * 128);
+    let big = entries
+        .clone()
+        .find(|&at| is_stream_named(&bytes, at, b'b', 8))
+        .expect("no entry for big");
+    let start = le_u32(&bytes, big + 116) + skip_sectors;
+    let len = (big_len - skip_sectors as usize * sector_len) as u64;
+    let others: Vec<usize> =
+        entries.filter(|&at| is_stream_named(&bytes, at, b's', 6)).collect();
+    assert_eq!(others.len(), 10);
+    for at in others {
+        bytes[at + 116..at + 120].copy_from_slice(&start.to_le_bytes());
+        bytes[at + 120..at + 128].copy_from_slice(&len.to_le_bytes());
+    }
+    bytes
+}
+
+/// Several streams claiming the same sectors would let a small file read
+/// back as many times its size.  Strict rejects that; Permissive lets one
+/// stream keep the sectors and treats the others as empty.
+fn check_streams_sharing_a_chain(big_len: usize, skip_sectors: u32) {
+    let bytes = file_with_streams_sharing_a_chain(big_len, skip_sectors);
+
+    let err = CompoundFile::open_strict(Cursor::new(bytes.clone()))
+        .expect_err("strict open should fail");
+    assert!(
+        err.to_string().contains("which is already in use"),
+        "unexpected error: {}",
+        err
+    );
+
+    let mut comp = CompoundFile::open(Cursor::new(bytes)).unwrap();
+    assert_eq!(read_stream(&mut comp, "/big"), vec![7u8; big_len]);
+    for i in 0..10 {
+        let name = format!("/s{}", i);
+        assert_eq!(comp.open_stream(&name).unwrap().len(), 0, "{}", name);
+        assert!(read_stream(&mut comp, &name).is_empty(), "{}", name);
+    }
+}
+
+#[test]
+fn streams_sharing_a_chain() {
+    check_streams_sharing_a_chain(60_000, 0);
+}
+
+#[test]
+fn streams_sharing_the_end_of_a_chain() {
+    check_streams_sharing_a_chain(60_000, 2);
+}
+
+#[test]
+fn streams_sharing_a_mini_chain() {
+    check_streams_sharing_a_chain(1000, 0);
+}
