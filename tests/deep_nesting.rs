@@ -1,5 +1,6 @@
 use cfb::CompoundFile;
 use std::io::Cursor;
+use std::path::PathBuf;
 
 const SECTOR_LEN: usize = 4096;
 const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
@@ -105,12 +106,18 @@ fn walk_deeply_nested_storages() {
     let entries: Vec<_> = comp.walk().collect();
     assert_eq!(entries.len(), DEPTH + 1);
     assert!(entries[0].is_root());
-    assert_eq!(entries[0].path().to_str(), Some("/"));
-    assert_eq!(entries[1].path().to_str(), Some("/a"));
-    assert_eq!(entries[3].path().to_str(), Some("/a/a/a"));
-    let deepest = entries[DEPTH].path().to_str().unwrap();
-    assert_eq!(deepest.len(), 2 * DEPTH);
-    assert!(deepest.ends_with("/a/a/a"));
+    // Paths are joined with the platform's separator, so compare against
+    // paths built the same way rather than against strings.
+    let nested = |depth: usize| {
+        let mut path = PathBuf::from("/");
+        path.extend(std::iter::repeat("a").take(depth));
+        path
+    };
+    assert_eq!(entries[0].path(), nested(0));
+    assert_eq!(entries[1].path(), nested(1));
+    assert_eq!(entries[3].path(), nested(3));
+    assert_eq!(entries[DEPTH].path(), nested(DEPTH));
+    assert_eq!(entries[DEPTH].path().components().count(), DEPTH + 1);
 
     // Iterating over the innermost storages by path gives the same paths.
     let inner = entries[DEPTH - 1].path();
