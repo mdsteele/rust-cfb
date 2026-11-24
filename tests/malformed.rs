@@ -585,3 +585,145 @@ fn open_chain_entry_points_out_of_range_issue_80() {
         "the scratch stream should not read in full"
     );
 }
+
+/// Counts the bytes read through it.
+struct CountingReader<R> {
+    inner: R,
+    bytes_read: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.bytes_read.set(self.bytes_read.get() + n);
+        Ok(n)
+    }
+}
+
+impl<R: Seek> Seek for CountingReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// A file whose DIFAT lists one of its FAT sectors (the `which`th entry of
+/// the header DIFAT) thousands of times, with the header's FAT sector count
+/// set to match.
+fn difat_repeats_fat_sector(which: usize) -> Vec<u8> {
+    const NUM_DIFAT_SECTORS: u32 = 20;
+    let (mut bytes, _) = file_with_two_streams(false);
+    let sector_size = 1usize << le_u16(&bytes, 30);
+    assert_eq!((bytes.len() - sector_size) % sector_size, 0);
+    let first_difat_sector = (bytes.len() / sector_size - 1) as u32;
+    let fat_sector = le_u32(&bytes, 76 + 4 * which);
+    assert_ne!(fat_sector, u32::MAX, "not enough FAT sectors");
+    assert_eq!(fat_sector == 0, which == 0);
+    let fat_sector = fat_sector.to_le_bytes();
+    for i in 0..109 {
+        bytes[76 + 4 * i..80 + 4 * i].copy_from_slice(&fat_sector);
+    }
+    let entries_per_difat_sector = sector_size / 4 - 1;
+    for i in 0..NUM_DIFAT_SECTORS {
+        for _ in 0..entries_per_difat_sector {
+            bytes.extend_from_slice(&fat_sector);
+        }
+        let next = if i + 1 == NUM_DIFAT_SECTORS {
+            0xFFFF_FFFE
+        } else {
+            first_difat_sector + i + 1
+        };
+        bytes.extend_from_slice(&next.to_le_bytes());
+    }
+    let num_fat_sectors =
+        109 + NUM_DIFAT_SECTORS * entries_per_difat_sector as u32;
+    bytes[44..48].copy_from_slice(&num_fat_sectors.to_le_bytes());
+    bytes[68..72].copy_from_slice(&first_difat_sector.to_le_bytes());
+    bytes[72..76].copy_from_slice(&NUM_DIFAT_SECTORS.to_le_bytes());
+    bytes
+}
+
+type CountedFile = CompoundFile<CountingReader<Cursor<Vec<u8>>>>;
+
+/// Opens the file, also returning how many bytes that read from it.
+fn open_counting_reads(
+    bytes: Vec<u8>,
+    strict: bool,
+) -> (std::io::Result<CountedFile>, usize) {
+    let bytes_read = std::rc::Rc::new(std::cell::Cell::new(0));
+    let reader = CountingReader {
+        inner: Cursor::new(bytes),
+        bytes_read: bytes_read.clone(),
+    };
+    let result = if strict {
+        CompoundFile::open_strict(reader)
+    } else {
+        CompoundFile::open(reader)
+    };
+    (result, bytes_read.get())
+}
+
+/// Opens the file, asserting that doing so reads at most twice its length,
+/// and returns the error message if opening failed.
+fn open_with_bounded_reads(bytes: Vec<u8>, strict: bool) -> Option<String> {
+    let file_len = bytes.len();
+    let (result, bytes_read) = open_counting_reads(bytes, strict);
+    assert!(
+        bytes_read <= 2 * file_len,
+        "read {} bytes to open a {} byte file",
+        bytes_read,
+        file_len
+    );
+    result.err().map(|err| err.to_string())
+}
+
+/// Regression test for https://github.com/mdsteele/rust-cfb/issues/98.
+#[test]
+fn open_difat_repeats_fat_sector_issue_98() {
+    for &strict in &[false, true] {
+        let err = open_with_bounded_reads(difat_repeats_fat_sector(1), strict)
+            .expect("open should fail");
+        assert!(err.contains("more than once"), "unexpected error: {}", err);
+    }
+}
+
+/// Repeats of sector 0 look like invalid zero padding, so Permissive skips
+/// them instead of failing, but must not read the sector again each time.
+#[test]
+fn open_difat_repeats_sector_zero_issue_98() {
+    open_with_bounded_reads(difat_repeats_fat_sector(0), false);
+    let err = open_with_bounded_reads(difat_repeats_fat_sector(0), true)
+        .expect("strict open should fail");
+    assert!(err.contains("more than once"), "unexpected error: {}", err);
+}
+
+/// A header DIFAT padded with zeros instead of FREE_SECTOR repeats sector 0.
+/// Permissive must keep opening such a file, without reading sector 0 again
+/// for each padding entry, and Strict must reject it.
+#[test]
+fn open_zero_padded_header_difat() {
+    let (valid, _) = file_with_two_streams(false);
+    assert_eq!(le_u32(&valid, 76), 0, "sector 0 should be a FAT sector");
+    let first_free = (0..109)
+        .find(|&i| le_u32(&valid, 76 + 4 * i) == u32::MAX)
+        .expect("no free header DIFAT entry");
+    assert!(first_free > 1, "expected more than one FAT sector");
+    let mut padded = valid.clone();
+    padded[76 + 4 * first_free..76 + 4 * 109].fill(0);
+
+    let (result, valid_bytes_read) = open_counting_reads(valid, false);
+    result.unwrap();
+    let (result, padded_bytes_read) =
+        open_counting_reads(padded.clone(), false);
+    let mut comp = result.unwrap();
+    // The header is read up to its first FREE_SECTOR entry, which the padded
+    // file doesn't have; nothing else may be read an extra time.
+    let extra_header_bytes = 4 * (108 - first_free);
+    assert_eq!(padded_bytes_read, valid_bytes_read + extra_header_bytes);
+    for &name in &["/scratch", "/BodyText/Section0"] {
+        let mut data = Vec::new();
+        comp.open_stream(name).unwrap().read_to_end(&mut data).unwrap();
+        assert_eq!(data.len(), 60_000, "{}", name);
+    }
+
+    assert!(CompoundFile::open_strict(Cursor::new(padded)).is_err());
+}
