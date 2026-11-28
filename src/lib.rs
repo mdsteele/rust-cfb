@@ -562,12 +562,28 @@ impl<F: Read + Seek> CompoundFile<F> {
 
         // Read in FAT.
         let mut fat = Vec::<u32>::new();
+        let mut seen_fat_sectors = FnvHashSet::default();
         for &sector_index in difat.iter() {
             if sector_index >= num_sectors {
                 invalid_data!(
                     "DIFAT refers to sector {}, but sector count is only {}",
                     sector_index,
                     num_sectors
+                );
+            }
+            // A DIFAT that lists the same FAT sector many times would
+            // otherwise make the FAT far larger than the file itself (see
+            // https://github.com/mdsteele/rust-cfb/issues/98).  The one
+            // repeat Permissive tolerates is sector 0, which is what a DIFAT
+            // invalidly padded with zeros instead of FREE_SECTOR contains;
+            // those repeats are skipped rather than read again.
+            if !seen_fat_sectors.insert(sector_index) {
+                if sector_index == 0 && !validation.is_strict() {
+                    continue;
+                }
+                invalid_data!(
+                    "DIFAT lists FAT sector {} more than once",
+                    sector_index
                 );
             }
             sectors
